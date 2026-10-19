@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
-"""Boot a SWEETXNU payload (tools/mkpayload.py) in QEMU's virt board.
+"""Boot a MERLINXNU payload (tools/mkpayload.py) in QEMU's virt board.
 
-  qemu-sweet.py PAYLOAD OUTDIR [--secs N] [--gdb]
+  qemu-merlin.py PAYLOAD OUTDIR [--secs N] [--gdb]
 
 Does what shim/loader.c does on the phone, but on the host: places the
 kernel segments, ADT and boot_args at their physical addresses and starts
 the CPU at a 6-instruction stub that jumps to the entry with x0 = boot_args.
-virt RAM starts at 0x40000000; with 4G it covers the phone's framebuffer
+virt RAM starts at 0x40000000; with enough -m it covers the console plane
 (0x9c000000) and the kernel's phys_base (0xb0000000) as plain memory.
 
 After N seconds (or when the guest stops) it writes into OUTDIR:
-  fb.png     the 1080x2400 framebuffer (what the phone screen would show)
+  fb.png     the 1080x2400 console plane (what the phone screen would show)
   regs.txt   QEMU's view of CPU state
   qemu.log   exceptions with ESR/FAR/ELR (-d int,guest_errors)
 
 With --kernel KERNEL (the matching unstripped Mach-O), also decode the
-framebuffer using its iso_font into fb.txt and write result.json. This is a
-snapshot of the circular screen, not a complete boot log. --fail-on-panic
+console plane using its iso_font into fb.txt and write result.json. This is
+a snapshot of the circular screen, not a complete boot log. --fail-on-panic
 returns 2 when a panic is visible; absence of a panic does not prove boot.
 An undecodable or blank screen returns 3 with --fail-on-panic.
+
+The payload magic stays 'SWEETXNU' (v1): the shim/loader contract is shared
+with ios-sweet on purpose.
 """
 import argparse, json, os, socket, struct, subprocess, sys, time, zlib
 
@@ -105,7 +108,7 @@ def decode_screen(raw, font):
 
 
 def screen_result(screen, unknown):
-    if 'panic(cpu ' in screen or 'SWEET EARLY PANIC:' in screen:
+    if 'panic(cpu ' in screen or 'SWEET EARLY PANIC:' in screen or 'MERLIN EARLY PANIC:' in screen:
         status = 'panic'
     elif unknown:
         status = 'incomplete_decode'
@@ -152,7 +155,7 @@ def main():
     ap.add_argument('--secs', type=float, default=20)
     ap.add_argument('--gdb', action='store_true', help='start halted, gdb stub on :1234, no timeout')
     ap.add_argument('--hmp', action='append', default=[], help='extra monitor command run after stop (repeatable), e.g. "x /8gx 0xfffffe..."')
-    ap.add_argument('--cpu', default='cortex-a76')	# ARMv8.2 like Kryo 470, same ID_AA64MMFR0
+    ap.add_argument('--cpu', default='cortex-a75')	# ARMv8.2 like the MT6768 A75, same ID_AA64MMFR0 class
     ap.add_argument('--kernel', help='matching unstripped kernel, for exact framebuffer text decoding (uses llvm-nm)')
     ap.add_argument('--fail-on-panic', action='store_true', help='exit 2 for a visible panic, 3 for incomplete/blank decoding; requires --kernel')
     a = ap.parse_args()
@@ -178,7 +181,7 @@ def main():
     mon = f'{out}/mon.sock'
     if os.path.exists(mon):
         os.unlink(mon)
-    # virt RAM starts at 0x40000000: cover the payload's RAM (mkadt.py --highmem needs 8G).
+    # virt RAM starts at 0x40000000: cover the payload's RAM (mkadt --phone needs 8G too).
     mem_size = struct.unpack_from('<Q', payload, 0x40)[0]
     ram_gib = max(4, -(-(phys_base + mem_size - 0x40000000) // (1 << 30)))
     cmd = ['qemu-system-aarch64', '-M', 'virt,gic-version=3', '-cpu', a.cpu, '-smp', '1', '-m', f'{ram_gib}G',
