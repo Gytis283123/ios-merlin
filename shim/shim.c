@@ -507,6 +507,15 @@ static int cpus_cb(const char *node, const char *prop, uintptr_t val,
 	return 0;
 }
 
+/* Values shown on the big-font facts page (see shim_main); diag_fdt fills. */
+#define BG_MAX		4
+static uint64_t bg_memb[BG_MAX], bg_msz[BG_MAX];
+static int bg_nmem;
+static uint64_t bg_ilo, bg_ihi, bg_fb;
+static int bg_has_ilo, bg_has_fb;
+static uint32_t bg_tirq[4];
+static int bg_ntirq;
+
 static void diag_fdt(uintptr_t dtb)
 {
 	uintptr_t v;
@@ -526,7 +535,10 @@ static void diag_fdt(uintptr_t dtb)
 
 	/* The live memory banks LK patched in (the stock dts has a stub). */
 	if (fdt_top_prop(dtb, "memory", "reg", &v, &l))
-		for (uint32_t o = 0; o + 16 <= l; o += 16) {
+		for (uint32_t o = 0; o + 16 <= l && bg_nmem < BG_MAX; o += 16) {
+			bg_memb[bg_nmem] = fdt_be64(v + o);
+			bg_msz[bg_nmem] = fdt_be64(v + o + 8);
+			bg_nmem++;
 			con_hex("MEMBASE", fdt_be64(v + o));
 			con_hex("MEMSIZE", fdt_be64(v + o + 8));
 		}
@@ -537,12 +549,18 @@ static void diag_fdt(uintptr_t dtb)
 		uint64_t e = 0;
 
 		fdt_chosen_u64(dtb, "linux,initrd-end", &e);
+		bg_ilo = u;
+		bg_ihi = e;
+		bg_has_ilo = 1;
 		con_hex("INITLO", u);
 		con_hex("INITHI", e);
 	} else
 		con_str("INITRD", "absent in /chosen");
-	if (fdt_chosen_u64(dtb, "atag,videolfb-fb_base_l", &u))
+	if (fdt_chosen_u64(dtb, "atag,videolfb-fb_base_l", &u)) {
+		bg_fb = u;
+		bg_has_fb = 1;
 		con_hex("ATAGFB", u);
+	}
 
 	/* Everything else LK merged into /chosen (atags live in a child). */
 	n = 0;
@@ -550,10 +568,14 @@ static void diag_fdt(uintptr_t dtb)
 	n = 0;
 	fdt_node_walk(dtb, "psci", chosen_cb, &n);
 
-	if (fdt_top_prop(dtb, "timer", "interrupts", &v, &l))
+	if (fdt_top_prop(dtb, "timer", "interrupts", &v, &l)) {
+		/* First four raw cells (type,num@id...) for the facts page. */
+		for (uint32_t o = 0; o + 4 <= l && bg_ntirq < 4; o += 4)
+			bg_tirq[bg_ntirq++] = fdt_be32(v + o);
 		for (uint32_t o = 0; o + 4 <= l; o += 8)
 			con_hex2("TIRQ", "c=", fdt_be32(v + o), "c=",
 				 o + 8 < l ? fdt_be32(v + o + 8) : 0);
+	}
 
 	ncpus = 0;
 	fdt_node_walk(dtb, "cpus", cpus_cb, 0);
@@ -573,28 +595,18 @@ static void wdt_disarm(void)
 	mode &= ~0x1u;			/* clear MTK_WDT_MODE_ENABLE */
 	wr32(MTK_RGU + RGU_WDT_MODE, mode);
 }
-#endif
 
-void shim_main(uint64_t dtb)
+/* Full-width diag: header, register state, disarm, live-FDT facts. */
+static void diag_small(uint64_t dtb)
 {
-#ifdef MERLIN
-	/* boot 3: diag-first, then the watchdog stays fed (boot-2 bootloop
-	 * was still with us: the earlier "pet" wrote the RESTART key to the
-	 * SWRST offset - no-op - so LK's armed WDT kept resetting the box).
-	 * No payload, no PSCI calls: read the live FDT facts LK patched in
-	 * and hold the screen. */
-	stage = "diag";
-	/* No full-screen clear here: the start.S red/green proof blocks
-	 * stay visible on the LK splash while text draws over the logo -
-	 * how far boot got is then observable even if the console dies. */
-	con_str("SHIM", "merlin boot4: diag + wdt disarm");
+	con_str("SHIM", "merlin boot7: bigfacts + diag");
 	con_hex2("EL", "cur=", (uint32_t)(rsr("currentel") >> 2), "sctlr=",
 		 (uint32_t)rsr("sctlr_el1"));
 	con_hex2("FREQ", "cntfrq=", (uint32_t)rsr("cntfrq_el0"), "mpidr=",
 		 (uint32_t)(rsr("mpidr_el1") & 0xffffff));
 	con_hex("DTB ptr", dtb);
 
-	/* LK's watchdog state, printed BEFORE the disarm (evidence). */
+	/* First call prints LK's armed watchdog state (evidence). */
 	con_hex2("WDT", "mode=", rd32(MTK_RGU + RGU_WDT_MODE), "len=",
 		 rd32(MTK_RGU + RGU_WDT_LENGTH));
 	con_hex2("WDT", "stat=", rd32(MTK_RGU + RGU_WDT_STATUS), "nonrst=",
@@ -603,6 +615,56 @@ void shim_main(uint64_t dtb)
 	wdt_pet();
 
 	diag_fdt(dtb);
+}
+
+/* 64-bit-safe big-font fact line (high half as its own row when nonzero). */
+static void bigfact(const char *label, uint64_t v)
+{
+	con_big_hex(label, (uint32_t)v);
+	if (v >> 32)
+		con_big_hex("=HI", (uint32_t)(v >> 32));
+}
+#endif
+
+void shim_main(uint64_t dtb)
+{
+#ifdef MERLIN
+	/* boot 7: boot 6 proved the gzip(Image)+FDT blob shape runs on the
+	 * phone and its diag draws - but SCALE-2 text is unreadable in a
+	 * phone photo.  So: full small diag once (wiped), then the facts
+	 * page at 8x glyph scale on top, then the full diag again below
+	 * the facts page.  Camera reads the top, eyes read the rest. */
+	stage = "diag";
+	diag_small(dtb);
+
+	con_big_mode(8);
+	con_clear(0);
+	bigfact("EL", rsr("currentel") >> 2);
+	bigfact("CNTFRQ", rsr("cntfrq_el0"));
+	bigfact("DTB", dtb);
+	con_big_hex("WDTMODE", rd32(MTK_RGU + RGU_WDT_MODE));
+	con_big_hex("WDTLEN", rd32(MTK_RGU + RGU_WDT_LENGTH));
+	for (int i = 0; i < bg_nmem && i < 2; i++) {
+		bigfact(i ? "MEMB1" : "MEMB0", bg_memb[i]);
+		bigfact(i ? "MSZ1" : "MSZ0", bg_msz[i]);
+	}
+	if (bg_has_ilo) {
+		bigfact("INITLO", bg_ilo);
+		bigfact("INITHI", bg_ihi);
+	}
+	if (bg_has_fb)
+		bigfact("ATAGFB", bg_fb);
+	if (bg_ntirq > 0)
+		con_big_hex("T0", bg_tirq[0]);
+	if (bg_ntirq > 1)
+		con_big_hex("T1", bg_tirq[1]);
+	if (bg_ntirq > 2)
+		con_big_hex("T2", bg_tirq[2]);
+	con_big_hex("NCPU", (uint32_t)ncpus);
+	con_big_hex("MPIDR", (uint32_t)(rsr("mpidr_el1") & 0xffffff));
+	con_big_mode(0);
+
+	diag_small(dtb);
 	for (;;)
 		delay_ms(5000);		/* spins with wdt_pet() inside */
 #else

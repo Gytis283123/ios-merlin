@@ -1,5 +1,46 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-20 LATEST-5: PHONE BOOT CONFIRMED - shim runs on the device! boot7 bigfacts built)
+
+### 0006 result: THE SHIM RUNS ON THE PHONE
+
+User booted (one of) the 0006-shim images and got the full diag screen -
+labels SHIM/EL/FREQ/DTB/WDT/MEMBASE/MEMSIZE/INITLO/INITHI/ATAGFB/chosen/
+psci/TIRQ/CPU visible on the LK splash, over the Redmi logo.  THE 16s
+BOOTLOOP IS GONE: the screen holds (wdt disarm + pet).  LK decompresses
+our gzip(Image)+FDT blob and jumps to it.  The red/green start.S proof
+blocks ARE visible (photo confirms the top-left red block; our start.S
+paints it) -> entry code + console + FB base 0x7e605000 are all right.
+The right-hand text column on the splash is LK's own panel log.
+
+Photo of the diag screen (user's Iriun-webcam capture of the phone):
+`research/merlin-boot/diag-frame-*.jpg` and user's
+`C:\Users\gycioc\Pictures\Capture.PNG` (480x802: too small to read
+SCALE-2 hex values - each glyph is a couple px).
+
+### boot-7: bigfacts page (camera-readable values)
+
+`shim-boot-merlin-0007-big.img` (64MB stock byte-patch) and
+`shim-boot-merlin-0007b-big.img` (368KB, our packer): same gzip(Image)+
+FDT shape, shim now shows:
+1. the small scale-2 diag (wiped below),
+2. a scale-8 facts page on top: EL, CNTFRQ, DTB, WDTMODE, WDTLEN,
+   MEMB0/MSZ0, MEMB1/MSZ1, INITLO, INITHI, ATAGFB, T0/T1/T2 (timer
+   interrupt cells), NCPU, MPIDR - 8x16 px glyphs, ~16 cols x 18 rows,
+   readable from any camera (console.c con_big_mode/con_big_hex/
+   con_big_str; shim.c bg_* globals filled by diag_fdt + diag_small()
+   runs twice: before and after the big page),
+3. then the full small diag repeats below the facts page.
+
+TOOLING: Iriun webcam live capture works on this PC via ffmpeg dshow
+(device "Iriun Webcam"); first grabs were 480px tall.  The device
+supports up to 2560x1440 - capture with:
+`ffmpeg -f dshow -video_size 2560x1440 -i video="Iriun Webcam" -frames:v 3 out-%d.jpg`
+
+NEXT: when user boots 0007b-big and reports, read the values, finalize
+mkadt.py phone constants (PHYS_BASE/MEM_SIZE/ATAGFB/timer intids), then
+wire the payload loader into MERLIN shim_main.
+
 ## Agent handoff / active work (2026-10-20 LATEST-4: KERNEL BLOB DECODED - stock kernel is gzip(Image)+raw FDT)
 
 ### 0005 result: no paint on 0005b-probe (the probe never entered)

@@ -18,6 +18,7 @@
 volatile uint32_t *con_fb = (volatile uint32_t *)FB_BASE;
 static uint32_t con_bg;
 static int row;
+static int big_scale;		/* 0 = normal SCALE, else 16*s pixel glyphs */
 
 void con_clear(uint32_t bg)
 {
@@ -35,16 +36,17 @@ static void put_char(int col, char ch, uint32_t fg)
 	if (ch < 0x20 || ch > 0x7e)
 		ch = '?';
 	const unsigned char *g = font8x16[ch - 0x20];
-	int x0 = MARGIN + col * CH_W, y0 = MARGIN + row * CH_H;
-	if (x0 + CH_W > FB_W || y0 + CH_H > FB_H)
+	int s = big_scale ? big_scale : SCALE;
+	int x0 = MARGIN + col * 8 * s, y0 = MARGIN + row * 16 * s;
+	if (x0 + 8 * s > FB_W || y0 + 16 * s > FB_H)
 		return;
 	for (int gy = 0; gy < 16; gy++)
 		for (int gx = 0; gx < 8; gx++) {
 			uint32_t c = (g[gy] & (0x80 >> gx)) ? fg : con_bg;
-			for (int sy = 0; sy < SCALE; sy++) {
-				volatile uint32_t *p = con_fb + (y0 + gy * SCALE + sy) * (FB_STRIDE / 4)
-						       + x0 + gx * SCALE;
-				for (int sx = 0; sx < SCALE; sx++)
+			for (int sy = 0; sy < s; sy++) {
+				volatile uint32_t *p = con_fb + (y0 + gy * s + sy) * (FB_STRIDE / 4)
+						       + x0 + gx * s;
+				for (int sx = 0; sx < s; sx++)
 					p[sx] = c;
 			}
 		}
@@ -97,5 +99,34 @@ void con_hex2(const char *label, const char *a, uint32_t va, const char *b, uint
 		fmt_hex(buf, vb, 8);
 		put_str(col, buf, WHITE);
 	}
+	row++;
+}
+
+/* Big-font mode for phone-camera captures: glyphs are 8s x 16s pixels.
+ * Screen geometry (1080 cols, 134 px row pitch at scale 8) means ~16
+ * columns x ~16 rows - only for short fact lines, not the full diag. */
+void con_big_mode(int s)
+{
+	big_scale = s;
+}
+
+/* "LABEL=XXXXXXXX" line, adjacent columns (no LABEL_COLS gap). */
+void con_big_hex(const char *label, uint32_t v)
+{
+	char buf[9];
+
+	fmt_hex(buf, v, 8);
+	int col = put_str(0, label, YELLOW);
+	put_str(col, "=", WHITE);
+	put_str(col + 1, buf, WHITE);
+	row++;
+}
+
+void con_big_str(const char *label, const char *s)
+{
+	int col = put_str(0, label, YELLOW);
+
+	put_str(col, "=", WHITE);
+	put_str(col + 1, s, WHITE);
 	row++;
 }
