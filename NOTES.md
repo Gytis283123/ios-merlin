@@ -1,6 +1,88 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
-## Agent handoff / active work (2026-10-18, latest)
+## Agent handoff / active work (2026-10-20, latest)
+
+### QEMU boots to userspace; the "SWEET EARLY 20 stall" was never a kernel stall (2026-10-20)
+
+**Result**: `xnu/out-0001/merlin-payload.bin` (kernel.development.sweet from artifact
+12146286873, head 347e190, + regenerated merlin-q.adt + merlin-init ramdisk) boots in
+QEMU *(research/qemu-win/qemu-system-aarch64.exe, Windows side)* **exactly like the
+sweet reference to userspace**: full kernel_bootstrap, IOKit platform expert / CPU /
+AppleCLCD / HID / battery, Skywalk + bsd_autoconf, `BSD root: md0`,
+`load_init_program: attempting to load /sbin/launchd`,
+`*** MERLIN userspace: init running as PID 1 ***` with alive ticks
+(evidence `research/abtest/fullfix60`, untouched control `research/abtest/sweetref60`).
+
+**Both phantom symptoms explained - two building/consumer bugs, not kernel bugs:**
+
+1. *Console freeze at "SWEET EARLY 20" (what looked like a stall).* The payload had
+   been built with an explicit `--cmdline 'debug=0xc'`, overriding mkpayload's default
+   (`... serial=3 ...`). Without `serial=3` (SERIALMODE_OUTPUT off), after stage 20
+   (`if (serial_exists) sweet_early_disable();` in arm_init, patch 0012) every kprintf
+   goes through the pe_serial console chain (patch 0003: sweet-fbcon renderer) which
+   never transmits when serial output is off => the fb shows the stage-20 line forever.
+   serial.txt stays empty (not a UART issue); the ADT `sweet-fbcon` node is fine and
+   identical to sweet's (prop-level diff `research/adtdiff2.py`). The stages 1-19 lines
+   get wiped by fbcon_init's full clear, so the frozen screen looks "empty except 20".
+2. *Real halt right after "ATM subsystem is initialized" (masked by 1).* My
+   2026-10-20 rebuilds used the STALE `xnu/out-0001/merlin-q.adt` (timestamp 10/19
+   17:46, i.e. generated BEFORE the mkadt.py cpu-compatible fix at 19:17). cpu0
+   `compatible` must be `qcom,kryo470|ARM,v8` for the SweetCPU personality (patch
+   0018); with the stale ADT the CPU-register cascade never runs (no
+   `[0]ml_processor_register>` / `SWEET CPU:` rows, which the sweet control prints
+   right after "platform expert registered", before the BSD copyright) and boot stops
+   after ATM forever (60 s and 120 s identical). FIX: regenerate
+   `xnu/out-0001/merlin-q.adt` with the fixed mkadt.py. That fix IS in mkadt.py - the
+   failure mode was only using the stale copy. `research/abtest/merlin-q.adt`
+   (10/19 19:17:26) was already fixed; out-0001 was not.
+
+**Payload recipe (verified)**:
+```
+python tools/mkpayload.py xnu/out-0001/kernel.development.sweet xnu/out-0001/merlin-q.adt \
+    xnu/out-0001/merlin-payload.bin --ramdisk xnu/out-0001/merlin-init \
+    --cmdline 'debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=md0'
+python tools/qemu-merlin.py xnu/out-0001/merlin-payload.bin research/abtest/OUT \
+    --secs 60 --kernel xnu/out-0001/kernel.development.sweet
+```
+Geometry: 11 segments (kernel 10 + merlin-init), ramdisk @0xb24c8000 size 0x8000,
+kernel_end 0x84d0000, entry 0x148b488, phys 0xb0000000, size 16.62 MB. The 2026-10-18/19
+hands note that said "cmdline debug=0xc" below is stale for the payload which now
+contains the full sweet-parity cmdline baked in (the shim contract is unchanged;
+SWEETXNU v1).
+
+**gdb-RSP walk forensics (proven method)**: `tools/qemu-merlin.py --gdb` starts QEMU
+stopped with a stub on tcp::1234. A single-process RSP client (Windows temp
+gdbwalk.py; qemu spawned in-thread via runpy; attach => `qSupported`, `Z0` symbolic
+breakpoint list, `vCont;c`; log pc/x0/x1/lr/sp per stop; **`vCont;s` step-over after
+every breakpoint hit - QEMU re-stops forever on resume if PC==bp**; end with Ctrl-C +
+`k`). Walk of the fixed payload: every arm_init-tail breakpoint hit in vanilla order
+(PE_init_platform FALSE->TRUE, ml_map_cpu_pio, cpu_timebase_init, PE_init_cpu,
+fiq_context_init, machine_startup, kernel_bootstrap, kernel_bootstrap_thread), then
+SweetCPU::start -> ml_processor_register -> cpu_machine_init (lr=_cpu_start+0x74),
+IOWorkLoop::threadMain / IOService arbitration churn, then sched timeshare
+maintenance ticks with the CPU parked at cpu_idle = healthy idle, NO stall. Kernel
+side was always fine; only the console formatting hid it.
+
+**ADT prop-level diff** (research/adtdiff2.py, merlin-q.adt vs sweet-q.adt): identity
+bits only (phandles, random-seed, firmware-version 'merlin-shim', unique-chip-id
+'MERLIN', cpu clock/memory-frequency, /arm-io compatible 'merlin-io', extra
+panel-width/height on the display node). Nothing functional. The `/device-tree/sweet-fbcon`
+node (reg 0x9c000000, 1080x2400, stride 4320) is identical in both.
+
+**Next steps (ordered), updated 2026-10-20**
+1. Phone payload: `mkadt.py --phone` regenerates the merlin panel ADT; same
+   compatible fix applies (single mkadt.py source). Rebuild the phone payload with
+   the cmdline above (phone fb = ABL splash @0x7e605000 1080x2340) and `fastboot boot`
+   the rebuilt shim image; the fb now mirrors the QEMU console instead of freezing
+   at stage 20.
+2. Exercise SMP: generate the 8-cpu ADT shape (mkadt cpus loop per mt6768 topology;
+   patch 0078 exists on the sweet side) and validate QEMU with `cpus=8`.
+3. MERLIN machine config patch (0004-style), boot.img v2 packing for merlin (kernel
+   loading address per stock boot header), shim console tweaks if needed.
+4. MSDC0 eMMC driver, root on userdata, iOS root/launchd - same plan as the list
+   below (keep those notes).
+
+## Agent handoff / active work (2026-10-18, prior)
 
 ### Initial port scaffold created (2026-10-18/19) - READ FIRST
 

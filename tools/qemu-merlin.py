@@ -25,11 +25,38 @@ with ios-sweet on purpose.
 """
 import argparse, json, os, socket, struct, subprocess, sys, time, zlib
 
+IS_WIN = sys.platform == 'win32'
+
 FB_BASE, FB_W, FB_H = 0x9c000000, 1080, 2400
 FB_STRIDE = FB_W * 4
 PAGE = 0x4000
 STUB_PA = 0x40200000	# above the dtb QEMU places at RAM base
 BOOT_LINE_LENGTH = 608
+
+
+def qemu_binary():
+    """Path of qemu-system-aarch64 (env MERLIN_QEMU, PATH, repo research tree)."""
+    cand = os.environ.get('MERLIN_QEMU')
+    paths = [cand] if cand else ['qemu-system-aarch64']
+    if IS_WIN:
+        local = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             '..', 'research', 'qemu-win', 'qemu-system-aarch64.exe')
+        paths.append(local)
+    for p in paths:
+        if not p:
+            continue
+        found = subprocess.run(['which', p] if not IS_WIN else ['where', p],
+                               capture_output=True, text=True)
+        if (not IS_WIN and found.returncode == 0) or (IS_WIN and found.stdout.strip()):
+            return p.strip().splitlines()[0]
+        if os.path.isfile(p):
+            return p
+    raise SystemExit('qemu-system-aarch64 not found (set MERLIN_QEMU); see tools/env-ubuntu.sh')
+
+
+def posix_path(p):
+    """QEMU on Windows wants absolute paths with forward slashes."""
+    return os.path.abspath(p).replace('\\', '/')
 
 
 def build_image(payload):
@@ -73,6 +100,36 @@ def write_png(path, raw):
     png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', FB_W, FB_H, 8, 2, 0, 0, 0))
     png += chunk(b'IDAT', zlib.compress(b''.join(rows), 6)) + chunk(b'IEND', b'')
     open(path, 'wb').write(png)
+
+
+def macho_iso_font(kernel_path):
+    """VA of _iso_font from the kernel's LC_SYMTAB (portable; no llvm-nm)."""
+    MH_MAGIC_64, LC_SYMTAB = 0xfeedfacf, 2
+    blob = open(kernel_path, 'rb').read()
+    if struct.unpack_from('<I', blob, 0)[0] != MH_MAGIC_64:
+        raise SystemExit(f'{kernel_path}: not an arm64 Mach-O')
+    ncmds, = struct.unpack_from('<I', blob, 16)
+    symoff = nsyms = stroff = None
+    off = 32
+    for _ in range(ncmds):
+        cmd, cmdsize = struct.unpack_from('<II', blob, off)
+        if cmd == LC_SYMTAB:
+            symoff, nsyms, stroff = struct.unpack_from('<III', blob, off + 8)
+        off += cmdsize
+    if symoff is None:
+        raise SystemExit(f'{kernel_path}: stripped (no LC_SYMTAB); need an unstripped kernel')
+    found = []
+    for i in range(nsyms):
+        o = symoff + 16 * i			# nlist_64: strx u32, type u8, sect u8, desc u16, value u64
+        n_strx, n_type = struct.unpack_from('<IB', blob, o)
+        n_value, = struct.unpack_from('<Q', blob, o + 8)
+        if (n_type & 0x0e) == 0x0e and (n_type & 0x01):  # N_SECT + N_EXT: defined
+            s = blob[stroff + n_strx:blob.index(b'\0', stroff + n_strx)]
+            if s == b'_iso_font':
+                found.append(n_value)
+    if len(found) != 1:
+        raise SystemExit(f'{kernel_path}: found {len(found)} _iso_font symbols, need exactly 1')
+    return found[0]
 
 
 def payload_data(payload, va, size):
@@ -121,7 +178,7 @@ def screen_result(screen, unknown):
 
 def qmp(sock_path, *cmds, pmemsave=None):
     """Run QEMU human-monitor commands over QMP (synchronous, unlike the echoing HMP socket)."""
-    s = socket.socket(socket.AF_UNIX)
+    s = socket.socket(socket.AF_UNIX if isinstance(sock_path, str) else socket.AF_INET)
     s.connect(sock_path)
     f = s.makefile('rw')
     f.readline()
@@ -142,9 +199,10 @@ def qmp(sock_path, *cmds, pmemsave=None):
             print(f'qmp {c!r}: {r["error"]}', file=sys.stderr)
         out.append(r.get('return', ''))
     if pmemsave:	# native QMP: HMP's argument parser chokes on '-' in paths
-        r = call('pmemsave', val=pmemsave[0], size=pmemsave[1], filename=pmemsave[2])
-        if 'error' in r:
-            print(f'qmp pmemsave: {r["error"]}', file=sys.stderr)
+        for val, size, fname in (pmemsave if isinstance(pmemsave[0], tuple) else [pmemsave]):
+            r = call('pmemsave', val=val, size=size, filename=fname)
+            if 'error' in r:
+                print(f'qmp pmemsave: {r["error"]}', file=sys.stderr)
     s.close()
     return out
 
@@ -155,20 +213,18 @@ def main():
     ap.add_argument('--secs', type=float, default=20)
     ap.add_argument('--gdb', action='store_true', help='start halted, gdb stub on :1234, no timeout')
     ap.add_argument('--hmp', action='append', default=[], help='extra monitor command run after stop (repeatable), e.g. "x /8gx 0xfffffe..."')
-    ap.add_argument('--cpu', default='cortex-a75')	# ARMv8.2 like the MT6768 A75, same ID_AA64MMFR0 class
-    ap.add_argument('--kernel', help='matching unstripped kernel, for exact framebuffer text decoding (uses llvm-nm)')
+    ap.add_argument('--cpu', default='cortex-a76')	# ARMv8.2 class (MT6768's A75 has no named QEMU model); proven default from ios-sweet
+    ap.add_argument('--kernel', help='matching unstripped kernel, for exact framebuffer text decoding')
     ap.add_argument('--fail-on-panic', action='store_true', help='exit 2 for a visible panic, 3 for incomplete/blank decoding; requires --kernel')
+    ap.add_argument('--dump-ram', action='store_true', help='keep a pmemsave of the whole RAM image for post-mortem string forensics')
+    ap.add_argument('--qargs', action='append', default=[], help='extra raw QEMU CLI args (repeatable), e.g. -trace enable=arm_gt_cval_write')
     a = ap.parse_args()
     if a.fail_on_panic and not a.kernel:
         ap.error('--fail-on-panic requires --kernel')
     payload = open(a.payload, 'rb').read()
     font = None
     if a.kernel:
-        symbols = subprocess.check_output(['llvm-nm', '--defined-only', a.kernel], text=True)
-        fonts = [int(line.split()[0], 16) for line in symbols.splitlines()
-                 if line.split()[-1:] == ['_iso_font']]
-        if len(fonts) != 1:
-            ap.error('kernel must contain exactly one _iso_font symbol')
+        fonts = [macho_iso_font(a.kernel)]	# portable LC_SYMTAB walk (llvm-nm on Linux is equivalent)
         font = payload_data(payload, fonts[0], 256 * 16)
     os.makedirs(a.outdir, exist_ok=True)
     out = os.path.abspath(a.outdir)
@@ -178,44 +234,65 @@ def main():
     open(f'{out}/stub.bin', 'wb').write(stub(ba_pa, entry_pa))
     print(f'phys_base={phys_base:#x} boot_args={ba_pa:#x} entry={entry_pa:#x}', file=sys.stderr)
 
+    qemu = qemu_binary()
     mon = f'{out}/mon.sock'
     if os.path.exists(mon):
         os.unlink(mon)
+    if IS_WIN:
+        sport = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sport.bind(('127.0.0.1', 0))
+        port = sport.getsockname()[1]
+        sport.close()
+        mon = ('127.0.0.1', port)
+        qmp_arg = f'tcp:127.0.0.1:{port},server,nowait'
+    else:
+        qmp_arg = f'unix:{mon},server,nowait'
     # virt RAM starts at 0x40000000: cover the payload's RAM (mkadt --phone needs 8G too).
     mem_size = struct.unpack_from('<Q', payload, 0x40)[0]
     ram_gib = max(4, -(-(phys_base + mem_size - 0x40000000) // (1 << 30)))
-    cmd = ['qemu-system-aarch64', '-M', 'virt,gic-version=3', '-cpu', a.cpu, '-smp', '1', '-m', f'{ram_gib}G',
-           '-nographic', '-serial', f'file:{out}/serial.txt', '-qmp', f'unix:{mon},server,nowait',
-           '-d', 'int,guest_errors,unimp', '-D', f'{out}/qemu.log', '-no-reboot',
-           '-device', f'loader,file={out}/ram.bin,addr={phys_base:#x},force-raw=on',
-           '-device', f'loader,file={out}/stub.bin,addr={STUB_PA:#x},force-raw=on',
-           '-device', f'loader,addr={STUB_PA:#x},cpu-num=0']
+    cmd = [qemu, '-M', 'virt,gic-version=3', '-cpu', a.cpu, '-smp', '1', '-m', f'{ram_gib}G',
+           '-nographic', '-serial', 'file:' + posix_path(f'{out}/serial.txt'), '-qmp', qmp_arg,
+           '-d', 'int,guest_errors,unimp', '-D', posix_path(f'{out}/qemu.log'), '-no-reboot',
+           '-device', f'loader,file={posix_path(f"{out}/ram.bin")},addr={phys_base:#x},force-raw=on',
+           '-device', f'loader,file={posix_path(f"{out}/stub.bin")},addr={STUB_PA:#x},force-raw=on',
+           '-device', f'loader,addr={STUB_PA:#x},cpu-num=0'] + a.qargs
     if a.gdb:
         cmd += ['-S', '-gdb', 'tcp::1234']
-    p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL)
-    if a.gdb:
-        print('gdb stub on :1234; QMP socket:', mon, file=sys.stderr)
-        p.wait()
-        return
-    t0 = time.time()
-    while p.poll() is None and time.time() - t0 < a.secs:
-        time.sleep(0.2)
-    result = {'status': 'qemu_exited', 'qemu_returncode': p.returncode}
-    if p.poll() is None:
-        _, regs, *extra = qmp(mon, 'stop', 'info registers', *a.hmp, pmemsave=(FB_BASE, FB_STRIDE * FB_H, f'{out}/fb.raw'))
-        open(f'{out}/regs.txt', 'w').write(regs + ''.join(f'\n(qemu) {c}\n{r}' for c, r in zip(a.hmp, extra)))
-        p.kill()
-        p.wait()
-        raw = open(f'{out}/fb.raw', 'rb').read()
-        write_png(f'{out}/fb.png', raw)
-        result = {'status': 'not_decoded'}
-        if font is not None:
-            screen, unknown = decode_screen(raw, font)
-            open(f'{out}/fb.txt', 'w').write(screen)
-            result = screen_result(screen, unknown)
-        os.unlink(f'{out}/fb.raw')
-    else:
-        print(f'qemu exited early: {p.returncode}', file=sys.stderr)
+    kw = {}
+    if IS_WIN:
+        kw['creationflags'] = subprocess.CREATE_NO_WINDOW
+    p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, **kw)
+    try:
+        if a.gdb:
+            print('gdb stub on :1234; QMP socket:', mon, file=sys.stderr)
+            p.wait()
+            return
+        t0 = time.time()
+        while p.poll() is None and time.time() - t0 < a.secs:
+            time.sleep(0.2)
+        result = {'status': 'qemu_exited', 'qemu_returncode': p.returncode}
+        if p.poll() is None:
+            dumps = [(FB_BASE, FB_STRIDE * FB_H, f'{out}/fb.raw')]
+            if a.dump_ram:  # post-mortem forensics: whole RAM (VM pages live anywhere in the 5G)
+                dumps.append((0x40000000, 0x140000000, f'{out}/ram-dump.raw'))
+            _, regs, *extra = qmp(mon, 'stop', 'info registers', *a.hmp, pmemsave=dumps)
+            open(f'{out}/regs.txt', 'w').write(regs + ''.join(f'\n(qemu) {c}\n{r}' for c, r in zip(a.hmp, extra)))
+            p.kill()
+            p.wait()
+            raw = open(f'{out}/fb.raw', 'rb').read()
+            write_png(f'{out}/fb.png', raw)
+            result = {'status': 'not_decoded'}
+            if font is not None:
+                screen, unknown = decode_screen(raw, font)
+                open(f'{out}/fb.txt', 'w').write(screen)
+                result = screen_result(screen, unknown)
+            os.unlink(f'{out}/fb.raw')
+        else:
+            print(f'qemu exited early: {p.returncode}', file=sys.stderr)
+    finally:
+        if p.poll() is None:  # never orphan a 5G guest, even on a harness crash
+            p.kill()
+            p.wait()
     for f in ('ram.bin',):
         os.unlink(f'{out}/{f}')
     open(f'{out}/result.json', 'w').write(json.dumps(result, indent=2) + '\n')
@@ -227,6 +304,7 @@ def main():
         return 3
     if result['status'] == 'qemu_exited':
         return 1
+    return 0
 
 
 if __name__ == '__main__':

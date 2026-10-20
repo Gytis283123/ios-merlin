@@ -144,7 +144,15 @@ def build(qemu=True, phone=False):
     # its single-CPU tree.
     cores = range(1 if qemu else 8)
     freq = lambda core: 0x65633340 if core < 6 else 0x8166d4c0
-    compat = lambda core: cstr('ARM,cortex-a55' if core < 6 else 'ARM,cortex-a75') + cstr('ARM,v8')
+    # compatible[0] MUST stay 'qcom,kryo470': the SWEET kernel's boot-CPU
+    # driver personality matches IONameMatch 'qcom,kryo470'
+    # (xnu/patches/0018 SweetCPU via KernelConfigTables).  'ARM,cortex-a55'
+    # never matches -> SweetCPU::start never runs -> no ml_processor_register
+    # -> gIOAllCPUInitializedKey never publishes -> kernel_bootstrap waits
+    # forever after 'kprintf startup complete' (found via gdb cdp dump:
+    # cpu_id/cluster_master unset).  MT6768 cores 0-5 are really A55,
+    # 6-7 A75 -- recorded here only, the compatible is a driver key.
+    compat = lambda core: cstr('qcom,kryo470') + cstr('ARM,v8')
     cpu_nodes = []
     for core in cores:
         cpu_nodes.append(node(f'cpu{core}', [
@@ -175,8 +183,13 @@ def build(qemu=True, phone=False):
         ('compatible', cstr('arm,gic-v3') + cstr('mediatek,gic500')),
         ('interrupt-controller', b''),
         ('virtual-timer-intid', u32(vtimer)),
-        ('reg', u64(gicd - SOC_BASE, 0x40000 if qemu else GICD_SIZE,
-                    gicr - SOC_BASE, 0x20000 if qemu else GICR_SIZE)),
+        # Sizes differ per host: QEMU virt needs the ios-sweet-proven windows
+        # (the kernel probes redistributor frames inside the mapped GICR
+        # window; a single 0x20000-frame map livelocks early interrupts).
+        # Phone keeps the MT6768 GIC-500 layout (GICD block 0x40000 per
+        # mt6768.dts; GICR 8 PEs * 0x40000 == 0x200000, live stride TBD).
+        ('reg', u64(gicd - SOC_BASE, 0x10000 if qemu else GICD_SIZE,
+                    gicr - SOC_BASE, 0x100000 if qemu else GICR_SIZE)),
     ])
     arm_io = node('arm-io', [
         ph(),
@@ -200,7 +213,11 @@ def build(qemu=True, phone=False):
             ('panel-height', u32(PANEL_H)),
         ])])
 
-    fbcon = node('merlin-fbcon', [
+    # Kernel-interface name: the patched fbcon driver IONameMatches the ADT
+    # node 'sweet-fbcon' (merlin identity lives elsewhere).  A renamed node
+    # boots fine but the console goes invisible after the early FB console,
+    # as proven by RAM forensics (research/abtest fbcon variant).
+    fbcon = node('sweet-fbcon', [
         ph(),
         ('reg', u64(fb, fb_size)),
         ('width', u32(fb_w)),
