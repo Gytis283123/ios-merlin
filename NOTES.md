@@ -48,12 +48,13 @@ vtimer INTID. Then rebuild the phone payload with corrected ADT and boot
 it as the NEXT image (payload in the ramdisk + MERLIN loader not wired
 into shim_main yet - that wiring is the step after the live facts land).
 
-**Unresolved hygiene**: `research/merlin-boot/stock-boot-backup.img` is
-0 bytes (created 20:00:25, between the 0001b and 0002 packs) - what was
-it a backup OF / how was it made? No image was flashed per the ground
-rules (`fastboot boot` only), but confirm and, if anything WAS flashed,
-first restore via the stock ROM tgz (`merlin_global_images_...tgz` on
-disk holds boot.img of V12.5.1.0.RJOMIXM) or recovery before more tests.
+**Unresolved hygiene** (answered 2026-10-20 by the user): unsure whether
+anything was ever flashed - the phone may not even have been used with
+these images yet. Keep `fastboot boot` only when it happens; if a flash
+turns out to have happened, first restore via the stock ROM tgz
+(`merlin_global_images_...tgz` on disk holds boot.img of
+V12.5.1.0.RJOMIXM) or recovery before more tests. The 0-byte
+`stock-boot-backup.img` is an artifact of an interrupted backup attempt.
 
 ## Agent handoff / active work (2026-10-20, QEMU parity)
 
