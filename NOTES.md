@@ -1,5 +1,37 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-20 LATEST-6: ROOTFS TRACK STARTED - iOS 16.7.16 rootfs pipeline; bigfacts page CONFIRMED rendering)
+
+### Confirmations from the user's 0007b-big boot
+
+- The big-font facts page rendered (the ~17 huge lines with the live
+  values).  User chose not to capture/transcribe them yet ("go for the
+  iOS image") - values STILL OUTSTANDING for the phone ADT; the same
+  image can be re-booted any time, screen holds indefinitely.
+- Disposition: proceed with the rootfs track; wire the MERLIN payload
+  loader AFTER the values land (mkadt phone constants still provisional
+  until then).
+
+### Rootfs pipeline (tools/mkrootfs.py)
+
+- Target: iOS 16.7.16 (build 20H392) rootfs from the full restore
+  https://updates.cdn-apple.com/2025FallFCS/fullrestores/122-77006/1158E502-D76D-4226-AA06-ED5E30CD1111/iPhone10,3,iPhone10,6_16.7.16_20H392_Restore.ipsw
+  (iPhone X combo: iPhone10,3/10,6; Sandcastle-style rootfs base; the
+  port's kernel is xnu-8796 = Darwin 22.6, matching 16.7 userland).
+- Download running in background -> D:\things\Merlin\iPhone10,3,iPhone10,6_16.7.16_20H392_Restore.ipsw
+  (~5.7 GB expected; keep OUT of git - it is in D:\things\Merlin root).
+- Extraction staging: research/ipsw-x/ (gitignored).
+- tools/mkrootfs.py: lists members + BuildManifest identities, streams
+  the largest .dmg out, prints the UDIF koly trailer.  With the DMG in
+  hand, raw conversion is `D:\tools\ipsw\ipsw.exe disk dmg <dmg> -o rootfs.img`
+  (`ipsw disk dmg` decodes UDIF blkx incl. LZFSE; keys via -k if the
+  image turns out AEA-encrypted - iPhone full restores usually are not).
+- ipsw CLI installed at D:\tools\ipsw\ipsw.exe (v3.1.739; Windows x64).
+
+NEXT: when the download completes - run mkrootfs.py, convert, record
+hash/size, then decide rootfs integration (real mount needs our kernel
+to drive storage; next phone-boot stage first).
+
 ## Agent handoff / active work (2026-10-20 LATEST-5: PHONE BOOT CONFIRMED - shim runs on the device! boot7 bigfacts built)
 
 ### 0006 result: THE SHIM RUNS ON THE PHONE
