@@ -33,7 +33,7 @@ From `merlin_global_images_V12.5.1.0.RJOMIXM...tgz` ->
 | `shim-boot-merlin-0004e.img` (64 MB) | shim | size=0 | `tools/mkboot-edit.py` byte-patch of the stock image | red block then green block then boot4 text: proves LK accepts a patched stock image |
 | `shim-boot-merlin-0004b.img` (330 KB) | shim | 512B cpio | our packer, stock fields + wrapped dtb | same as 0004e with OUR packer |
 
-Shim changes for this round (commit 138ebf1, shim/start.S + shim/shim.c):
+Shim changes for this round (commit fdd4151, shim/start.S + shim/shim.c):
 - `start.S`: under `#ifdef MERLIN`, FIRST instructions pet toprgu
   (+0x0008 <- 0x1971) and paint a 96x48 RED proof block at the splash
   top-left (fb 0x7e605000 a8r8g8b8, stride 4320); after bss zero a GREEN
