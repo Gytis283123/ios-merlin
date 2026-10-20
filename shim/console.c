@@ -5,7 +5,11 @@
 #include "console.h"
 #include "font.h"
 
+#ifdef MERLIN
+#define SCALE		2		/* 1080x2340: 67 cols x 73 rows */
+#else
 #define SCALE		3
+#endif
 #define CH_W		(8 * SCALE)
 #define CH_H		(16 * SCALE)
 #define MARGIN		24

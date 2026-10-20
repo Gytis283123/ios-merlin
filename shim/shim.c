@@ -10,6 +10,7 @@
 #include "console.h"
 #include "mmu.h"
 #include "loader.h"
+#include "fdt.h"
 #include "ufs.h"
 
 #define IMEM_RESTART_REASON	0x146aa65cUL	/* qcom,msm-imem restart_reason@65c */
@@ -94,11 +95,46 @@ static uint64_t now(void)
 	return rsr("cntpct_el0");
 }
 
+/* ---- MTK toprgu AP watchdog (merlin mt6768; wdt_v2 register map) ----
+ * LK hands us the phone with the watchdog armed; if we neither feed nor
+ * shut it down before it times out, toprgu resets the box mid-boot (seen
+ * on the first phone boots: continuous reboots even with a do-nothing
+ * shim).  Offsets/keys from the stock mt6768 kernel driver
+ * (drivers/watchdog/mediatek/.../wdt_v2/mtk_wdt.h):
+ *   MODE    +0x00  key 0x22000000, bit0 = enable
+ *   LENGTH  +0x04  (armed timeout)
+ *   RESTART +0x08  write 0x1971 to re-arm the counter
+ *   STATUS  +0x0c  bit31 = last reset was this hw watchdog
+ *   SWRST   +0x14  key 0x1209 = immediate reset (wrong key: no-op) */
+#define MTK_RGU			0x10007000UL
+#define RGU_WDT_MODE		0x00
+#define RGU_WDT_LENGTH		0x04
+#define RGU_WDT_RESTART		0x08
+#define RGU_WDT_STATUS		0x0c
+#define RGU_WDT_NONRST_REG	0x20
+#define RGU_WDT_NONRST_REG2	0x24
+static void wdt_pet(void);
+
 static void delay_ms(unsigned ms)
 {
 	uint64_t end = now() + rsr("cntfrq_el0") / 1000 * ms;
-	while (now() < end)
-		;
+	uint64_t pet = rsr("cntfrq_el0") / 8;	/* throttle: every ~125ms */
+	uint64_t next = now() + pet;
+
+	while (now() < end) {
+		if (now() >= next) {
+			wdt_pet();
+			next += pet;
+		}
+	}
+	wdt_pet();
+}
+
+static void wdt_pet(void)
+{
+#ifdef MERLIN
+	wr32(MTK_RGU + RGU_WDT_RESTART, 0x1971);
+#endif
 }
 
 static void __attribute__((noreturn)) reset(unsigned after_s)
@@ -106,10 +142,14 @@ static void __attribute__((noreturn)) reset(unsigned after_s)
 	con_skip();
 	con_str("RESET", after_s > 20 ? "in 40s" : "in 20s");
 	delay_ms(after_s * 1000);
-	wr32(IMEM_RESTART_REASON, RESTART_BOOTLOADER);
+#ifndef MERLIN
+	wr32(IMEM_RESTART_REASON, RESTART_BOOTLOADER);	/* qualcomm imem only */
+#endif
 	__asm__ volatile("dsb sy" ::: "memory");
 	smc(PSCI_SYSTEM_RESET, 0, 0, 0);
-	wr32(PSHOLD, 0);
+#ifndef MERLIN
+	wr32(PSHOLD, 0);				/* qualcomm pshold only */
+#endif
 	for (;;)
 		__asm__ volatile("wfe");
 }
@@ -142,13 +182,16 @@ void exc_handler(uint64_t slot, uint64_t *regs)
 		irq_handler();
 		return;
 	}
+#ifdef MERLIN
+	/* Append below the diag facts: the screen is our only serial. */
+	con_skip();
+	con_str("PANIC", "exception");
+#else
 	con_clear(BLUE);
-	switch (slot & 3) {
-	case 0: con_str("PANIC", "SYNC"); break;
-	case 1: con_str("PANIC", "IRQ"); break;
-	case 2: con_str("PANIC", "FIQ"); break;
-	default: con_str("PANIC", "SERROR"); break;
-	}
+#endif
+	uint32_t kind = slot & 3;
+	static const char kindname[4][8] = {"SYNC", "IRQ", "FIQ", "SERROR"};
+	con_str("PANIC", kindname[kind]);
 	con_hex2("SLOT", "n=", slot, "cpu=", rsr("mpidr_el1"));
 	con_str("STAGE", stage);
 	con_hex("ESR", rsr("esr_el1"));
@@ -168,6 +211,7 @@ static uintptr_t find_gicr(void);
 void secondary_main(uint64_t idx)
 {
 	sec_mpidr[idx] = rsr("mpidr_el1") | (1ULL << 63);
+#ifndef MERLIN
 	if (idx == 1) {
 		uintptr_t r = find_gicr();
 		if (r) {
@@ -179,6 +223,7 @@ void secondary_main(uint64_t idx)
 		}
 		sec_probe[3] = r ? 1 : 0xdead;
 	}
+#endif
 	__asm__ volatile("dsb sy" ::: "memory");
 	smc(PSCI_CPU_OFF, 0, 0, 0);
 }
@@ -370,8 +415,195 @@ static uint32_t to_us(uint64_t ticks)
 	return ticks * 10 / 192;	/* 19.2 MHz */
 }
 
+#ifdef MERLIN
+/* ---- boot 1: dump what LK actually passed us, before anything risky ---- */
+
+static char pline[128];
+static const char hexd[] = "0123456789abcdef";
+static int ncpus;
+
+static int streq(const char *a, const char *b)
+{
+	while (*a && *a == *b)
+		a++, b++;
+	return *a == *b;
+}
+
+static void fmt32(char *d, uint32_t v)
+{
+	for (int i = 0; i < 8; i++)
+		d[i] = hexd[(v >> (4 * (7 - i))) & 0xf];
+	d[8] = 0;
+}
+
+/* One console row: "<prop>=<value>" with the node name in the label column. */
+static void line_prop(const char *prop, uintptr_t val, uint32_t len)
+{
+	uint32_t i = 0;
+
+	for (; prop[i] && i < 40; i++)
+		pline[i] = prop[i];
+	pline[i++] = '=';
+
+	uint32_t printable = len && *(volatile char *)(val + len - 1) == 0;
+	for (uint32_t j = 0; j < len && printable; j++) {
+		char c = *(volatile char *)(val + j);
+		if (c && (c < 0x20 || c > 0x7e))
+			printable = 0;
+	}
+
+	if (printable) {
+		for (uint32_t j = 0; j < len && i < sizeof pline - 1; j++) {
+			char c = *(volatile char *)(val + j);
+			pline[i++] = c ? c : '|';	/* NULs separate strings */
+		}
+	} else if (len == 4) {
+		fmt32(pline + i, fdt_be32(val));
+		i += 8;
+	} else if (len == 8) {
+		for (int k = 0; k < 16; k++)
+			pline[i + k] = hexd[(fdt_be64(val) >> (4 * (15 - k))) & 0xf];
+		i += 16;
+	} else if (len % 4 == 0 && len <= 24) {
+		for (uint32_t o = 0; o < len && i < sizeof pline - 10; o += 4) {
+			if (o)
+				pline[i++] = ',';
+			fmt32(pline + i, fdt_be32(val + o));
+			i += 8;
+		}
+	} else {
+		pline[i++] = 'l';
+		pline[i++] = 'e';
+		pline[i++] = 'n';
+		pline[i++] = '=';
+		fmt32(pline + i, len);
+		i += 8;
+	}
+	pline[i] = 0;
+}
+
+static int chosen_cb(const char *node, const char *prop, uintptr_t val,
+		     uint32_t len, void *ctx)
+{
+	int *n = ctx;
+
+	if (*n >= 26)
+		return 1;	/* cap the dump */
+	(*n)++;
+	line_prop(prop, val, len);
+	con_str(node, pline);
+	return 0;
+}
+
+static int cpus_cb(const char *node, const char *prop, uintptr_t val,
+		   uint32_t len, void *ctx)
+{
+	(void)node;
+	(void)ctx;
+	if (len == 4 && streq(prop, "reg")) {
+		con_hex2("CPU", "mpidr=", fdt_be32(val), 0, 0);
+		ncpus++;
+	}
+	return 0;
+}
+
+static void diag_fdt(uintptr_t dtb)
+{
+	uintptr_t v;
+	uint32_t l;
+	uint64_t u;
+	int n;
+
+	con_hex2("DTB", "at=", (uint32_t)dtb, "magic=", dtb ? fdt_be32(dtb) : 0);
+	con_hex2("EL", "cur=", (uint32_t)(rsr("currentel") >> 2), "mpidr=",
+		 (uint32_t)(rsr("mpidr_el1") & 0xffffff));
+	con_hex2("FREQ", "cntfrq=", (uint32_t)rsr("cntfrq_el0"), "sctlr=",
+		 (uint32_t)rsr("sctlr_el1"));
+	if (!dtb || fdt_be32(dtb) != 0xd00dfeedUL) {
+		con_str("DTB", "no valid FDT from LK!");
+		return;
+	}
+
+	/* The live memory banks LK patched in (the stock dts has a stub). */
+	if (fdt_top_prop(dtb, "memory", "reg", &v, &l))
+		for (uint32_t o = 0; o + 16 <= l; o += 16) {
+			con_hex("MEMBASE", fdt_be64(v + o));
+			con_hex("MEMSIZE", fdt_be64(v + o + 8));
+		}
+	else
+		con_str("MEM", "no /memory reg!");
+
+	if (fdt_chosen_u64(dtb, "linux,initrd-start", &u)) {
+		uint64_t e = 0;
+
+		fdt_chosen_u64(dtb, "linux,initrd-end", &e);
+		con_hex("INITLO", u);
+		con_hex("INITHI", e);
+	} else
+		con_str("INITRD", "absent in /chosen");
+	if (fdt_chosen_u64(dtb, "atag,videolfb-fb_base_l", &u))
+		con_hex("ATAGFB", u);
+
+	/* Everything else LK merged into /chosen (atags live in a child). */
+	n = 0;
+	fdt_node_walk(dtb, "chosen", chosen_cb, &n);
+	n = 0;
+	fdt_node_walk(dtb, "psci", chosen_cb, &n);
+
+	if (fdt_top_prop(dtb, "timer", "interrupts", &v, &l))
+		for (uint32_t o = 0; o + 4 <= l; o += 8)
+			con_hex2("TIRQ", "c=", fdt_be32(v + o), "c=",
+				 o + 8 < l ? fdt_be32(v + o + 8) : 0);
+
+	ncpus = 0;
+	fdt_node_walk(dtb, "cpus", cpus_cb, 0);
+	con_hex2("CPUS", "n=", ncpus, "nr=", NR_CPUS);
+}
+
+/* Disable the AP watchdog reset generation, mirroring the stock
+ * mtk_wdt_v2.c disable sequence (MODE_KEY | clear MODE_ENABLE).  Bring-up
+ * prefers hangs that stay on screen over rebooting phones out from under
+ * the operator; wdt_pet() keeps the counter restarted meanwhile as a
+ * belt-and-braces residual for any mode bit that eats the disarm write. */
+static void wdt_disarm(void)
+{
+	uint32_t mode = rd32(MTK_RGU + RGU_WDT_MODE);
+
+	mode |= 0x22000000u;		/* MTK_WDT_MODE_KEY */
+	mode &= ~0x1u;			/* clear MTK_WDT_MODE_ENABLE */
+	wr32(MTK_RGU + RGU_WDT_MODE, mode);
+}
+#endif
+
 void shim_main(uint64_t dtb)
 {
+#ifdef MERLIN
+	/* boot 3: diag-first, then the watchdog stays fed (boot-2 bootloop
+	 * was still with us: the earlier "pet" wrote the RESTART key to the
+	 * SWRST offset - no-op - so LK's armed WDT kept resetting the box).
+	 * No payload, no PSCI calls: read the live FDT facts LK patched in
+	 * and hold the screen. */
+	stage = "diag";
+	con_clear(RED);
+	con_str("SHIM", "merlin boot3: diag + wdt disarm");
+	con_hex2("EL", "cur=", (uint32_t)(rsr("currentel") >> 2), "sctlr=",
+		 (uint32_t)rsr("sctlr_el1"));
+	con_hex2("FREQ", "cntfrq=", (uint32_t)rsr("cntfrq_el0"), "mpidr=",
+		 (uint32_t)(rsr("mpidr_el1") & 0xffffff));
+	con_hex("DTB ptr", dtb);
+
+	/* LK's watchdog state, printed BEFORE the disarm (evidence). */
+	con_hex2("WDT", "mode=", rd32(MTK_RGU + RGU_WDT_MODE), "len=",
+		 rd32(MTK_RGU + RGU_WDT_LENGTH));
+	con_hex2("WDT", "stat=", rd32(MTK_RGU + RGU_WDT_STATUS), "nonrst=",
+		 rd32(MTK_RGU + RGU_WDT_NONRST_REG));
+	wdt_disarm();
+	wdt_pet();
+
+	diag_fdt(dtb);
+	for (;;)
+		delay_ms(5000);		/* spins with wdt_pet() inside */
+#else
 	struct mmu_info mi;
 
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
@@ -432,4 +664,5 @@ void shim_main(uint64_t dtb)
 
 	stage = "done";
 	reset(40);
+#endif	/* MERLIN */
 }

@@ -38,7 +38,9 @@ QEMU_VTIMER_INTID = 27               # standard PPI 11
 
 # ---- phone (merlin / MT6768) ----------------------------------------------
 PHONE_PHYS_BASE = 0xb0000000         # provisional; verify with live lk FDT
-PHONE_MEM_SIZE = 0x33000000          # provisional; see NOTES.md
+PHONE_MEM_SIZE = 0x10000000          # 256MB cap: fits even a 1GB low bank
+                                     # (0xb0000000+0x33000000 crossed the
+                                     # presumed 0xC0000000 bank boundary)
 GICD, GICD_SIZE = 0x0c000000, 0x40000
 GICR, GICR_SIZE = 0x0c400000, 0x200000  # 8 PEs x 0x40000
 SOC_BASE = 0x01000000                # /arm-io children are relative to this

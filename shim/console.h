@@ -1,9 +1,18 @@
 #pragma once
 #include <stdint.h>
 
+#ifdef MERLIN
+/* Redmi Note 9 (MT6768): the LK splash framebuffer.  Base from the stock dts
+ * atag "atag,videolfb-fb_base_l" (panel: hx83112b 1080x2340 DSI CMD); the
+ * live-FDT dump on the first boot verifies both.  a8r8g8b8 assumed. */
+#define FB_BASE		0x7e605000UL
+#define FB_W		1080
+#define FB_H		2340
+#else
 #define FB_BASE		0x9c000000UL	/* reserved-memory cont_splash_region */
 #define FB_W		1080
 #define FB_H		2400
+#endif
 #define FB_STRIDE	(FB_W * 4)	/* a8r8g8b8, matches mainline simplefb */
 
 #define RED	0xffff0000U
