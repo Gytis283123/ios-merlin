@@ -1,5 +1,34 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-20 LATEST-7: ROOTFS VERIFIED REMOTELY - waiting on user's Firefox download)
+
+- tools/zipremote.py: lists/fetches members of a REMOTE zip via HTTP
+  Range (Apple CDN serves 206).  Ran against the 16.7.16 restore URL
+  with zero download: total 6.171 GB, 91 members, ZIP64 parsed.
+- KEY FACTS:
+  - rootfs = `087-86698-044.dmg`, **4.731 GB, zip method 0 = STORED**
+    (not streamed; not AEA - plain UDIF, expect lzfse/UDZO blocks)
+    -> extraction is a slice-copy; `ipsw extract --dmg fs` or
+    mkrootfs.py both fine once the local IPSW exists.
+  - restore ramdisk dmg = `087-86593-047.dmg` (1.098 GB) - NOT the fs.
+  - BuildManifest (fetched remotely, 27.6 KB deflate): build **20H392**,
+    iOS 16.7.16; identities **d22ap (iPhone10,3)** + **d221ap
+    (iPhone10,6)**, every one's OS -> 087-86698-044.dmg.  Manifest is
+    UTF-16LE bytes claiming encoding=UTF-8 (handle BOM + truncate at
+    </plist> when parsing; multiple deflate members per zip entry - use
+    decompressobj and drop leftovers).
+  - `kernelcache.release.iphone10b` present (A11) - future source of
+    Apple's closed kexts (apfs etc.) if the sweet kernel needs them.
+- User opted to download the IPSW via Firefox into
+  C:\Users\gycioc\Downloads\iPhone10,3,iPhone10,6_16.7.16_20H392_Restore.ipsw;
+  my background curl died at 44% and its partial was deleted.
+- ipsw.exe (blacktop/ipsw v3.1.739) at D:\tools\ipsw\ipsw.exe.
+
+NEXT: when the Firefox download completes -> extract the dmg (4.73 GB
+slice), convert with `ipsw disk dmg <dmg> -o rootfs.img`, record
+sha256+size, stage in research/ipsw-x/, commit NOTES.  Then decide
+integration (real mount needs storage drivers by our xnu on-merlin).
+
 ## Agent handoff / active work (2026-10-20 LATEST-6: ROOTFS TRACK STARTED - iOS 16.7.16 rootfs pipeline; bigfacts page CONFIRMED rendering)
 
 ### Confirmations from the user's 0007b-big boot
