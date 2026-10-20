@@ -1,5 +1,48 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-20 LATEST-4: KERNEL BLOB DECODED - stock kernel is gzip(Image)+raw FDT)
+
+### 0005 result: no paint on 0005b-probe (the probe never entered)
+
+Confirms LK does not accept our plain-Image blobs. While checking WHY, the
+stock kernel blob finally got decoded:
+
+**The merlin stock "kernel" in boot.img is NOT an Image. It is:**
+```
+koff 0x800: [ gzip member -> 27,873,280 bytes of plain ARM64 Image
+              (text_offset 0x80000, image_size 0x228f000, flags 0xa,
+               ARM\x64 magic at +0x38) ]
+            + [ raw FDT, 181,203 bytes (identical to the dt-pack's inner
+                FDT - see LATEST-2) ]
+```
+gzip stream ends at blob offset 9,958,158; the FDT is the blob's last
+181,203 bytes. No size trailers, just gz + FDT.
+
+ALL our previous attempts (0003, 0004B/E, 0005 probes) shipped a PLAIN
+uncompressed Image with no trailing FDT - LK never recognized them as a
+kernel and rebooted (~16s cycle), whatever the packing (stock-patch or
+our packer). This also explains "bootloop with a do-nothing shim": LK
+died before ANY of our code.
+
+### boot-6 images (gzip(Image)+FDT, the stock shape)
+
+- `research/merlin-boot/shim-boot-merlin-0006-probe.img` (64MB): stock
+  byte-patch, kernel = gzip(192B probe) + blob-fdt, STOCK ramdisk kept.
+- `shim-boot-merlin-0006-shim.img` (64MB): same with the full shim.
+- `shim-boot-merlin-0006b-probe.img` (360KB) / `0006b-shim.img` (366KB):
+  our packer variants (stock fields, wrapped dtb, 512B cpio ramdisk).
+- NEW tool `tools/mkgzblob.py` (gzip(Image)+FDT); `blob-fdt.bin` =
+  the blob's inner FDT extracted standalone.
+
+Expected: probe = red block + green band on the splash (parked; possible
+16s blink since the probe pets once). Text diag = all the facts. If
+STILL nothing paints but 0004C keeps booting Android, the remaining
+variables are (a) text_offset 0x80000 placement of the inflated image,
+(b) LK allocating/verifying by image_size (ours 192 vs stock 0x228f000)
+- remedy: pack the probe with the SAME padded image_size/decompression
+behaviour (e.g. embed the probe inside a header-clone of the stock
+Image: real image_size, probe code at text_offset).
+
 ## Agent handoff / active work (2026-10-20 LATEST-3: 0004c boots ANDROID - packer proven; probe round)
 
 ### 0004 results
