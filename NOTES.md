@@ -1,6 +1,61 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
-## Agent handoff / active work (2026-10-20, latest)
+## Agent handoff / active work (2026-10-20 LATEST - phone bootloop root-caused)
+
+### Phone bootloop root cause: the watchdog "fix" petted the WRONG register (commit 573d0a1)
+
+**Symptom**: `fastboot boot` of the merlin shim images kept the phone rebooting
+continuously even with a do-nothing shim (research/merlin-boot 0001/0001b/0002,
+built 2026-10-20 19:33-20:04).
+
+**Root cause (proven against the stock mt6768 kernel source)**:
+`wdt_pet()` wrote the RESTART key `0x1971` to RGU+0x14. Per the stock
+`wdt_v2/mtk_wdt.h` (merlin_defconfig selects `CONFIG_MTK_WATCHDOG_COMMON_V2`,
+skywalker toprgu @ 0x10007000), +0x14 is **WDT_SWRST** (its key is 0x1209;
+with the wrong key the write is ignored), while **WDT_RESTART is RGU+0x0008**.
+So the watchdog was never fed: LK hands the phone to us with the AP watchdog
+armed + the box resets as soon as confirmed.
+
+**Fix (in shim/shim.c, built + packed)**:
+- `wdt_pet()` writes 0x1971 to **RGU+0x08** (correct RESTART offset), called
+  from delay_ms throttled to every ~125ms.
+- New `wdt_disarm()` at MERLIN shim entry: MODE read, `|0x22000000` (MODE_KEY)
+  `& ~1` (clear ENABLE) - the exact disable sequence of stock
+  `mtk_wdt_v2.c`. Bring-up wants hangs on-screen, not silent resets.
+- diag restored into the MERLIN shim_main (the planned boot-2 screen):
+  EL/SCTLR/CNTFRQ/MPIDR, **WDT MODE/LENGTH/STATUS/NONRST_REG printed BEFORE
+  the disarm** (STATUS bit31 = last reset was the hw watchdog; NONRST_REG
+  shows LK's bootloop-exit bookkeeping), then the full `diag_fdt()` dump
+  (live DRAM banks from /memory, initrd, chosen/psci props, timer IRQs,
+  cpus+MPIDRs).
+
+**Boot-3 image (packed, ready for the phone)**:
+`research/merlin-boot/shim-boot-merlin-0003.img` - 159744 bytes, shim
+`out/Image` (merlin diag build, min main removed), empty 512B ramdisk, no
+dtb, name `merlin-shim-3`, cmdline `console=null merlin.shim-3`. Verified
+the packed strings + the disassembly (`str 0x1971 -> [RGU+0x8]`, the MODE
+key/clear-enable sequence, throttled pet in the spin loop).
+
+**Next step (user, destructive-free `fastboot boot` only - nothing flashed)**:
+```
+fastboot boot research/merlin-boot/shim-boot-merlin-0003.img
+```
+Read the screen: it must now STAY UP (no reset). The `MEMBASE/MEMSIZE`
+lines are the live DRAM banks LK patched in - they fix mkadt.py's
+PHONE_PHYS_BASE/PHONE_MEM_SIZE (currently 0xb0000000/0x10000000
+provisional). cpus lines say the real MPIDR shape; timer IRQ lines the
+vtimer INTID. Then rebuild the phone payload with corrected ADT and boot
+it as the NEXT image (payload in the ramdisk + MERLIN loader not wired
+into shim_main yet - that wiring is the step after the live facts land).
+
+**Unresolved hygiene**: `research/merlin-boot/stock-boot-backup.img` is
+0 bytes (created 20:00:25, between the 0001b and 0002 packs) - what was
+it a backup OF / how was it made? No image was flashed per the ground
+rules (`fastboot boot` only), but confirm and, if anything WAS flashed,
+first restore via the stock ROM tgz (`merlin_global_images_...tgz` on
+disk holds boot.img of V12.5.1.0.RJOMIXM) or recovery before more tests.
+
+## Agent handoff / active work (2026-10-20, QEMU parity)
 
 ### QEMU boots to userspace; the "SWEET EARLY 20 stall" was never a kernel stall (2026-10-20)
 
