@@ -1,5 +1,47 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-20 LATEST-3: 0004c boots ANDROID - packer proven; probe round)
+
+### 0004 results
+
+- **0004C (our packer, stock kernel+ramdisk+dtb, stock fields): BOOTS ANDROID.**
+  The whole boot.img path is healthy: packer, page size 2048, addresses,
+  cmdline, the MTK dt-pack (d7b7ab1e, FDT at +0x40), os_version. Nothing
+  to fix there.
+- 0004B (our packer, shim kernel): bootloop.
+- 0004E (mkboot-edit byte patch: shim kernel in the stock image): bootloop.
+
+=> The only remaining variable is the KERNEL BLOB itself: the stock
+kernel runs through the identical image, our shim's first stores never
+paint. Next question: does LK hand control to a NON-stock Image at all?
+
+### probe round (boot-5) - assembly-only 192-byte kernel, no C at all
+
+`research/merlin-boot/probe.S` (+build-probe.sh): Image header + exactly:
+msr daifset; pet 0x10007000+0x8 <- 0x1971; paint 96x48 RED block at
+0x7e605000; paint a GREEN band below; wfe forever. 192 bytes; literal
+pools inside. Packed twice:
+`shim-boot-merlin-0005-probe.img` (mkboot-edit stock patch, ramdisk
+zeroed) and `shim-boot-merlin-0005b-probe.img` (own packer, stock-shape
+everything, wrapped dtb, 512B cpio).
+
+Expected on the phone: the LK splash with a red block, then a green
+band, then nothing else (the probe parks). NOTE: the probe does NOT
+disarm the watchdog and does not pet while parked - if LK's credits
+outlast the pet, the box resets after ~16s and the probe runs again:
+a steady or 16s-BLINKING red/green pattern is the HEALTHY result (LK
+enters our code). No paint at all = LK never entered us.
+
+### Interpreting the probe
+
+- red+green visible (steady or blinking): LK runs arbitrary Image code
+  fine - the real shim's failure is in OUR build (bss/stack/vectors/
+  literals/EL state). Debug the full shim against these pins next.
+- no paint on BOTH 0005 variants (with C having booted Android): LK
+  refuses control to non-kernel-shaped bytes. Next: replicate more of
+  the stock kernel head (real image_size values), then LK archaeology
+  (mt6768 LK is not in this workspace) or memory read-back via mtkclient.
+
 ## Agent handoff / active work (2026-10-20 LATEST-2: 16s loop survives the wdt fix; boot.img-shape bisect kit ready)
 
 ### Symptom after the wdt fix: 16s cycle, MI logo, NO red pixels at all
