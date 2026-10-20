@@ -1,6 +1,67 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
-## Agent handoff / active work (2026-10-20 LATEST - phone bootloop root-caused)
+## Agent handoff / active work (2026-10-20 LATEST-2: 16s loop survives the wdt fix; boot.img-shape bisect kit ready)
+
+### Symptom after the wdt fix: 16s cycle, MI logo, NO red pixels at all
+
+The user reports "still bootloop exist": resets every **~16 s**, screen shows
+the MI logo or nothing - never our shim's red block/text. The 0003 build DID
+pet + disarm correctly (verified in the disassembly), so, per the first
+instruction of shim_main painting the fb, the failure is BEFORE our code
+runs: the boot.img layer / LK, not the shim.
+
+### Stock boot.img reference facts (extracted 0004 session, repo root tgz)
+
+From `merlin_global_images_V12.5.1.0.RJOMIXM...tgz` ->
+`research/merlin-boot/stock-boot.img` (64 MB, padded to 0x4000000):
+- header v2, page_size **2048** (our mkbootimg used 4096!)
+- kernel @ 0x40080000 size 10139361; ramdisk @ 0x47c80000 size 787819 -
+  ramdisk and tags addrs differ from our defaults
+- tags_addr 0x4bc80000; appended dtb section (181267 bytes) = MTK dt-pack
+  wrapper: magic d7b7ab1e 64-byte header, real FDT (d00dfeed) at +0x40;
+  LK overlays it at tags_addr = the /chosen FDT the kernel receives
+- cmdline `bootopt=64S3,32N2,64N2 buildvariant=user`; os_version 0x16000157
+  (11.0.0, patch 2021-07); name empty; recovery_dtbo 0; header_size 1660.
+  Files beside it in research/merlin-boot: stock-kernel.bin,
+  stock-ramdisk.img, stock-dtb.bin (the wrapped 181267-byte section).
+
+### boot-4 experiment kit (stock-faithful packing removes the header variables)
+
+| file | kernel | ramdisk | built by | expectation |
+| --- | --- | --- | --- | --- |
+| `shim-boot-merlin-0004c.img` (11.1 MB) | stock | stock | our packer, ALL stock fields | boots MIUI exactly like flash: proves the packer |
+| `shim-boot-merlin-0004e.img` (64 MB) | shim | size=0 | `tools/mkboot-edit.py` byte-patch of the stock image | red block then green block then boot4 text: proves LK accepts a patched stock image |
+| `shim-boot-merlin-0004b.img` (330 KB) | shim | 512B cpio | our packer, stock fields + wrapped dtb | same as 0004e with OUR packer |
+
+Shim changes for this round (commit 138ebf1, shim/start.S + shim/shim.c):
+- `start.S`: under `#ifdef MERLIN`, FIRST instructions pet toprgu
+  (+0x0008 <- 0x1971) and paint a 96x48 RED proof block at the splash
+  top-left (fb 0x7e605000 a8r8g8b8, stride 4320); after bss zero a GREEN
+  block one band lower.  Guarded with C-preprocessor directives (cpp runs
+  on .S in clang).
+- `shim_main` MERLIN diag: no more full-screen con_clear (the logo stays
+  behind the proof blocks + text so a dead console still leaves blocks).
+
+### Test protocol (user, fastboot boot only - nothing flashed)
+
+```
+fastboot boot research/merlin-boot/shim-boot-merlin-0004c.img   # control: MIUI must boot
+fastboot boot research/merlin-boot/shim-boot-merlin-0004e.img   # 64MB transfer, slow, image only
+fastboot boot research/merlin-boot/shim-boot-merlin-0004b.img   # fails both E and B => LK won't run our binary via boot path
+```
+Interpretations:
+- 0004c boots MIUI + red/green blocks appear in E/B => boot.img shape WAS
+  the blocker: proceed with the stock-shape packing from now on.
+- 0004c boots MIUI, E/B show nothing: LK won't execute our binary through
+  `fastboot boot` (kernel-magic / path checks?). Next moves: run
+  mkboot-edit again but keep the STOCK ramdisk_size (zeroing maybe the
+  blocker), or stage the shim inside `second`/"recovery_dtbo"...
+- Still nothing on any of E/B AND C fails to boot MIUI => our packer/
+  header is still wrong; record what C does (bootloop? reject?).
+- A red block appears then reset: report WHICH blocks (red only? red+
+  green?) and the diag text if seen - that pinpoints the crash stage precisely.
+
+## Agent handoff / active work (2026-10-20 LATEST-1: phone bootloop root-caused)
 
 ### Phone bootloop root cause: the watchdog "fix" petted the WRONG register (commit 573d0a1)
 

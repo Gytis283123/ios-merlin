@@ -584,8 +584,10 @@ void shim_main(uint64_t dtb)
 	 * No payload, no PSCI calls: read the live FDT facts LK patched in
 	 * and hold the screen. */
 	stage = "diag";
-	con_clear(RED);
-	con_str("SHIM", "merlin boot3: diag + wdt disarm");
+	/* No full-screen clear here: the start.S red/green proof blocks
+	 * stay visible on the LK splash while text draws over the logo -
+	 * how far boot got is then observable even if the console dies. */
+	con_str("SHIM", "merlin boot4: diag + wdt disarm");
 	con_hex2("EL", "cur=", (uint32_t)(rsr("currentel") >> 2), "sctlr=",
 		 (uint32_t)rsr("sctlr_el1"));
 	con_hex2("FREQ", "cntfrq=", (uint32_t)rsr("cntfrq_el0"), "mpidr=",

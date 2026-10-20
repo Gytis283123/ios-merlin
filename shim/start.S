@@ -21,6 +21,31 @@ _head:
 _start:
 	msr	daifset, #0xf
 	mov	x19, x0			/* DTB pointer from ABL */
+#ifdef MERLIN
+	/* merlin early life, BEFORE anything else touches the world.
+	 * 1) pet the toprgu AP watchdog LK handed us armed (RESTART
+	 *    register, key 0x1971): without a pet the 16s window runs out
+	 *    and the box resets - exactly the bootloop signature with NO
+	 *    red pixels ever seen.
+	 * 2) paint a 96x48 RED block at the top-left of the LK splash:
+	 *    the first MMIO the shim does.  It proves (a) we were
+	 *    entered at all, (b) the splash fb base works.  If this
+	 *    store fails exact-abort, we die here and NOTHING paints;
+	 *    the pet gives +16s for the pilot to read a screenshot. */
+	ldr	x20, =0x10007000
+	movz	w21, #0x1971
+	str	w21, [x20, #0x8]
+	ldr	x20, =0x7e605000
+	movz	w22, #0xffff, lsl #16	/* RED (a8r8g8b8) */
+	mov	w23, #48
+1:	mov	w24, #96
+2:	str	w22, [x20], #4
+	subs	w24, w24, #1
+	b.ne	2b
+	add	x20, x20, #(4320 - 96 * 4)	/* next row after 96 cols */
+	subs	w23, w23, #1
+	b.ne	1b
+#endif
 	msr	spsel, #1
 	adr	x1, _stack_top
 	mov	sp, x1
@@ -35,6 +60,20 @@ _start:
 	str	xzr, [x1], #8
 	b	1b
 2:	mov	x0, x19
+#ifdef MERLIN
+	/* GREEN proof block (rows 48..96) on the splash: survived bss zero
+	 * + vectors setup; shim_main is next. */
+	ldr	x20, =(0x7e605000 + 48 * 4320)
+	movz	w22, #0xff00, lsl #16	/* GREEN */
+	mov	w23, #48
+3:	mov	w24, #96
+4:	str	w22, [x20], #4
+	subs	w24, w24, #1
+	b.ne	4b
+	add	x20, x20, #(4320 - 96 * 4)
+	subs	w23, w23, #1
+	b.ne	3b
+#endif
 	bl	shim_main
 3:	wfe
 	b	3b
