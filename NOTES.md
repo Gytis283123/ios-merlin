@@ -1,5 +1,82 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-21 LATEST-8: ROOTFS CONVERTED TO RAW APFS IMAGE - verified)
+
+- User's Firefox download landed at
+  `D:\things\Merlin\iPhone10,3,iPhone10,6_16.7.16_20H392_Restore.ipsw`
+  (5.747 GB).  Extracted `087-86698-044.dmg` (4.731 GB) via
+  `tools/mkrootfs.py` into `research/ipsw-x/` (patched to tolerate the
+  UTF-16 BuildManifest).
+- The dmg is a NEW-format UDIF: `ipsw disk dmg` DOES NOT parse it
+  ("chunk output length 73400320 out of range" - its heuristic rejects
+  the pattern).  7-Zip 25.01 parses it fine (~/7zz/7zz on WSL, static
+  build already in research/), and parsing the blkx plist MYSELF gave
+  the full map.  Wall of the layout (keep for other dmgs):
+  - koly trailer at EOF-512; the blkx plist lives right AFTER the data
+    fork (`dataForkLen` bytes from 0); find it by scanning the tail for
+    `<plist ... </plist>` (223 KB here).  koly XMLOffset field is NOT a
+    usable byte offset in this variant (mine read 1), so search, don't
+    decode fields.
+  - Each blkx entry (`resource-fork`->`blkx` list, plistlib returns
+    base64-decoded Data as bytes directly) is a mish: SectorNumber
+    (LE? no - BIG-endian) @0x8 (partition start LBA), SectorCount
+    @0x10, chunk count @0xc8, chunk entries @0xcc, 40 bytes each BIG-
+    endian: type(4) comment(4) sect_no(8) sect_cnt(8) comp_off(8)
+    comp_len(8).  The 32-byte-entry / @0x200-start guess is WRONG and
+    silently produces garbage histograms.
+  - Layout of THIS dmg: MBR @0, GPT hdr @1, GPT table @2, one
+    Apple_APFS partition @LBA 34 (NOT 2048 - it starts right after the
+    GPT), 11,005,952 sectors = 5.635 GB, backup GPT at the end.  Disk
+    total = 11,006,019 sectors = 5,635,081,728 bytes.
+  - Apple_APFS chunks: 3,633 real (3,261 lzfse type 0x80000007, 369
+    zero type 1, 3 `uue` type 2 with coff=clen=0 -> sparse/zeros, 1
+    terminator type 0xffffffff).  First lzfse chunk starts at file
+    offset 0x172 - offsets are byte offsets, NOT sector multiples.
+- Conversion: `tools/mkrootfsimg.py` (python, run under WSL because it
+  ctypes-loads lzfse): lzfse lib built at ~/liblzfse.so from
+  github.com/lzfse/lzfse (gcc -O2 -fPIC -shared of the decode sources:
+  lzfse_decode.c lzfse_decode_base.c lzfse_fse.c lzvn_decode_base.c
+  -> ~37 KB .so; bind lzfse_decode_buffer, scratch=NULL ok).  Writes
+  sparse raw image directly to /mnt/d/...; each lzfse chunk decoded to
+  EXACTLY its sect_cnt*512 (all 3,261 clean).
+- RESULT: `research/ipsw-x/rootfs.img`, 5,635,081,728 bytes
+  sha256 ECFB14570D7A96AC0FE16AAAC11D701091A0582BD5396B6329370521E5F80CFF
+  (dmg sha256
+  80F426D5B8FCA8552F95BE427434F1911DBB4C2C6D28AAD94F2426DDD0C92483).
+  GPT + APFS image; Apple_APFS at byte 0x1100 (LBA 34).
+- VERIFICATION (three independent ways; the mish's own recorded CRC
+  0xDEE926A4 does NOT match either decoded-content CRC (0x9324df65)
+  or packed-source CRC (0xb6a6fa8b) - its semantics options are
+  probably the no-source uue regions or a compute variant; unresolved
+  and not blocking):
+  1. APFS fletcher64 (sums mod 2^32-1, words LE u32, cover [8:block);
+     stored as two u32 LE) - the s2 half matches EXACTLY on 7
+     independent NXSB checkpoint blocks.  s1 half disagrees (not
+     chased; likely a final-reduction variant).  tools/apfsfletcher.py.
+  2. 7zz OPENS OUR rootfs.img natively (Type = GPT -> APFS) and lists
+     the whole fs: 181,683 files / 136,387 folders / 8.29 GB logical.
+  3. Extracted files through 7zz from OUR image are valid: Weather.app
+     Info.plist is a well-formed bplist00; SystemVersion.plist in our
+     image reads ProductVersion 16.7.16, Build 20H392, SystemImageID
+     0184D69E-C5E7-4A69-B716-C4E166CD8A97.  Genuine rootfs confirmed.
+- Practical consequence: 7zz (WSL) can now browse/extract ANY file from
+  the rootfs for the port (dyld caches, kexts, binaries).
+- Tools added in tools/: mkrootfsimg.py (the converter),
+  apfsfletcher.py, blkxdump.py (mish/chunk inspector), packedcrc.py.
+  Scratch attempts deleted: dmginfo.py, kolydump.py, xmlfind.py,
+  uuedump.py, apfshead.py, rootfscrc.py.
+
+NEXT options (user to pick):
+1. Bigfacts capture re-boot (0007b-big) -> fill mkadt.py --phone
+   constants, then wire loader_boot into shim_main -> PHONE BOOT of our
+   xnu with the real APFS knowledge.
+2. Pull artifacts from rootfs.img for the payload prep (e.g. check dyld
+   cache versioning + kext layout the sweet kernel expects under
+   xnu-8796).
+3. Disk-space check: ipsw (5.747 GB) + dmg (4.731 GB) + rootfs.img
+   (5.635 GB) all on D:.  dmg/ipsw can be re-derived; ask before
+   deleting anything.
+
 ## Agent handoff / active work (2026-10-20 LATEST-7: ROOTFS VERIFIED REMOTELY - waiting on user's Firefox download)
 
 - tools/zipremote.py: lists/fetches members of a REMOTE zip via HTTP

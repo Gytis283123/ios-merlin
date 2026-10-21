@@ -52,7 +52,16 @@ def main():
         except KeyError:
             pass
     for n, b in bys.items():
-        p = plistlib.loads(b)
+        if b[:2] == b'\xff\xfe':		# Apple quirk: UTF-16 content
+            b = b.decode('utf-16').encode('utf-8')
+        e = b.find(b'</plist>')
+        if e != -1:
+            b = b[:e + 8]
+        try:
+            p = plistlib.loads(b)
+        except Exception as ex:
+            print(f'{n}: not parsed ({ex})')
+            continue
         prod = p.get('ProductType') or p.get('DeviceClass')
         print(f'\n{n}: build {p.get("ProductBuildVersion")} '
               f'{prod} buildId={p.get("ProductVersion")}')
