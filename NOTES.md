@@ -1,5 +1,286 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-23 LATEST-16: PHONE XNU PANIC ROOT-CAUSED - WRONG GICR BASE IN ADT)
+
+- **Symptom**: on the phone the Apple XNU panics instead of continuing past
+  interrupt init.  Root cause found in the ADT, not in the loader/payload:
+  `mkadt.py --phone` declared the GIC redistributor at **0x0c400000**, taken
+  from the `gic_cpu@0c400000` node of mt6768.dts.  That node is vendor
+  leftover - no driver in the stock tree references `mediatek,gic_cpu`
+  (checked drivers/irqchip); the node Linux actually runs on is
+  `interrupt-controller` with `reg = <0x0c000000 0x40000>,
+  <0x0c040000 0x200000>, <0x0c53a650 0x50>` and the gic-v3 driver maps
+  reg[1] as the redistributor.  Every MTK GICv3 DTS in the tree
+  (mt6768/6781/6785/6833/6853/6873/6877/6885/6893) uses 0x0c040000.
+- XNU must therefore map the GICR at **0x0c040000** (SOC-relative in the
+  ADT: 0x0b040000).  With 0x0c400000 it maps an address that is not a
+  redistributor; the first TYPER read faults/returns garbage and
+  `_pe_init_fiq` panics.
+- Proof from QEMU (phone ADT, real GIC): the phone payload runs the shim
+  to `xnu entry` and dies at exactly one instruction -
+  `_pe_init_fiq` (0xfffffe0007a78de0) `ldr x13,[gicr_va+8]`, the GICR
+  TYPER scan (0x20000 stride).  Note: ml_io_map hands out IO VAs
+  independent of the phys argument, so the faulting VA looks identical
+  before/after the fix and QEMU cannot distinguish the two GICR phys
+  (both unmapped on virt); the ADT the kernel receives was dumped from
+  0x824d0000 and shows the corrected reg, so the fix does reach XNU.
+- Fixes applied:
+  - `tools/mkadt.py`: GICR 0x0c400000 -> 0x0c040000 (+ comment/header
+    correction).  Do NOT regenerate `merlin-phone.adt` from scratch yet
+    (d22ap.adt still missing -> no /product).
+  - `xnu/out-0001/merlin-phone.adt` patched in place (one u64, keeps the
+    9,828-byte ADT with /product).
+  - `xnu/out-0001/merlin-phone-payload.bin` rebuilt
+    (kernel.development.sweet.merlinfb, same cmdline); byte-identical to
+    the old payload except offset 0xfdb2f2 (0x40 -> 0x04).
+- **New image: `research/merlin-boot/shim-boot-merlin-0018-gic.img`**
+  (17,004,544 B).  Same as 0017 (loader/reloc 0017, shim/out/Image
+  159,744, kernel blob 190,674, stock dtb) and differs from it by exactly
+  one byte at image offset 0x100aaf2 (0x40 -> 0x04).  This is the image
+  to flash for the next phone attempt; 0017 keeps the wrong GICR.
+- Phone result still unconfirmed: the user's panic photo/text has not
+  been seen.  If 0018 still panics, photograph the Apple panic text
+  (panic string + PC) - if it is past `_pe_init_fiq`, the next suspects
+  are the MTK GICR frame stride (0x40000 vs the 0x20000 the scan
+  assumes), GICD security/DS, and PPI 27 timer wiring.
+
+## Agent handoff / active work (2026-10-21 LATEST-15: PHONE PAYLOAD VALIDATED ON QEMU + GUI)
+
+- **QEMU GUI preview works.** `shim/ramfb.c` publishes the shim framebuffer
+  to QEMU's `ramfb` device via fw_cfg (`etc/ramfb`, 28-byte big-endian
+  XR24 struct, written through the DMA interface - the byte port would
+  arrive as 28 one-byte callbacks and ramfb ignores those).  `tools/
+  qemu-shim.py --gui` = `-device ramfb -display gtk,zoom-to-fit=on`, so
+  the window shows the real guest framebuffer live.  The harness also
+  saves QEMU's own `screendump` as `screen.ppm` (proof of what the window
+  shows).  `ramfb_init()` is called only in the `SHIM_QEMU` path.
+- **Phone-plane shim:** `FB=0x7e605000 FB_H=2340 OUT=out-qemu-phone bash
+  shim/build-qemu.sh` builds the same shim on the phone's LK splash
+  plane/geometry (`shim/out-qemu-phone/Image`, 159,744 B).  `console.h`
+  now takes `SHIM_FB_BASE/W/H` overrides, so boot_args Video == the phone
+  ADT's sweet-fbcon node (0x7E605000, 1080x2340).
+- **Hybrid ADT for QEMU:** `mkadt.py OUT --phone --qemu-gic` keeps the
+  phone RAM band + panel but uses QEMU's GIC/timebase/CPU tree (the phone
+  GIC 0x0C400000 is unmapped on virt).  Payload:
+  `xnu/out-0001/merlin-phone-qemu-payload.bin` (16,621,872 B, phys
+  0x80000000, mem 0x4D000000, entry_pa 0x8148B488, ADT 4,336 B).
+  With `shim/out-qemu-phone/Image` it boots **the exact phone memory
+  band/panel** to userspace: `*** MERLIN userspace: init running as PID
+  1 ***`, 72 fb lines (the console is at 0x7E605000, not 0x9C000000 -
+  dump with `--fb 0x7e605000 --fb-geom 1080x2340`).  Loader: SRCWORD
+  14000719, WORD0/1 14000719 D503201F, WRTEST ok, MEMOK 0x000FFFFF.
+- So the phone payload itself is sound.  The only unvalidated parts of
+  the 0015/0016 image are (a) the real MT6768 GIC and (b) whether
+  0x80000000 accepts writes/retains them on the phone.  The QEMU MEMOK
+  pass is *not* hardware evidence: QEMU RAM is uniform.
+- **New loader hold (0016):** before the jump, if the destination entry
+  word != the source entry word (i.e. the copy never reached DRAM - the
+  0xB0000000 failure), the loader does NOT jump.  It paints a big-font
+  blue page `HOLD=destination not writable` + PHYS/ENTRY/WANT/GOT/MEMOK
+  and WFI's, so one photo names the bad base and the writable map.
+  `research/merlin-boot/shim-boot-merlin-0016-hold.img` (17,002,496 B,
+  page 2048, kernel 0x40080000, ramdisk 0x47c80000, dtb 0x4bc80000) is
+  packed and verified: same payload (SWEETXNU, phys 0x80000000, msz
+  0x4D000000, entry 0x8148B488), kernel blob 189,858 B.
+- **Base probing + relocation (0017):** `choose_base()` probes the
+  declared base plus 0x90000000/0xA0000000/0x80000000/0xB0000000 at four
+  points (base, entry, kernel middle, ADT landing) with write/read/
+  restore.  The first that holds is used: segments are copied there, the
+  copied ADT's /chosen/dram-base is rewritten (two 4-byte stores - the
+  value is only 4-byte aligned) and boot_args.physBase follows.  Tested
+  in QEMU with `-DSHIM_RELOC_TEST=0x90000000` (payload still declares
+  0x80000000): boots from 0x90000000 to userspace, and the ADT dumped
+  from 0x924D0000 reads `dram-base = 0x90000000`.  Normal runs (declared
+  base good) are unchanged.  **Flash `shim-boot-merlin-0017-reloc.img`**
+  (17,004,544 B, same payload/ADT 9,880 B with /product); 0016 has only
+  the hold screen.
+- **Do not regenerate `merlin-phone.adt` right now:** `research/ipsw-x/
+  d22ap.adt` is missing on this box, so mkadt now emits a 4,284-byte ADT
+  without `/product`; the existing `merlin-phone-payload.bin` embeds the
+  9,880-byte ADT *with* `/product` (kept from the earlier build).  Pack
+  new images from that payload, or restore d22ap.adt first.
+- Phone testing is still paused by the user; 0016 is built, not flashed.
+
+## Agent handoff / active work (2026-10-21 LATEST-14: QEMU RIG + XNU IS NOT BASE-LOCKED)
+
+- New test rig: `tools/qemu-shim.py` boots the *real* shim
+  (`shim/build-qemu.sh` -> `shim/out-qemu/Image`, `-DSHIM_QEMU`) on
+  QEMU virt, 4G RAM, with a generated FDT; dumps `fb.png`/`fb.txt`/
+  `bb.txt`/`regs.txt`/`qemu.log`.  Full chain proven: shim -> XNU ->
+  userspace (`*** MERLIN userspace: init running as PID 1 ***`).
+- `--fb ADDR --fb-geom WxH` dumps the *kernel's* framebuffer (the
+  phone payload writes 0x7E605000, not the QEMU shim's 0x9C000000).
+- **XNU is not tied to physBase 0xB0000000.**  0xB8/0x80/0x4D all
+  looked base-locked only because memSize was 0x10000000.  The real
+  rule: arm_vm_init sizes the bootstrap tables from
+  `physmap_base + memSize` (physmap_base = phystokv(topOfKernelData)),
+  so the 0xFFFFFE000B700000 IO/FB window is covered only when
+  `physBase + memSize >= ~0xC40E4000`.  Failure is
+  `_pmap_map_bd.cold.1` (line 1885) with x19=0xFFFFFE000C000000.
+  - 0xB0000000 + 0x10000000 (top 0xC0000000): panic.
+  - 0x80000000 + 0x1C000000 (top 0x9C000000): panic.
+  - 0xA0000000 + 0x30000000 (top 0xD0000000): boots into IOKit.
+  - 0xA0000000 + 0x4D000000 (top 0xED000000): **userspace**.
+- Phone payload moved: `mkadt.py --phone` now defaults to
+  phys 0x80000000 / mem 0x4D000000 (top 0xCD000000, clear of the LK
+  splash FB which ends ~0x7FDED000).  Rebuilt payload 16,627,424 B,
+  entry_pa 0x8148B488; through the QEMU shim it boots XNU to
+  `pe_arm_init_interrupts` and stops at the expected phone-GIC data
+  abort (0x0C400000 is not mapped in QEMU) - same stopping point as
+  the old 0xB0000000 payload.
+- Boot image `research/merlin-boot/shim-boot-merlin-0015-8000.img`
+  (17,002,496 B) ready for the next phone attempt: page 2048, kernel
+  0x40080000, ramdisk 0x47c80000, dtb 0x4bc80000, kernel blob =
+  gzip(phone shim Image 159,744) + blob-fdt.bin.
+- loader.c diagnostics (WORD0/1, WRTEST, MEMOK/MEMB0/MEMTOP) are
+  uncommitted; MEMOK bit 1 = 0x80000000, bit 3 = 0xA0000000.
+- `fb.txt` glyph decoding is still broken (all `?`); read `fb.png`.
+
+## Agent handoff / active work (2026-10-21 LATEST-13: SOURCE/COPY/DESTINATION TRIPLE CHECK)
+
+- 0012 result (photo 2026-10-21-19-47-30-121.jpg): SCTLR_EL2 reads
+  0x0000000030C50830 -> MMU, D-cache and I-cache are OFF when we run, so
+  our writes are uncached and go straight to DRAM.  WORD0 and WORD1 are
+  identical garbage (w0=BFD1DD7F w1=DFDA7E5F), i.e. cleaning the
+  destination changed nothing: the bytes at 0xB148B488 were simply never
+  the kernel entry.  SCTLR_EL1=8 (M=0), TTBR0_EL1=0, TCR_EL1=0 at EL1.
+- Since write and readback use the same PA arithmetic, the copy is either
+  reading a stale ramdisk (LK wrote it with caches on, then turned them
+  off without cleaning what was still dirty) or the copy loop lands
+  somewhere else.  0013 (`shim-boot-merlin-0013-src.img`) checks all
+  three: ESRC (entry file offset + PA), SRCWORD s0/s1 (source word before
+  and after `dc civac` over the payload), EDST (destination the copy loop
+  actually used for the entry segment), WORD0/WORD1 (destination before
+  and after cleaning) and WRTEST (write 0xdeadbeef to entry_pa and read
+  it back).  The source is cleaned before the copy now.
+
+- 0011 result (user photo 2026-10-21-19-19-18-776.jpg, read after rotation):
+  - **The black box works**: `BBOX n=00000012 stage=00000009` - i.e. two
+    boots x nine markers - and the text `xnu entry`, so the previous boot
+    reached the call.  The page at 0xBFFFF000 survives the watchdog reset.
+  - `POSTEL el=00000001` - the EL2->EL1 drop is good.
+  - `MEMBASE 40000000`, `MEMSIZE C0000000` (3 GB bank at 4 GB base confirmed).
+  - `HCR_EL2 80000002`, `CPTR_EL2 33FF`, `SCTLR_EL1 30800000` (MMU/D/I off).
+  - Then our vector caught a **SYNC at EL1, slot 4**: `ESR=02000000`
+    (EC=0 = undefined instruction), `ELR=00000000B148B488` = entry_pa,
+    `FAR=0`.  So the CPU fetched something other than the expected
+    `b _start_first_cpu` (kernel file offset 0x487488 = `19070014`, and
+    the payload copy is byte-identical - verified with check-entry.py).
+- 0012 (`shim-boot-merlin-0012-word.img`, flashed): prints, at EL1:
+  SCTLR_EL1/TTBR0_EL1/TCR_EL1, then `WORD0` = the 8 bytes at entry_pa read
+  through the EL1 regime, then `dc civac`-cleans [phys_base, bootargs top)
+  and re-reads as `WORD1`.  Cases: WORD0 already 14000719 => DRAM fine;
+  WORD0 bad + WORD1 good => LK left the caches on at EL2 and our copy
+  never reached DRAM (clean fixes it); both bad => copy/source/PA wrong.
+- Photo reading gotcha: the panel shows the same console lines twice,
+  horizontally offset (labels in one copy, value tails in the other), and
+  the user's camera crops each copy differently - combine both columns to
+  reconstruct a 16-digit value.
+
+## Agent handoff / active work (2026-10-21 LATEST-11: EL2 WAS THE WALL - DROP TO EL1 + BLACK BOX)
+
+- 0009 diagnosis from the user's photo (917x917, first clear capture):
+  the shim diag ran completely - and the line reads **EL cur=00000002**,
+  i.e. LK hands the kernel control at **EL2**.  The diag also filled all
+  73 panel rows, so the loader's own INITRD/PHYS/... lines were clipped
+  off the bottom of the screen on 0009 (the "no red screen => jumped"
+  reading was wrong; nothing about the jump was visible).
+- Why EL2 is fatal: the xnu entry `__start` -> `_start_first_cpu` begins
+  with `msr OSLAR_EL1, xzr` and programs SCTLR_EL1/TTBR1_EL1 - at EL2 the
+  MMU that governs execution is SCTLR_EL2, and start.s has no EL2 drop.
+  It dies at instruction #1, which is also why the stage-0 white band
+  (drawn at 0x7ef87380 = row 2308, first thing in _start_first_cpu) never
+  appeared.  LK gets away with it for Linux because head.S drops EL2->EL1
+  itself.
+- 0010 (`shim-boot-merlin-0010-el1.img`): loader.c `drop_to_el1()`
+  (HCR_EL2.RW=1, CPTR_EL2=0x33ff, CNTHCTL_EL2=3, SP_EL1=sp, SPSR=0x3c5,
+  eret) before the call; shim_main clears to black before loader_boot and
+  reprints MEMBASE/MEMSIZE so the loader status is at the top of the panel.
+  Flashed - the phone now reaches the loader page and reboots after ~23 s
+  (the MTK watchdog: after the jump nobody pets it any more).
+- 0011 (`shim-boot-merlin-0011-bb.img`): instrumentation for the next
+  photo - a DRAM black box at 0xBFFFF000 (magic "BLOG!", stage + text)
+  that survives the watchdog reset and is printed as `BBOX` at the top of
+  the next boot; `POSTEL el=` after the drop (proof we really reached
+  EL1); HCR_EL2/CPTR_EL2 readout before the drop.  Stage ids: 1 shim
+  start, 2 diag done, 3 loader entry, 4 payload ok, 5 segments copied,
+  6 bootargs ready, 7 dropping, 8 at EL1, 9 xnu entry.
+- Live values captured on the 0009 diag: INITLO=47c80000,
+  INITHI=4bc5b6e0, ATAGFB=7e605000, CNTFRQ=00c65d40, SCTLR_EL1=30800000,
+  FDT magic=d00dfeed, CPU regs 0,100,200,300,400,600,700; MEMBASE/MEMSIZE
+  were cut in the photo - likely 0x40000000/0xC0000000 (4GB MTK layout),
+  0011 reprints them cleanly.
+- Next: photograph the 0011 loader page (top BBOX lines + POSTEL line),
+  then read the second-boot BBOX stage to see whether xnu actually got
+  entered at EL1.
+
+## Agent handoff / active work (2026-10-21 LATEST-10: KERNEL EARLY CONSOLE RETARGETED - 0009 flashed)
+
+- 0008 result on the phone: NO red screen (loader accepted the payload and
+  jumped) but the screen stayed on our shim page (yellow labels) -> xnu
+  stopped before serial_init/fbcon, i.e. somewhere in early init.  With the
+  sweet constants the early console wrote to DRAM (0x9c000000), invisible.
+- 0009 fixes both issues:
+  - shim: big 8x facts page removed; con_clear(0) + diag_small at the
+    default scale-2 font, then loader_boot (0007b-big keeps the facts page).
+  - kernel: `tools/patch-earlyfb.py` retargets the early console to the
+    merlin splash.  5 verified patches in kernel.development.sweet ->
+    kernel.development.sweet.merlinfb:
+      * arm_vm_init (inlined sweet_early_map_final) TTE block PA
+        0x9c000000 -> 0x7e000000 (movk x8 #0x9c00->#0x7e00 @7483c9c)
+      * start.s FB block map same change (@748d340)
+      * start.s stage-0 white band 0x9c9c1800 -> 0x7ef87380
+        (FB + 2308*4320, the last 32 panel rows) (@748d104/108)
+      * __DATA early_fb pointer 0x9c000000 -> 0x7e605000 (file 0xb5d6d8)
+    Why the block-map patch is safe: the bootstrap table at x25+2*PGBYTES
+    is a flat 2048-entry L2 array indexed by VA bits 25..; 0x9c000000 hits
+    slot 78, 0x7e000000 hits 63 - both in range, still V=P.
+  - payload rebuilt from kernel.development.sweet.merlinfb + merlin-phone.adt
+    + merlin-init (same cmdline); image `shim-boot-merlin-0009-merlinfb.img`
+    17,000,448 B, gzip round-trip byte-identical, SWEETXNU at 0x2e800.
+- Flashed (fastboot flash boot 16,602 KB) + rebooted.
+  EXPECT: black screen + small diag -> LOADER lines -> a white 64x32 band
+  at the BOTTOM-LEFT = start.s entered -> "SWEET EARLY n: ..." text
+  (stages 1..20; the stage colour bars are still drawn at rows 2368+
+  so they stay off-screen, text is the signal).  Then either kprintf /
+  fbcon output or a frozen SWEET EARLY line naming the last stage.
+
+## Agent handoff / active work (2026-10-21 LATEST-9: FIRST XNU PAYLOAD DEPLOYED - phone boot in progress)
+
+- User chose to skip the bigfacts capture ("JUST DO 2"): payload handoff
+  wired and flashed with the provisional phone constants.  Values in
+  0007b-big remain outstanding but no longer block the payload track.
+- shim/shim.c MERLIN shim_main now does: small diag -> big facts page
+  -> small diag -> `loader_boot(dtb)` -> on refusal `con_clear(RED)` +
+  reason + hold.  On success the kernel fbcon clears the screen.
+- Rebuilt from current sources (no stale artifacts): `mkadt.py
+  xnu/out-0001/merlin-phone.adt --phone` (dram 0xb0000000/0x10000000,
+  sweet-fbcon 0x7e605000 1080x2340 stride 4320) and `mkpayload.py ...
+  --ramdisk xnu/out-0001/merlin-init --cmdline 'debug=0xc serial=3
+  cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=md0'`
+  -> merlin-phone-payload.bin 16,627,424 B (10 kernel segs + init
+  ramdisk @0xb24c8000).
+- Boot image `research/merlin-boot/shim-boot-merlin-0008-payload.img`
+  (17,002,496 B): gzip(shim out/Image 155,648) 7,659 + raw FDT 181,203
+  (stock shape, zlib round-trip verified byte-identical), ramdisk =
+  the payload at image off 0x2F000 (SWEETXNU magic verified), dtb =
+  stock-dtb.bin, page 2048, stock addrs (kernel 0x40080000, ramdisk
+  0x47c80000, tags/dtb 0x4bc80000), osv 0x16000157 (11.0.0/2021-07).
+- Kernel binary NOT patched for this attempt.  Analysis: sweet_early's
+  0x9c000000 writes (stage-0 marker + marks, 2400-row geometry) land in
+  plain DRAM on merlin with MMU off and under the start.s V=P block
+  map later, so they scribble memory but cannot fault; the real output
+  starts at serial_init when fbcon maps the ADT node (0x7e605000), and
+  patch 0012 prints stages 17-20 there.  If the screen freezes before
+  that, the next step is the in-place patch of 0x9c000000/2400 and the
+  start.s block-mapping constant in kernel.development.sweet.
+- Flashed to boot (`fastboot flash boot`, 16,604 KB) and rebooted.
+  EXPECTED screen: red/green proof blocks -> shim diag -> facts page ->
+  diag -> LOADER INITRD/PHYS/JUMP lines -> kernel console (or RED
+  screen + reason if the loader refused).
+- Iriun webcam still reports its "Please start Iriun Webcam"
+  placeholder; captures bigfacts-frame-*/payload-frame-* are useless.
+
 ## Agent handoff / active work (2026-10-21 LATEST-8: ROOTFS CONVERTED TO RAW APFS IMAGE - verified)
 
 - User's Firefox download landed at
@@ -65,6 +346,16 @@
   apfsfletcher.py, blkxdump.py (mish/chunk inspector), packedcrc.py.
   Scratch attempts deleted: dmginfo.py, kolydump.py, xmlfind.py,
   uuedump.py, apfshead.py, rootfscrc.py.
+- 16:2x incident + repair: a stray re-conversion (scratch dmginfo.py
+  redone while reconstructing session state) briefly replaced rootfs.img
+  with a mis-based variant (chunks at partition-relative LBAs; 7zz
+  refused it).  Rebuilt with `python3 tools/mkrootfsimg.py
+  research/ipsw-x/087-86698-044.dmg research/ipsw-x/rootfs.img
+  --check-crc DEE926A4` -> byte-identical recovery: size 5,635,081,728,
+  sha256 ecfb1457...f80cff, 7zz lists 181,683 files / 136,387 folders.
+  Scratch dmginfo.py removed again; mkrootfsimg.py stays canonical.
+  The mish CRC 0xDEE926A4 was already known not to match decoded
+  content; its --check-crc failure is informational only.
 
 NEXT options (user to pick):
 1. Bigfacts capture re-boot (0007b-big) -> fill mkadt.py --phone
