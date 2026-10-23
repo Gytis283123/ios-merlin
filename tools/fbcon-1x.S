@@ -116,8 +116,19 @@ fbcon_newline_1x:
 	adrp	x4, fbcon_rows
 	ldr	w4, [x4, #:lo12:fbcon_rows]
 	cmp	w3, w4
-	csel	w3, wzr, w3, eq
+	b.lo	2f
+	/* bottom row: scroll the text area up by one 16-px row */
+	bl	fbcon_scroll_1x
+	adrp	x2, fbcon_row
+	adrp	x4, fbcon_rows
+	ldr	w4, [x4, #:lo12:fbcon_rows]
+	sub	w3, w4, #1
 	str	w3, [x2, #:lo12:fbcon_row]
+	mov	w0, w3
+	bl	fbcon_clear_row_1x
+	ldp	x29, x30, [sp], #16
+	ret
+2:	str	w3, [x2, #:lo12:fbcon_row]
 	mov	w0, w3
 	bl	fbcon_clear_row_1x
 	adrp	x2, fbcon_row
@@ -129,6 +140,27 @@ fbcon_newline_1x:
 	csel	w0, wzr, w0, eq
 	bl	fbcon_clear_row_1x
 	ldp	x29, x30, [sp], #16
+	ret
+
+/* shift rows [16, rows*16) up by 16 pixel rows (memmove down) */
+fbcon_scroll_1x:
+	adrp	x1, fbcon_base
+	ldr	x1, [x1, #:lo12:fbcon_base]
+	adrp	x2, fbcon_stride
+	ldr	w2, [x2, #:lo12:fbcon_stride]
+	lsl	x3, x2, #4			/* 16 rows in bytes */
+	add	x8, x1, x3			/* src */
+	adrp	x5, fbcon_rows
+	ldr	w5, [x5, #:lo12:fbcon_rows]
+	sub	w5, w5, #1
+	lsl	w5, w5, #4			/* (rows-1)*16 pixel rows */
+	mul	w6, w5, w2			/* bytes to copy */
+	lsr	x6, x6, #4			/* 16-byte chunks */
+	mov	x7, x1				/* dst */
+5:	ldp	x9, x10, [x8], #16
+	stp	x9, x10, [x7], #16
+	subs	x6, x6, #1
+	b.ne	5b
 	ret
 
 	.globl fbcon_clear_row_1x

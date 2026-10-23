@@ -1,5 +1,40 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-23 LATEST-19: PANEL SCANOUT OFFSET FOUND - CONSOLE ALIGNED + SCROLLS)
+
+- The "two column / misaligned log" was a **panel scanout offset**, not a
+  font or stride problem.  A quadrant probe (research/merlin-boot/
+  geomprobe.S, packed as shim-boot-merlin-geomprobe.img) painted
+  TL red / TR green / BL blue / BR yellow plus a white cross: the phone
+  showed red-blue bands at BOTH left and right edges with green-yellow
+  in the middle.  That means each display row starts **270 px (1080 bytes)
+  into the framebuffer row** and reads 1080 px, crossing into the next
+  row: the console's line head wraps to the screen's right, the tail
+  stays left.  Evidence matches the old "same lines twice, horizontally
+  offset" note from the shim days.
+- Probe iterations (all buggy/explanatory, kept for the record):
+  first probe had x/y swapped on 3 blocks; fixed corner probe showed the
+  right-edge blocks missing; the quadrant probe made the offset obvious.
+- Fix: the kernel fbcon's framebuffer base (ADT `sweet-fbcon` `reg[0]`)
+  is shifted by +1080 bytes (0x7e605000 -> **0x7e605438**).  Console rows
+  then start exactly at the scanout window.  reg size 0x9a3f80 is kept;
+  writes stay inside vram.
+- The console also **scrolls now** instead of ring-wrapping: the fbcon
+  1x replacement's newline, when at the last row, memmoves the text area
+  up by one 16-px row (16 MB/s-ish only when sitting at the bottom) and
+  clears the last row, so new logs keep appearing at the bottom.
+  QEMU 110 s run: log scrolled, newest `MERLIN init: still alive` lines
+  at the bottom.
+- **`research/merlin-boot/shim-boot-merlin-0022-scroll.img`**
+  (17,004,544 B, sha256 c879d786...f39e, flashed 2026-10-23) =
+  0019 + fbcon scrolling + ADT base shift.  0021 is the same base shift
+  without scrolling.  The probe image is temporary.
+- Remaining: the *shim/loader* pages still write at 0x7e605000, so they
+  are still offset on the panel; rebuild the shim with FB_BASE
+  0x7e605438 (and keep the boot_args Video block consistent) to align
+  them too.  mkadt.py should also emit the shifted base for `--phone`
+  once the hardware result is confirmed.
+
 ## Agent handoff / active work (2026-10-23 LATEST-18: PHONE BOOTS XNU TO USERSPACE - PANIC GONE)
 
 - **0019 result on hardware (photo 2026-10-23-17-21-45-036.jpg, rotated
