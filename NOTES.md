@@ -7,7 +7,7 @@
   `rd=ufsroot0`; APFS is not needed (the kernel has HFS/bindfs/nullfs,
   no APFS kext), and the IPSW build (20H392 / 16.7.16) is the same one
   sweet ran.  Merlin's gap is storage: eMMC, not UFS.
-- New **`xnu/patches/0080-merlin-msdc-root.patch`** (copied to
+- New **`xnu/patches/0082-merlin-msdc-root.patch`** (copied to
   ios-sweet/xnu/patches, needs a CI build):
   - `bsd/dev/merlin_msdc.c`: read-only block device for the ABL/MSDC0
     controller.  Polled CMD17 (512-byte, R1) reads from the user area,
@@ -30,8 +30,11 @@
   `msdc@11230000`, IRQ SPI 100), `/merlin-msdc` node emitted for the real
   phone, and the phone `sweet-fbcon` base now includes the +1080-byte
   (270 px) scanout offset (LATEST-19).  `--qemu-gic`/`--qemu` unchanged.
-- Patch sanity: applies against the post-0028 context in a synthetic
-  repo test; the CI build is the compile check.
+- Patch numbering: the upstream main already has 0080 (net trace) and
+  0081 (USB link), so this is **0082**.  Pushed to the fork
+  Gytis283123/ios-sweet main (the dipa-studio repo rejects this account);
+  CI run 39981655627 builds it.  Applies against the post-0028 context
+  (synthetic repo test); the CI build is the compile check.
 - NEXT: push 0080 to ios-sweet so CI builds the kernel (no macOS here;
   user approval needed), then build the HFS+ root image from the IPSW
   dmgs (`tools/mkiosroot.sh`), flash it to userdata (22.8 GiB partition;
