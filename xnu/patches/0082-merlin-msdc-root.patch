@@ -126,10 +126,10 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +#define MSDC_DMA_CFG_STS     (1u << 0)
 +
 +#define MSDC_SECTOR          512u
-+#define BOUNCE_SIZE     (64u << 10)
-+#define CMD_TIMEOUT_NS  (2ull * NSEC_PER_SEC)
-+#define DATA_TIMEOUT_NS (5ull * NSEC_PER_SEC)
-+#define DMA_STOP_NS     (2ull * NSEC_PER_SEC)
++#define MSDC_BOUNCE_SIZE     (64u << 10)
++#define MSDC_CMD_TIMEOUT_NS  (2ull * NSEC_PER_SEC)
++#define MSDC_DATA_TIMEOUT_NS (5ull * NSEC_PER_SEC)
++#define MSDC_DMA_STOP_NS     (2ull * NSEC_PER_SEC)
 +
 +#define MSDC_R1_OUT_OF_RANGE (1u << 31)
 +
@@ -162,7 +162,7 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +}
 +
 +static void
-+dma_sync(uint32_t len)
++msdc_dma_sync(uint32_t len)
 +{
 +	flush_dcache64((addr64_t)mo.dma_pa, len, TRUE);
 +}
@@ -231,7 +231,7 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +		    msdc_rd(MSDC_CFG));
 +		return ENXIO;
 +	}
-+	int error = msdc_wait_idle(CMD_TIMEOUT_NS);
++	int error = msdc_wait_idle(MSDC_CMD_TIMEOUT_NS);
 +	if (error) {
 +		printf("MERLIN MSDC: controller busy (sts 0x%08x)\n", msdc_rd(SDC_STS));
 +		return error;
@@ -257,17 +257,17 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +	    MSDC_INT_BDCSERR | MSDC_INT_GPDCSERR | MSDC_INT_AXI_RESP_ERR;
 +	uint32_t raw = 17u | (1u << 7) | (MSDC_SECTOR << 16) | (1u << 11);
 +
-+	error = msdc_wait_idle(CMD_TIMEOUT_NS);
++	error = msdc_wait_idle(MSDC_CMD_TIMEOUT_NS);
 +	if (error) {
 +		return error;
 +	}
 +	msdc_wr(MSDC_INT, 0xffffffffu);
-+	dma_sync(MSDC_SECTOR);
++	msdc_dma_sync(MSDC_SECTOR);
 +
 +	msdc_wr(SDC_ARG, (uint32_t)lba);
 +	msdc_wr(SDC_CMD, raw);
 +
-+	error = msdc_wait_int(cmd_int, CMD_TIMEOUT_NS, &sts);
++	error = msdc_wait_int(cmd_int, MSDC_CMD_TIMEOUT_NS, &sts);
 +	if (error || (sts & (MSDC_INT_CMDTMO | MSDC_INT_RSPCRCERR))) {
 +		msdc_wr(MSDC_INT, sts & cmd_int);
 +		printf("MERLIN MSDC: CMD17(%llu) failed: int 0x%08x\n",
@@ -277,8 +277,8 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +	msdc_wr(MSDC_INT, sts & cmd_int);
 +
 +	uint32_t resp = msdc_rd(SDC_RESP0);
-+	if (resp & R1_ERRORS) {
-+		printf("MERLIN MSDC: CMD17(%llu) card status 0x%08x\n",
++	if (resp & MSDC_R1_OUT_OF_RANGE) {
++		printf("MERLIN MSDC: CMD17(%llu) out of range (status 0x%08x)\n",
 +		    (unsigned long long)lba, resp);
 +		return EIO;
 +	}
@@ -292,7 +292,7 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +	ctrl |= MSDC_DMA_CTRL_LASTBUF | (6u << 12);  /* 64-byte burst, basic mode */
 +	msdc_wr(MSDC_DMA_CTRL, ctrl | MSDC_DMA_CTRL_START);
 +
-+	error = msdc_wait_int(dat_int, DATA_TIMEOUT_NS, &sts);
++	error = msdc_wait_int(dat_int, MSDC_DATA_TIMEOUT_NS, &sts);
 +	if (error || (sts & (MSDC_INT_DATTMO | MSDC_INT_DATCRCERR | MSDC_INT_BDCSERR |
 +	    MSDC_INT_GPDCSERR | MSDC_INT_AXI_RESP_ERR))) {
 +		printf("MERLIN MSDC: CMD17(%llu) data failed: int 0x%08x\n",
@@ -305,14 +305,14 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +
 +	ctrl = msdc_rd(MSDC_DMA_CTRL);
 +	msdc_wr(MSDC_DMA_CTRL, ctrl | MSDC_DMA_CTRL_STOP);
-+	uint64_t dl = deadline_in(DMA_STOP_NS);
++	uint64_t dl = deadline_in(MSDC_DMA_STOP_NS);
 +	while (msdc_rd(MSDC_DMA_CFG) & MSDC_DMA_CFG_STS) {
 +		if (mach_absolute_time() > dl) {
 +			break;
 +		}
 +	}
 +	msdc_wr(MSDC_INT, 0xffffffffu);
-+	dma_sync(MSDC_SECTOR);
++	msdc_dma_sync(MSDC_SECTOR);
 +	return error;
 +}
 +
@@ -479,7 +479,7 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +		*f = 0;
 +		return 0;
 +	case DKIOCGETMAXBLOCKCOUNTREAD:
-+		*o = BOUNCE_SIZE / mo.secsize;
++		*o = MSDC_BOUNCE_SIZE / mo.secsize;
 +		return 0;
 +	case DKIOCGETMAXBLOCKCOUNTWRITE:
 +		*o = 0;
@@ -572,7 +572,7 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +		printf("MERLIN MSDC: cannot map the controller\n");
 +		return ENXIO;
 +	}
-+	if (kmem_alloc_contig(kernel_map, &mo.dma, BOUNCE_SIZE, PAGE_MASK, 0, 0,
++	if (kmem_alloc_contig(kernel_map, &mo.dma, MSDC_BOUNCE_SIZE, PAGE_MASK, 0, 0,
 +	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
 +		printf("MERLIN MSDC: no contiguous DMA memory\n");
 +		return ENOMEM;

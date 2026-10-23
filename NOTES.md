@@ -37,9 +37,12 @@
   Gytis283123/ios-sweet main (the dipa-studio repo rejects this account).
   CI history: run 39981655627 **skipped 0082** (`patch failed:
   bsd/conf/files:104` - dxb source context differs), hence the
-  sweet_ufs.c append.  Run 39983803243 was queue-cancelled after 15 min
-  with no runner; workflow_dispatch run 39986075173 was started.  If the
-  macOS queue keeps failing, the fallback is the dipa-studio account.
+  sweet_ufs.c append.  The first compile of the append (run 39986075173)
+  failed on **name collisions with sweet_ufs.c**: static `dma_sync`,
+  macros `BOUNCE_SIZE`/`CMD_TIMEOUT_NS`, plus a leftover `R1_ERRORS`.
+  Renamed to `msdc_dma_sync`/`MSDC_BOUNCE_SIZE`/`MSDC_*_TIMEOUT_NS` and
+  fixed the R1 check; run 39988046415 rebuilds.  If the macOS queue
+  keeps failing, the fallback is the dipa-studio account.
 - NEXT: push 0080 to ios-sweet so CI builds the kernel (no macOS here;
   user approval needed), then build the HFS+ root image from the IPSW
   dmgs (`tools/mkiosroot.sh`), flash it to userdata (22.8 GiB partition;
