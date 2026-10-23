@@ -61,10 +61,9 @@ PANEL_W, PANEL_H = 1080, 2340        # hx83112b fhdp dsi cmd (merlin.dts)
 # lk splash framebuffer ("atag,videolfb"): sits at the top of the bundled
 # /memory chunk, below the kernel band above.  MTK lk bakes RGB888 there.
 FB, FB_SIZE = 0x7e605000, 0x017e8000
-# Future storage: eMMC 5.1 on MSDC0 (address from mt6768.dts msdc0).  No node
-# is emitted yet: the MSDC driver patch does not exist, and an unmatched node
-# is harmless anyway.
-MSDC0, MSDC0_SIZE = 0x11cb0000, 0x10000
+# eMMC 5.1 on MSDC0 (mt6768.dts msdc@11230000).  Emitted for the real phone;
+# read by the /merlin-msdc block driver (xnu/patches/0080).
+MSDC0, MSDC0_SIZE = 0x11230000, 0x10000
 
 MERLIN_ECID = 0x00004d45524c494e      # 'merlin\0\0' synthetic (not the phone)
 
@@ -124,6 +123,10 @@ def build(qemu=True, phone=False, phys_base=None, mem_size=None):
         # --phone (also with --qemu-gic): the real merlin panel geometry.
         fb, fb_w, fb_h = FB, PANEL_W, PANEL_H
         fb_size = fb_h * (fb_w * 4)
+    if phone and not qemu:
+        # The panel scans each row starting 270 px into the framebuffer row
+        # (quadrant probe, 2026-10-23); console rows start 1080 bytes in.
+        fb += 270 * 4
     seed = os.urandom(64)
     phandle = iter(range(1, 1000))
     ph = lambda: ('AAPL,phandle', u32(next(phandle)))
@@ -253,6 +256,8 @@ def build(qemu=True, phone=False, phys_base=None, mem_size=None):
 
     product_props = d22ap_product()
     product = [node('product', [ph()] + product_props)] if product_props else []
+    msdc = [node('merlin-msdc', [ph(), ('reg', u64(MSDC0, MSDC0_SIZE))])] \
+        if (phone and not qemu) else []
 
     # hw.model/hw.target = D22AP, hw.machine/hw.product = iPhone10,3.
     # 'xiaomi,sweet' stays FIRST of the machine-identities so the SWEET
@@ -268,7 +273,7 @@ def build(qemu=True, phone=False, phys_base=None, mem_size=None):
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product)
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + msdc + product)
 
 
 if __name__ == '__main__':

@@ -1,5 +1,44 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-23 LATEST-20: MERLIN eMMC (MSDC0) ROOT DRIVER PATCHED)
+
+- Goal: iOS 16.7 userland.  The sweet port's recipe (its NOTES) is an
+  **HFS+ root image on userdata** plus a read-only block driver and
+  `rd=ufsroot0`; APFS is not needed (the kernel has HFS/bindfs/nullfs,
+  no APFS kext), and the IPSW build (20H392 / 16.7.16) is the same one
+  sweet ran.  Merlin's gap is storage: eMMC, not UFS.
+- New **`xnu/patches/0080-merlin-msdc-root.patch`** (copied to
+  ios-sweet/xnu/patches, needs a CI build):
+  - `bsd/dev/merlin_msdc.c`: read-only block device for the ABL/MSDC0
+    controller.  Polled CMD17 (512-byte, R1) reads from the user area,
+    basic DMA (64 KiB physically-contiguous bounce, 64-byte burst),
+    GPT scan for `msdcroot=` (default "userdata"), exposes
+    `/dev/msdcroot0` + `/dev/rmsdcroot0`, `rd=msdcroot0` hook in
+    `IOKitBSDInit.cpp`, `bsd/conf/files` entry.
+  - Register map and command/DMA sequence taken from the stock ComboA
+    driver (`drivers/mmc/host/mediatek/ComboA/{msdc_reg.h,sd.c}`):
+    MSDC_CFG 0x00, SDC_CFG 0x30, SDC_CMD 0x34 (opcode/R1/512<<16/
+    dtype 1<<11), SDC_ARG 0x38, SDC_STS 0x3c, SDC_RESP0 0x40,
+    DMA_SA(_HIGH)/LEN/CTRL 0x90/0x8c/0xa8/0x98, INT bits 8..23.
+  - Reuses the bootloader's controller state: no reset, no clock/bus
+    width/tuning changes; if the bootloader gated the clock the driver
+    logs `MERLIN MSDC: cfg ...` and fails cleanly.
+  - Known risks for the first hardware test: eMMC native block size
+    (assumed 512), any inline encryption, and LK leaving the MSDC clock
+    off.  The driver prints cfg/ps/sts before touching anything.
+- `tools/mkadt.py`: MSDC0 corrected to **0x11230000** (mt6768.dts
+  `msdc@11230000`, IRQ SPI 100), `/merlin-msdc` node emitted for the real
+  phone, and the phone `sweet-fbcon` base now includes the +1080-byte
+  (270 px) scanout offset (LATEST-19).  `--qemu-gic`/`--qemu` unchanged.
+- Patch sanity: applies against the post-0028 context in a synthetic
+  repo test; the CI build is the compile check.
+- NEXT: push 0080 to ios-sweet so CI builds the kernel (no macOS here;
+  user approval needed), then build the HFS+ root image from the IPSW
+  dmgs (`tools/mkiosroot.sh`), flash it to userdata (22.8 GiB partition;
+  destructive - ask), and boot `rd=msdcroot0`.  After the new kernel:
+  either re-apply the fbcon 1x/scroll binary patch (symbol addresses
+  move) or set FBCON_SCALE=1 + scrolling in patch 0003 at the source.
+
 ## Agent handoff / active work (2026-10-23 LATEST-19: PANEL SCANOUT OFFSET FOUND - CONSOLE ALIGNED + SCROLLS)
 
 - The "two column / misaligned log" was a **panel scanout offset**, not a
