@@ -1,5 +1,25 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-23 LATEST-21: DRIVER BUILT; MAIN KERNEL HANGS, 0079 BASE REBUILD)
+
+- The 0082 driver compiled in CI (run 39988046415, success; kernel
+  xnu/out-0082, SHA256 79967397...177a) and is present
+  (`_merlin_msdc_rootdev`, `/merlin-msdc` strings).  CI had failed once
+  first on name collisions with sweet_ufs.c (static `dma_sync`, macros
+  `BOUNCE_SIZE`/`CMD_TIMEOUT_NS`, stale `R1_ERRORS`); all renamed
+  (`msdc_dma_sync`, `MSDC_*`).  The driver is appended to
+  `bsd/dev/sweet_ufs.c` because dxb's `bsd/conf/files` context differs.
+- **The latest-main kernel (0080 net-trace + 0081 USB link) hangs at
+  `SWEET CPU: 1/1 CPUs initialized, 3011 verified`** on the phone with
+  `rd=msdcroot0`, before IOKitBSDInit - the driver never runs.  The
+  0079-era kernel booted to userspace, so the regression is in the new
+  upstream patches, not the driver.
+- Rebuild: branch **msdc-0079** = 347e190 (0079) + 0082 only, pushed to
+  the fork; workflow_dispatch run 39991300459 builds it.  The plan is to
+  use this kernel for the driver test, re-resolve the fbcon symbols and
+  re-apply the 1x/scroll patch (tools/fbcon-1x.ld, patch-fbcon1x.py),
+  then build `rd=msdcroot0` and read the driver log.
+
 ## Agent handoff / active work (2026-10-23 LATEST-20: MERLIN eMMC (MSDC0) ROOT DRIVER PATCHED)
 
 - Goal: iOS 16.7 userland.  The sweet port's recipe (its NOTES) is an
