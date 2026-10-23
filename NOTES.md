@@ -1,5 +1,45 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-23 LATEST-24: QEMU GUI LIVE VIEW; 1x CONSOLE FRAGILE ON 0083; PHONE HANG ENVIRONMENTAL)
+
+- **QEMU now has a live, readable GUI**: `tools/qemu-merlin.py --gui`
+  boots the proven direct-loader path with `-display gtk,zoom-to-fit=on
+  -device ramfb`; the guest side configures QEMU's ramfb from a small
+  pre-boot blob (`tools/qemu-ramfb.s` -> `tools/qemu-ramfb.bin`, loaded
+  at 0x40180000) that the generated stub calls with the fb base/w/h/
+  stride before entering the kernel.  `--fb-geom WxH` sets
+  boot_args/ramfb/decode geometry (the 1080x2400 default works, but see
+  below).
+- 1080x2400 GUI runs panic in XNU's sched-hygiene check
+  (`Processing of an interrupt ... took ~17 ms`,
+  osfmk/arm/machine_routines_common.c): QEMU's ramfb scanout of the
+  10 MB plane stalls the vCPU.  **540x1200 + a matching ADT** (make one
+  by patching `sweet-fbcon`: width 0x21c, height 0x4b0, stride 0x870,
+  reg size 0x278d00; saved as research/tmp-gic/q-adt-540.adt) boots to
+  userspace without the panic; with the stock 16x32 console the 540-px
+  window is readable.  MTTCG (`-accel tcg,thread=multi`, now default in
+  the runner) alone did not stop the stall.
+- **The 1x/scroll console patch crashes the 0083 debug kernel in early
+  boot** (`SWEET EARLY PANIC: Invalid kernel stack pointer` right after
+  `serial_init returned`, pc in early boot) while the unpatched kernel
+  boots.  Guards added in tools/fbcon-1x.S (rows clamp, skip clear when
+  fb base/stride/cols are unset, skip newline when rows==0) let the
+  kernel reach `kprintf startup complete`, but the console then stays
+  silent (transmit guard sees cols==0), so this patch is still not
+  usable on the 0083 kernel.  Use the stock console for diagnostics.
+- Consequently the phone screens from the 1x-patched dlildbg/dlildbg2
+  images were **stale framebuffers** from the previous session (the
+  kernel died before touching the FB).  `shim-boot-merlin-dlilplain.img`
+  = the unpatched a00abe2+0083 kernel + adt-0022 + merlin-init +
+  rd=md0; it boots in QEMU to userspace and prints the DLILDBG lines
+  (`created, pending=2`, `waiting, pending=2`, thread entries, decr).
+- The phone hangs at the dlil wait even with the proven 0022 image, so
+  the trigger is phone state/timing, not the kernel build; QEMU boots
+  the same kernels.  The phone's DLILDBG screen from dlilplain is the
+  pending datum: if the threads never print `main func entered` the
+  scheduler never runs them; if they stop at `main lock taken` the
+  dlth_lock is held.
+
 ## Agent handoff / active work (2026-10-23 LATEST-23: dlil THREAD-SCHEDULING HANG, ENVIRONMENT-SENSITIVE; NOT THE DRIVER)
 
 - The `rd=msdcroot0` image on the proven base (a00abe2 + 0082 + 1x

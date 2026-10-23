@@ -20,12 +20,21 @@ fbcon_init_1x:
 	adrp	x4, fbcon_height
 	ldr	w9, [x4, #:lo12:fbcon_height]
 	lsr	w9, w9, #4			// rows = height / 16
+	subs	w9, w9, #2			// keep 2 blank rows above the panel edge
+	csel	w9, wzr, w9, lo			// height not set yet -> no rows
 	adrp	x5, fbcon_rows
 	str	w9, [x5, #:lo12:fbcon_rows]
 	adrp	x6, fbcon_row
 	str	wzr, [x6, #:lo12:fbcon_row]
 	adrp	x7, fbcon_col
 	str	wzr, [x7, #:lo12:fbcon_col]
+	cbz	w9, 2f
+	adrp	x8, fbcon_base
+	ldr	x8, [x8, #:lo12:fbcon_base]
+	cbz	x8, 2f				// fb not configured yet
+	adrp	x8, fbcon_stride
+	ldr	w8, [x8, #:lo12:fbcon_stride]
+	cbz	w8, 2f
 	mov	w10, #0
 1:	adrp	x5, fbcon_rows		/* clear_row clobbers x5 */
 	ldr	w9, [x5, #:lo12:fbcon_rows]
@@ -44,6 +53,15 @@ fbcon_transmit_data_1x:
 	stp	x29, x30, [sp, #-32]!
 	mov	x29, sp
 	str	w0, [sp, #16]			// char survives newline/clear
+	adrp	x1, fbcon_base
+	ldr	x1, [x1, #:lo12:fbcon_base]
+	cbz	x1, .Lret			// framebuffer not configured yet
+	adrp	x1, fbcon_stride
+	ldr	w1, [x1, #:lo12:fbcon_stride]
+	cbz	w1, .Lret
+	adrp	x1, fbcon_cols
+	ldr	w1, [x1, #:lo12:fbcon_cols]
+	cbz	w1, .Lret
 	cmp	w0, #0x0d			// '\r'
 	b.eq	.Lcr
 	cmp	w0, #0x0a			// '\n'
@@ -94,6 +112,9 @@ fbcon_transmit_data_1x:
 	str	w2, [x1, #:lo12:fbcon_col]
 	ldp	x29, x30, [sp], #32
 	ret
+.Lret:
+	ldp	x29, x30, [sp], #32
+	ret
 .Lcr:
 	adrp	x1, fbcon_col
 	str	wzr, [x1, #:lo12:fbcon_col]
@@ -110,6 +131,9 @@ fbcon_newline_1x:
 	mov	x29, sp
 	adrp	x1, fbcon_col
 	str	wzr, [x1, #:lo12:fbcon_col]
+	adrp	x4, fbcon_rows
+	ldr	w4, [x4, #:lo12:fbcon_rows]
+	cbz	w4, 9f				// height not set yet: no row to move to
 	adrp	x2, fbcon_row
 	ldr	w3, [x2, #:lo12:fbcon_row]
 	add	w3, w3, #1
@@ -139,7 +163,7 @@ fbcon_newline_1x:
 	cmp	w0, w4
 	csel	w0, wzr, w0, eq
 	bl	fbcon_clear_row_1x
-	ldp	x29, x30, [sp], #16
+9:	ldp	x29, x30, [sp], #16
 	ret
 
 /* shift rows [16, rows*16) up by 16 pixel rows (memmove down) */

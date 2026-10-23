@@ -26,11 +26,13 @@ with ios-sweet on purpose.
 import argparse, json, os, socket, struct, subprocess, sys, time, zlib
 
 IS_WIN = sys.platform == 'win32'
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 FB_BASE, FB_W, FB_H = 0x9c000000, 1080, 2400
 FB_STRIDE = FB_W * 4
 PAGE = 0x4000
 STUB_PA = 0x40200000	# above the dtb QEMU places at RAM base
+RAMFB_PA = 0x40180000	# tools/qemu-ramfb.bin (preboot -> ramfb_init)
 BOOT_LINE_LENGTH = 608
 
 
@@ -84,9 +86,28 @@ def build_image(payload):
     return phys_base, bytes(img), ba_pa, entry_va + delta
 
 
-def stub(ba_pa, entry_pa):
-    # ldr x0, =ba ; ldr x1, =entry ; br x1 ; nop ; .quad ba ; .quad entry
-    return struct.pack('<4I2Q', 0x58000080, 0x580000a1, 0xd61f0020, 0xd503201f, ba_pa, entry_pa)
+def stub(ba_pa, entry_pa, ramfb=None):
+    """x0 = boot_args, jump to entry; with ramfb=(pa,base,w,h,stride) also
+    configure QEMU's ramfb for the guest framebuffer first."""
+    if ramfb is None:
+        # ldr x0, =ba ; ldr x1, =entry ; br x1 ; nop ; .quad ba ; .quad entry
+        return struct.pack('<4I2Q', 0x58000080, 0x580000a1, 0xd61f0020, 0xd503201f,
+                           ba_pa, entry_pa)
+    preboot_pa, base, w, h, stride = ramfb
+    movz = lambda rt, imm: 0x52800000 | ((imm & 0xffff) << 5) | rt
+    ins = (
+        0x58000149,             # ldr x9, [pc, #0x28]  (preboot)
+        0x58000160,             # ldr x0, [pc, #0x2c]  (fb base)
+        movz(1, w),             # movz w1, #w
+        movz(2, h),             # movz w2, #h
+        movz(3, stride),        # movz w3, #stride
+        0xd63f0120,             # blr x9
+        0x58000100,             # ldr x0, [pc, #0x20]  (boot_args)
+        0x58000121,             # ldr x1, [pc, #0x24]  (entry)
+        0xd61f0020,             # br x1
+        0xd503201f,             # nop
+    )
+    return struct.pack('<10I4Q', *ins, preboot_pa, base, ba_pa, entry_pa)
 
 
 def write_png(path, raw):
@@ -217,10 +238,19 @@ def main():
     ap.add_argument('--kernel', help='matching unstripped kernel, for exact framebuffer text decoding')
     ap.add_argument('--fail-on-panic', action='store_true', help='exit 2 for a visible panic, 3 for incomplete/blank decoding; requires --kernel')
     ap.add_argument('--dump-ram', action='store_true', help='keep a pmemsave of the whole RAM image for post-mortem string forensics')
+    ap.add_argument('--gui', action='store_true',
+                    help='show the guest framebuffer in a QEMU/GTK window (ramfb on --fb-base)')
     ap.add_argument('--fb-base', type=lambda s: int(s, 0), default=FB_BASE,
-                    help='framebuffer VAs to dump/decode (default 0x9c000000; use the ADT base for phone ADTs)')
+                    help='framebuffer VAs to dump/decode/GUI (default 0x9c000000)')
     ap.add_argument('--qargs', action='append', default=[], help='extra raw QEMU CLI args (repeatable), e.g. -trace enable=arm_gt_cval_write')
+    ap.add_argument('--fb-geom', default=None,
+                    help='framebuffer WxH for boot_args/ramfb/decode (default 1080x2400)')
     a = ap.parse_args()
+    global FB_W, FB_H, FB_STRIDE
+    if a.fb_geom:
+        fw, fh = a.fb_geom.lower().split('x')
+        FB_W, FB_H = int(fw), int(fh)
+        FB_STRIDE = FB_W * 4
     if a.fail_on_panic and not a.kernel:
         ap.error('--fail-on-panic requires --kernel')
     payload = open(a.payload, 'rb').read()
@@ -233,7 +263,9 @@ def main():
 
     phys_base, img, ba_pa, entry_pa = build_image(payload)
     open(f'{out}/ram.bin', 'wb').write(img)
-    open(f'{out}/stub.bin', 'wb').write(stub(ba_pa, entry_pa))
+    open(f'{out}/stub.bin', 'wb').write(
+        stub(ba_pa, entry_pa,
+             (RAMFB_PA, a.fb_base, FB_W, FB_H, FB_STRIDE) if a.gui else None))
     print(f'phys_base={phys_base:#x} boot_args={ba_pa:#x} entry={entry_pa:#x}', file=sys.stderr)
 
     qemu = qemu_binary()
@@ -253,7 +285,14 @@ def main():
     mem_size = struct.unpack_from('<Q', payload, 0x40)[0]
     ram_gib = max(4, -(-(phys_base + mem_size - 0x40000000) // (1 << 30)))
     cmd = [qemu, '-M', 'virt,gic-version=3', '-cpu', a.cpu, '-smp', '1', '-m', f'{ram_gib}G',
-           '-nographic', '-serial', 'file:' + posix_path(f'{out}/serial.txt'), '-qmp', qmp_arg,
+           '-accel', 'tcg,thread=multi']
+    if a.gui:
+        cmd += ['-display', 'gtk,zoom-to-fit=on', '-device', 'ramfb',
+                '-device', f'loader,file={posix_path(os.path.join(HERE, "qemu-ramfb.bin"))},'
+                           f'addr={RAMFB_PA:#x},force-raw=on']
+    else:
+        cmd += ['-nographic']
+    cmd += ['-serial', 'file:' + posix_path(f'{out}/serial.txt'), '-qmp', qmp_arg,
            '-d', 'int,guest_errors,unimp', '-D', posix_path(f'{out}/qemu.log'), '-no-reboot',
            '-device', f'loader,file={posix_path(f"{out}/ram.bin")},addr={phys_base:#x},force-raw=on',
            '-device', f'loader,file={posix_path(f"{out}/stub.bin")},addr={STUB_PA:#x},force-raw=on',
