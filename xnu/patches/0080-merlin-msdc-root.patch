@@ -40,7 +40,7 @@ diff --git a/bsd/dev/merlin_msdc.c b/bsd/dev/merlin_msdc.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/merlin_msdc.c
-@@ -0,0 +1,595 @@
+@@ -0,0 +1,594 @@
 +/*
 + * MERLIN (Redmi Note 9, MT6768) internal eMMC root device (read-only).
 + *
@@ -111,34 +111,33 @@ new file mode 100644
 +#define SDC_STS_SDCBUSY (1u << 0)
 +#define SDC_STS_CMDBUSY (1u << 1)
 +
-+#define INT_CMDRDY      (1u << 8)
-+#define INT_CMDTMO      (1u << 9)
-+#define INT_RSPCRCERR   (1u << 10)
-+#define INT_XFER_COMPL  (1u << 12)
-+#define INT_DXFER_DONE  (1u << 13)
-+#define INT_DATTMO      (1u << 14)
-+#define INT_DATCRCERR   (1u << 15)
-+#define INT_BDCSERR     (1u << 17)
-+#define INT_GPDCSERR    (1u << 18)
-+#define INT_DMAPRO      (1u << 19)
-+#define INT_AXI_RESP_ERR (1u << 23)
++#define MSDC_INT_CMDRDY      (1u << 8)
++#define MSDC_INT_CMDTMO      (1u << 9)
++#define MSDC_INT_RSPCRCERR   (1u << 10)
++#define MSDC_INT_XFER_COMPL  (1u << 12)
++#define MSDC_INT_DXFER_DONE  (1u << 13)
++#define MSDC_INT_DATTMO      (1u << 14)
++#define MSDC_INT_DATCRCERR   (1u << 15)
++#define MSDC_INT_BDCSERR     (1u << 17)
++#define MSDC_INT_GPDCSERR    (1u << 18)
++#define MSDC_INT_DMAPRO      (1u << 19)
++#define MSDC_INT_AXI_RESP_ERR (1u << 23)
 +
-+#define DMA_CTRL_START  (1u << 0)
-+#define DMA_CTRL_STOP   (1u << 1)
-+#define DMA_CTRL_MODE   (1u << 8)
-+#define DMA_CTRL_ALIGN  (1u << 9)
-+#define DMA_CTRL_LASTBUF (1u << 10)
-+#define DMA_CTRL_BRUSTSZ (7u << 12)
-+#define DMA_CFG_STS     (1u << 0)
++#define MSDC_DMA_CTRL_START  (1u << 0)
++#define MSDC_DMA_CTRL_STOP   (1u << 1)
++#define MSDC_DMA_CTRL_MODE   (1u << 8)
++#define MSDC_DMA_CTRL_ALIGN  (1u << 9)
++#define MSDC_DMA_CTRL_LASTBUF (1u << 10)
++#define MSDC_DMA_CTRL_BRUSTSZ (7u << 12)
++#define MSDC_DMA_CFG_STS     (1u << 0)
 +
-+#define SECTOR          512u
++#define MSDC_SECTOR          512u
 +#define BOUNCE_SIZE     (64u << 10)
-+#define BOUNCE_SECTORS  (BOUNCE_SIZE / SECTOR)
 +#define CMD_TIMEOUT_NS  (2ull * NSEC_PER_SEC)
 +#define DATA_TIMEOUT_NS (5ull * NSEC_PER_SEC)
 +#define DMA_STOP_NS     (2ull * NSEC_PER_SEC)
 +
-+#define R1_OUT_OF_RANGE (1u << 31)
++#define MSDC_R1_OUT_OF_RANGE (1u << 31)
 +
 +static struct {
 +	vm_offset_t regs;
@@ -259,23 +258,23 @@ new file mode 100644
 +{
 +	uint32_t sts;
 +	int error;
-+	uint32_t cmd_int = INT_CMDRDY | INT_CMDTMO | INT_RSPCRCERR;
-+	uint32_t dat_int = INT_XFER_COMPL | INT_DATTMO | INT_DATCRCERR |
-+	    INT_BDCSERR | INT_GPDCSERR | INT_AXI_RESP_ERR;
-+	uint32_t raw = 17u | (1u << 7) | (SECTOR << 16) | (1u << 11);
++	uint32_t cmd_int = MSDC_INT_CMDRDY | MSDC_INT_CMDTMO | MSDC_INT_RSPCRCERR;
++	uint32_t dat_int = MSDC_INT_XFER_COMPL | MSDC_INT_DATTMO | MSDC_INT_DATCRCERR |
++	    MSDC_INT_BDCSERR | MSDC_INT_GPDCSERR | MSDC_INT_AXI_RESP_ERR;
++	uint32_t raw = 17u | (1u << 7) | (MSDC_SECTOR << 16) | (1u << 11);
 +
 +	error = msdc_wait_idle(CMD_TIMEOUT_NS);
 +	if (error) {
 +		return error;
 +	}
 +	msdc_wr(MSDC_INT, 0xffffffffu);
-+	dma_sync(SECTOR);
++	dma_sync(MSDC_SECTOR);
 +
 +	msdc_wr(SDC_ARG, (uint32_t)lba);
 +	msdc_wr(SDC_CMD, raw);
 +
 +	error = msdc_wait_int(cmd_int, CMD_TIMEOUT_NS, &sts);
-+	if (error || (sts & (INT_CMDTMO | INT_RSPCRCERR))) {
++	if (error || (sts & (MSDC_INT_CMDTMO | MSDC_INT_RSPCRCERR))) {
 +		msdc_wr(MSDC_INT, sts & cmd_int);
 +		printf("MERLIN MSDC: CMD17(%llu) failed: int 0x%08x\n",
 +		    (unsigned long long)lba, sts);
@@ -292,16 +291,16 @@ new file mode 100644
 +
 +	msdc_wr(MSDC_DMA_SA_HIGH, (msdc_rd(MSDC_DMA_SA_HIGH) & ~0xfu));
 +	msdc_wr(MSDC_DMA_SA, (uint32_t)mo.dma_pa);
-+	msdc_wr(MSDC_DMA_LEN, SECTOR);
++	msdc_wr(MSDC_DMA_LEN, MSDC_SECTOR);
 +	uint32_t ctrl = msdc_rd(MSDC_DMA_CTRL);
-+	ctrl &= ~(DMA_CTRL_START | DMA_CTRL_STOP | DMA_CTRL_MODE |
-+	    DMA_CTRL_BRUSTSZ | DMA_CTRL_LASTBUF);
-+	ctrl |= DMA_CTRL_LASTBUF | (6u << 12);  /* 64-byte burst, basic mode */
-+	msdc_wr(MSDC_DMA_CTRL, ctrl | DMA_CTRL_START);
++	ctrl &= ~(MSDC_DMA_CTRL_START | MSDC_DMA_CTRL_STOP | MSDC_DMA_CTRL_MODE |
++	    MSDC_DMA_CTRL_BRUSTSZ | MSDC_DMA_CTRL_LASTBUF);
++	ctrl |= MSDC_DMA_CTRL_LASTBUF | (6u << 12);  /* 64-byte burst, basic mode */
++	msdc_wr(MSDC_DMA_CTRL, ctrl | MSDC_DMA_CTRL_START);
 +
 +	error = msdc_wait_int(dat_int, DATA_TIMEOUT_NS, &sts);
-+	if (error || (sts & (INT_DATTMO | INT_DATCRCERR | INT_BDCSERR |
-+	    INT_GPDCSERR | INT_AXI_RESP_ERR))) {
++	if (error || (sts & (MSDC_INT_DATTMO | MSDC_INT_DATCRCERR | MSDC_INT_BDCSERR |
++	    MSDC_INT_GPDCSERR | MSDC_INT_AXI_RESP_ERR))) {
 +		printf("MERLIN MSDC: CMD17(%llu) data failed: int 0x%08x\n",
 +		    (unsigned long long)lba, sts);
 +		error = EIO;
@@ -311,15 +310,15 @@ new file mode 100644
 +	msdc_wr(MSDC_INT, sts & dat_int);
 +
 +	ctrl = msdc_rd(MSDC_DMA_CTRL);
-+	msdc_wr(MSDC_DMA_CTRL, ctrl | DMA_CTRL_STOP);
++	msdc_wr(MSDC_DMA_CTRL, ctrl | MSDC_DMA_CTRL_STOP);
 +	uint64_t dl = deadline_in(DMA_STOP_NS);
-+	while (msdc_rd(MSDC_DMA_CFG) & DMA_CFG_STS) {
++	while (msdc_rd(MSDC_DMA_CFG) & MSDC_DMA_CFG_STS) {
 +		if (mach_absolute_time() > dl) {
 +			break;
 +		}
 +	}
 +	msdc_wr(MSDC_INT, 0xffffffffu);
-+	dma_sync(SECTOR);
++	dma_sync(MSDC_SECTOR);
 +	return error;
 +}
 +
@@ -332,7 +331,7 @@ new file mode 100644
 +		if (error) {
 +			return error;
 +		}
-+		memcpy((uint8_t *)dst + i * SECTOR, (const void *)mo.dma, SECTOR);
++		memcpy((uint8_t *)dst + i * MSDC_SECTOR, (const void *)mo.dma, MSDC_SECTOR);
 +	}
 +	return 0;
 +}
@@ -340,7 +339,7 @@ new file mode 100644
 +static int
 +msdc_find_partition(const char *want)
 +{
-+	uint8_t hdr[SECTOR];
++	uint8_t hdr[MSDC_SECTOR];
 +	int error = msdc_read(1, 1, hdr);
 +	if (error) {
 +		return error;
@@ -358,7 +357,7 @@ new file mode 100644
 +		printf("MERLIN MSDC: unsupported GPT entries %u x %u\n", nent, esz);
 +		return ENXIO;
 +	}
-+	error = msdc_read(entry_lba, (nent * esz + SECTOR - 1) / SECTOR, msdc_gpt);
++	error = msdc_read(entry_lba, (nent * esz + MSDC_SECTOR - 1) / MSDC_SECTOR, msdc_gpt);
 +	if (error) {
 +		return error;
 +	}
@@ -413,7 +412,7 @@ new file mode 100644
 +	caddr_t vaddr = NULL;
 +	uint64_t off = (uint64_t)buf_blkno(bp) * mo.secsize;
 +	uint32_t count = buf_count(bp);
-+	uint64_t part_bytes = mo.nblocks * SECTOR;
++	uint64_t part_bytes = mo.nblocks * MSDC_SECTOR;
 +
 +	buf_setresid(bp, count);
 +	if (!(buf_flags(bp) & B_READ)) {
@@ -435,9 +434,9 @@ new file mode 100644
 +	lck_mtx_lock(&merlin_msdc_lock);
 +	for (uint32_t done = 0; done < count;) {
 +		uint64_t pos = off + done;
-+		uint64_t lba = pos / SECTOR;
-+		uint32_t skip = (uint32_t)(pos % SECTOR);
-+		uint32_t want = MIN(count - done, SECTOR - skip);
++		uint64_t lba = pos / MSDC_SECTOR;
++		uint32_t skip = (uint32_t)(pos % MSDC_SECTOR);
++		uint32_t want = MIN(count - done, MSDC_SECTOR - skip);
 +		error = msdc_read_sector(mo.first_block + lba);
 +		if (error) {
 +			break;
@@ -471,16 +470,16 @@ new file mode 100644
 +		if (is_char) {
 +			return ENODEV;
 +		}
-+		if (*f < DEV_BSIZE || *f > SECTOR || (*f & (*f - 1))) {
++		if (*f < DEV_BSIZE || *f > MSDC_SECTOR || (*f & (*f - 1))) {
 +			return EINVAL;
 +		}
 +		mo.secsize = *f;
 +		return 0;
 +	case DKIOCGETPHYSICALBLOCKSIZE:
-+		*f = SECTOR;
++		*f = MSDC_SECTOR;
 +		return 0;
 +	case DKIOCGETBLOCKCOUNT:
-+		*o = mo.nblocks * SECTOR / mo.secsize;
++		*o = mo.nblocks * MSDC_SECTOR / mo.secsize;
 +		return 0;
 +	case DKIOCISWRITABLE:
 +		*f = 0;
@@ -515,7 +514,7 @@ new file mode 100644
 +static int
 +merlin_msdc_psize(__unused dev_t dev)
 +{
-+	return mo.ready ? (int)MIN(mo.nblocks * SECTOR / mo.secsize, INT_MAX) : -1;
++	return mo.ready ? (int)MIN(mo.nblocks * MSDC_SECTOR / mo.secsize, INT_MAX) : -1;
 +}
 +
 +static int
@@ -615,7 +614,7 @@ new file mode 100644
 +	mo.ready = true;
 +	printf("MERLIN MSDC: \"%s\" first sector 0x%llx, %llu MiB, read-only\n",
 +	    want, (unsigned long long)mo.first_block,
-+	    (unsigned long long)(mo.nblocks * SECTOR >> 20));
++	    (unsigned long long)(mo.nblocks * MSDC_SECTOR >> 20));
 +	return 0;
 +}
 +
