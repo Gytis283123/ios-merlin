@@ -14,7 +14,9 @@
     basic DMA (64 KiB physically-contiguous bounce, 64-byte burst),
     GPT scan for `msdcroot=` (default "userdata"), exposes
     `/dev/msdcroot0` + `/dev/rmsdcroot0`, `rd=msdcroot0` hook in
-    `IOKitBSDInit.cpp`, `bsd/conf/files` entry.
+    `IOKitBSDInit.cpp`.  The CI compiles it by appending the code to
+    `bsd/dev/sweet_ufs.c` (the dxb `bsd/conf/files` context differs from
+    upstream, so a new build-file entry does not apply).
   - Register map and command/DMA sequence taken from the stock ComboA
     driver (`drivers/mmc/host/mediatek/ComboA/{msdc_reg.h,sd.c}`):
     MSDC_CFG 0x00, SDC_CFG 0x30, SDC_CMD 0x34 (opcode/R1/512<<16/
@@ -32,9 +34,12 @@
   (270 px) scanout offset (LATEST-19).  `--qemu-gic`/`--qemu` unchanged.
 - Patch numbering: the upstream main already has 0080 (net trace) and
   0081 (USB link), so this is **0082**.  Pushed to the fork
-  Gytis283123/ios-sweet main (the dipa-studio repo rejects this account);
-  CI run 39981655627 builds it.  Applies against the post-0028 context
-  (synthetic repo test); the CI build is the compile check.
+  Gytis283123/ios-sweet main (the dipa-studio repo rejects this account).
+  CI history: run 39981655627 **skipped 0082** (`patch failed:
+  bsd/conf/files:104` - dxb source context differs), hence the
+  sweet_ufs.c append.  Run 39983803243 was queue-cancelled after 15 min
+  with no runner; workflow_dispatch run 39986075173 was started.  If the
+  macOS queue keeps failing, the fallback is the dipa-studio account.
 - NEXT: push 0080 to ios-sweet so CI builds the kernel (no macOS here;
   user approval needed), then build the HFS+ root image from the IPSW
   dmgs (`tools/mkiosroot.sh`), flash it to userdata (22.8 GiB partition;
