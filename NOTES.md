@@ -1,5 +1,44 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-23 LATEST-17: PANIC CONSOLE DOWN TO 8x16 CELLS + 0019)
+
+- The phone panic screen was unreadable: the CI kernel's sweet-fbcon is
+  compiled with **FBCON_SCALE=2** (16x32 px cells).  On the 1080-wide
+  panel that means 67 columns - panic lines wrap mid-value and only the
+  left ~1072 px are used.  Live fbcon vars in QEMU confirmed it
+  (width 1080, cols 0x43, rows 0x49).
+- Fix (binary patch of the CI kernel, no rebuild needed):
+  `tools/fbcon-1x.S` + `tools/fbcon-1x.ld` assemble drop-in 8x16-cell
+  replacements for `_fbcon_init` (0xfffffe0007a7aea4, 0xc4 B) and
+  `_fbcon_transmit_data` (0xfffffe0007a7af70, 0x3e4 B); every global
+  keeps its address (fbcon_* in __BOOTDATA 0x8074150.., iso_font
+  0x7b5fec0).  `tools/patch-fbcon1x.py IN OUT` writes them into a
+  kernel Mach-O (pad with NOPs).
+  - cells 16x32 -> 8x16, cols = width/8, rows = height/16
+  - row pitch 32 -> 16 px, x advance 16 -> 8 px, 1x glyph blit
+  - wrap path renders the character after the implicit newline
+  - init/newline save x30 (they call clear_row); the char is saved at
+    [sp,#16] because [sp,#8] holds the saved LR
+- Validation in qemu-shim (phone plane 0x7e605000, 1080x2340):
+  fbcon vars read width 0x438, **cols 0x87 (135), rows 0x92 (146)**;
+  the panic text now fits; hybrid ADT (QEMU GIC) boots the fb1x kernel
+  all the way to IOKit (`SWEET FB: AppleCLCD 1080x2340 ... presented
+  as 1125x2436`) - no regression.
+- Built `xnu/out-0001/kernel.development.sweet.merlinfb.fb1x` and
+  `xnu/out-0001/merlin-phone-payload-fb1x.bin` (same 16,627,424 B
+  layout), then **`research/merlin-boot/shim-boot-merlin-0019-fbcon1x.img`**
+  (17,004,544 B, sha256 2d39c34a...cc503).  It is 0018 + the fbcon
+  patch only (diff confined to the two function regions); flashed to
+  boot and rebooted on 2026-10-23.
+- Still open: the phone panic itself.  0019 contains the 0018 GICR fix;
+  the smaller console is there so the panic text can be read.  Need the
+  phone screen's panic string / pc / FAR to know whether the GICR fix
+  worked or where it now dies.
+- Source note: `xnu/patches/0003-sweet-framebuffer-serial-console.patch`
+  still says FBCON_SCALE 2 (that is what the CI artifact was built
+  from).  If the kernel is rebuilt, either set it to 1 there or re-run
+  tools/patch-fbcon1x.py on the new artifact.
+
 ## Agent handoff / active work (2026-10-23 LATEST-16: PHONE XNU PANIC ROOT-CAUSED - WRONG GICR BASE IN ADT)
 
 - **Symptom**: on the phone the Apple XNU panics instead of continuing past
