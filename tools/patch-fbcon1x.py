@@ -5,8 +5,8 @@ The CI kernel compiles pe_serial.c's fbcon with FBCON_SCALE 2 (16x32 px
 cells, 67 columns on a 1080-wide panel), so panic lines wrap and only the
 left half of the frame is used.  This replaces the two compiled functions
 
-  _fbcon_init          @ 0xfffffe0007a7aea4 (region 0xc4)
-  _fbcon_transmit_data @ 0xfffffe0007a7af70 (region 0x3e4)
+  _fbcon_init          (region 0xc4)
+  _fbcon_transmit_data (region 0x3e4)
 
 with the 8x16-cell versions assembled from tools/fbcon-1x.S (build with
 tools/fbcon-1x.ld; blobs tools/fbcon-1x.{init,tx}.bin).  All globals they
@@ -18,8 +18,8 @@ import struct
 import sys
 
 HERE = __import__('os').path.dirname(__import__('os').path.abspath(__file__))
-INIT_VA, INIT_SIZE = 0xfffffe0007a7aea4, 0xc4
-TX_VA, TX_SIZE = 0xfffffe0007a7af70, 0x3e4
+INIT_VA, INIT_SIZE = 0xfffffe0007a7bae4, 0xc4
+TX_VA, TX_SIZE = 0xfffffe0007a7bbb0, 0x3e4
 NOP = 0xd503201f
 
 

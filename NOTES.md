@@ -1,5 +1,33 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-23 LATEST-22: 0079+0082 KERNEL + LOCAL CONSOLE, rd=msdcroot0 IMAGE READY)
+
+- Branch **msdc-0079** (347e190 = upstream 0079 + 0082 only) built
+  successfully in CI: run 39991300459, artifact 12519256732
+  (`xnu/out-0079/kernel.development.sweet`, SHA256 65c85ab7...8507b).
+  The main-branch hang at `SWEET CPU: 1/1 CPUs initialized` was the
+  0080/0081 upstream patches, so the test uses this base.
+- The driver is linked in: `_merlin_msdc_rootdev`, `_merlin_msdc_*`,
+  `msdcroot0`/`rmsdcroot0`, `MERLIN MSDC:` log strings.
+- fbcon in this kernel moved by -0x120: `_fbcon_init` 0xfffffe0007a7bae4
+  (0xc4) / `_fbcon_transmit_data` 0xfffffe0007a7bbb0 (0x3e4) - same func
+  sizes and the same __DATA globals/`_iso_font`, so only the two link
+  addresses changed in `tools/fbcon-1x.ld` and `tools/patch-fbcon1x.py`;
+  blobs relinked and re-applied (objdump confirms the 8x16 prologue).
+  Patched kernel `kernel.development.sweet.merlinfb`, SHA256 1bf2400c...1f9d7.
+- Payload `xnu/out-0079/merlin-phone-msdc-payload-fb1x.bin` (same ADT
+  `xnu/out-0001/merlin-phone-msdc.adt`, cmdline `debug=0xc serial=3
+  cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=msdcroot0`),
+  packed with the proven stock header + `research/merlin-boot/msdc-blob.bin`
+  shim into **`research/merlin-boot/shim-boot-merlin-msdc-fb1x-0079.img`**
+  (16,989,139 B).  ADT verified: `/merlin-msdc` reg 0x11230000/0x10000,
+  `sweet-fbcon` base 0x7e605438.
+- NEXT: `fastboot boot` that image and read `MERLIN MSDC: cfg ... ps ...
+  sts ...` plus the GPT/partition log.  Android userdata holds no HFS, so
+  an HFS mount failure is expected; the point is the read path + GPT scan.
+  Then build the HFS+ root image from the IPSW dmgs and flash userdata
+  (destructive - ask first).
+
 ## Agent handoff / active work (2026-10-23 LATEST-21: DRIVER BUILT; MAIN KERNEL HANGS, 0079 BASE REBUILD)
 
 - The 0082 driver compiled in CI (run 39988046415, success; kernel
