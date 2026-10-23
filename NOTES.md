@@ -1,5 +1,25 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-23 LATEST-18: PHONE BOOTS XNU TO USERSPACE - PANIC GONE)
+
+- **0019 result on hardware (photo 2026-10-23-17-21-45-036.jpg, rotated
+  90 deg): the phone boots our XNU all the way to userspace.** Visible
+  console lines:
+  `load /sbin/launchd`, `*** MERLIN userspace: init running as PID 1 ***`,
+  `MERLIN init: still alive` (repeating), plus the kernel_bootstrap
+  zone/IOKit log above it.  No Apple panic.  The GICR fix is confirmed
+  on real MT6768 silicon, and the 8x16 console makes the log readable.
+- This closes the panic: the phone XNU died in `_pe_init_fiq`'s GICR
+  TYPER scan because the ADT put the redistributor at 0x0c400000; the
+  hardware/Linux GICR is 0x0c040000 (LATEST-16).  0019 = GICR fix +
+  fbcon 1x (LATEST-17), flashed to boot on 2026-10-23.
+- Note on reading phone photos: the framebuffer is portrait 1080x2340;
+  a landscape-held phone needs a 90 deg rotation before OCR/reading.
+- Next: MSDC0 eMMC driver + root on userdata (merlin-init is served as
+  /sbin/launchd by mockfs from the ramdisk and is PID 1; a real rootfs
+  needs storage).  Also pending: SMP (cpus=8 shape), restoring d22ap.adt
+  for /product before regenerating the ADT.
+
 ## Agent handoff / active work (2026-10-23 LATEST-17: PANIC CONSOLE DOWN TO 8x16 CELLS + 0019)
 
 - The phone panic screen was unreadable: the CI kernel's sweet-fbcon is
