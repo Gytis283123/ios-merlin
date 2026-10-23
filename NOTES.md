@@ -1,5 +1,43 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-23 LATEST-23: dlil THREAD-SCHEDULING HANG, ENVIRONMENT-SENSITIVE; NOT THE DRIVER)
+
+- The `rd=msdcroot0` image on the proven base (a00abe2 + 0082 + 1x
+  console) still stops at `dlil: Waiting for all the create dlil kernel
+  threads to get scheduled at least once.` - same point as
+  0079+0082.  Test C (0079+0082, **no** console patch) stops there too,
+  so the console is exonerated (and QEMU boots the same kernel to
+  userspace).
+- **The known-good 0022 image now also hangs at the same dlil line**
+  (user, 22:0x, after 5 min), although the same file booted to userspace
+  at 18:18.  So the hang depends on phone/boot state or timing, not only
+  on the kernel build.  The 0022 file is untouched since 18:11.
+- Provenance: the Oct 18 kernel that booted is dipa-studio run
+  39154142684, commit **a00abe2 = 0079 + upstream 0080 (net trace)**.
+  A rebuild of a00abe2 today is **byte-identical in every loaded
+  segment** (`__TEXT_EXEC`, `__DATA`, `__BOOTDATA`, `__KLD`, ...) to the
+  Oct 18 artifact; only `__TEXT` metadata and an empty `__CTF` differ.
+  Both builds used Xcode 15.0.1 / MacOSX14.0.sdk.  So CI is reproducible
+  and the toolchain did not change.
+- Layout facts: +0082 grows `__TEXT_EXEC` by ~0x1040 and `__DATA` by
+  0x4000; fbcon/globals move with it (see tools/fbcon-1x.ld).  The
+  payload's kernel_end moves +0x4000, so the ADT/boot_args PA moves by
+  the same amount (mkpayload places them at kernel_end).
+- `dlil_init()` creates the main input thread and the ifnet detacher
+  thread, then waits (msleep on dlil_pending_thread_cnt) for both to be
+  scheduled and call `dlil_decr_pending_thread_count()`.  Both threads
+  are created (no panic from kernel_thread_start); the hang is that they
+  never reach their decrement.
+- Diagnostic build in progress: branch **dlil-debug** = a00abe2 + a
+  temporary 0083 patch (prints in dlil_init, the wait loop, both thread
+  entry funcs and their continuations), CI run 40008642131.  The first
+  attempt's hand-written patch was rejected (`corrupt patch at line
+  47`); it is now generated with diff from xnu-8796.141.3 sources.
+- NEXT: boot the dlil-debug kernel and read the `DLILDBG:` lines to see
+  whether the threads run at all (scheduler) or block on dlth_lock /
+  dlil_if_lock.  Also try a cold power-off before the boot: if a cold
+  cycle restores the 0022 boot, the trigger is warm-boot state.
+
 ## Agent handoff / active work (2026-10-23 LATEST-22: 0079+0082 KERNEL + LOCAL CONSOLE, rd=msdcroot0 IMAGE READY)
 
 - Branch **msdc-0079** (347e190 = upstream 0079 + 0082 only) built

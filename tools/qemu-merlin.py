@@ -217,6 +217,8 @@ def main():
     ap.add_argument('--kernel', help='matching unstripped kernel, for exact framebuffer text decoding')
     ap.add_argument('--fail-on-panic', action='store_true', help='exit 2 for a visible panic, 3 for incomplete/blank decoding; requires --kernel')
     ap.add_argument('--dump-ram', action='store_true', help='keep a pmemsave of the whole RAM image for post-mortem string forensics')
+    ap.add_argument('--fb-base', type=lambda s: int(s, 0), default=FB_BASE,
+                    help='framebuffer VAs to dump/decode (default 0x9c000000; use the ADT base for phone ADTs)')
     ap.add_argument('--qargs', action='append', default=[], help='extra raw QEMU CLI args (repeatable), e.g. -trace enable=arm_gt_cval_write')
     a = ap.parse_args()
     if a.fail_on_panic and not a.kernel:
@@ -272,7 +274,7 @@ def main():
             time.sleep(0.2)
         result = {'status': 'qemu_exited', 'qemu_returncode': p.returncode}
         if p.poll() is None:
-            dumps = [(FB_BASE, FB_STRIDE * FB_H, f'{out}/fb.raw')]
+            dumps = [(a.fb_base, FB_STRIDE * FB_H, f'{out}/fb.raw')]
             if a.dump_ram:  # post-mortem forensics: whole RAM (VM pages live anywhere in the 5G)
                 dumps.append((0x40000000, 0x140000000, f'{out}/ram-dump.raw'))
             _, regs, *extra = qmp(mon, 'stop', 'info registers', *a.hmp, pmemsave=dumps)

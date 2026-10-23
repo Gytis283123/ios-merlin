@@ -2,9 +2,9 @@ OUTPUT_FORMAT(elf64-littleaarch64)
 ENTRY(fbcon_init_1x)
 SECTIONS
 {
-	. = 0xfffffe0007a7bae4;		/* _fbcon_init in the 0079+0082 kernel (nm) */
+	. = 0xfffffe0007a7bb44;		/* _fbcon_init in the 0080+0082 kernel (nm) */
 	.init : { *(.init) }
-	. = 0xfffffe0007a7bbb0;		/* _fbcon_transmit_data (nm) */
+	. = 0xfffffe0007a7bc10;		/* _fbcon_transmit_data (nm) */
 	.tx : { *(.tx) }
 }
 fbcon_width  = 0xfffffe00080781b0;

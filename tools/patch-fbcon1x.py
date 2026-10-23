@@ -18,8 +18,8 @@ import struct
 import sys
 
 HERE = __import__('os').path.dirname(__import__('os').path.abspath(__file__))
-INIT_VA, INIT_SIZE = 0xfffffe0007a7bae4, 0xc4
-TX_VA, TX_SIZE = 0xfffffe0007a7bbb0, 0x3e4
+INIT_VA, INIT_SIZE = 0xfffffe0007a7bb44, 0xc4
+TX_VA, TX_SIZE = 0xfffffe0007a7bc10, 0x3e4
 NOP = 0xd503201f
 
 

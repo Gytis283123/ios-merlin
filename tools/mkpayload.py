@@ -127,8 +127,13 @@ def add_ramdisk_to_adt(adt_blob, phys, size):
     root, _ = adt.parse(adt_blob)
     chosen = next(c for c in root.children if c.name == 'chosen')
     mmap = next(c for c in chosen.children if c.name == 'memory-map')
-    assert mmap.prop('RAMDisk') is None, 'ADT already has a RAMDisk'
-    mmap.props.append(('RAMDisk', 0, struct.pack('<2Q', phys, size)))
+    val = struct.pack('<2Q', phys, size)
+    for i, (name, _, _) in enumerate(mmap.props):
+        if name == 'RAMDisk':
+            mmap.props[i] = (name, 0, val)
+            break
+    else:
+        mmap.props.append(('RAMDisk', 0, val))
     return adt.serialize(root)
 
 
