@@ -23,7 +23,10 @@
 set -euo pipefail
 
 [[ $# -ge 4 ]] || { sed -n '2,12p' "$0"; exit 2; }
-os=$(realpath "$1") sysos=$(realpath "$2") appos=$(realpath "$3") out=$4 size=${5:-16G}
+os=$1 sysos=$2 appos=$3 out=$4 size=${5:-16G}
+[[ $os != - ]] && os=$(realpath "$os")
+[[ $sysos != - ]] && sysos=$(realpath "$sysos")
+[[ $appos != - ]] && appos=$(realpath "$appos")
 [[ ! -e $out ]] || { echo "refusing to overwrite $out" >&2; exit 1; }
 
 work=$(mktemp -d)
