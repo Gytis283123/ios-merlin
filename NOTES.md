@@ -1,5 +1,40 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-24 LATEST-28: PHONE BOOTED PAST THE DLIL HANG ON THE MSDCROOT0 IMAGE; IOSROOT FLASHED TO USERDATA (66/67 CHUNKS); AWAITING MSDC/GPT LOG)
+
+- **The phone boots the msdcroot0 image past the dlil hang** (cold power-off
+  fixed the environmental hang, as suspected): user photo shows
+  `SWEET CPU: 1/1 CPUs initialized, 3313 verified`, MKC, SWEET policies,
+  Skywalk self-tests PASSED - the exact stage of the LATEST-23 hang, now
+  cleared.  Console = fb1x 135 cols (`SWEET FB: AppleCLCD 1080x2340
+  stride 4320 at 0x7e605000`).  Next lines expected: MERLIN MSDC driver
+  init + GPT scan + `BSD root: msdcroot0` + real iOS launchd.  Photo
+  pending of the settled screen bottom.
+- **userdata was flashed with iosroot.img by the user** (their decision,
+  no backup): 66/67 sparse chunks wrote OK; the LAST chunk (60752KB)
+  FAILED `remote: 'sparse image write failure'`.  Analysis of the image
+  tail: the final 512MB contains ONLY 4KiB of real content = the
+  alternate HFS+ volume header (repair backup at volume end); the primary
+  header (chunk 1) and all file data (chunks 1-66) are on the eMMC, so
+  the HFS volume is very likely mountable.  Failure cause unconfirmed -
+  leading theory: write range crossed the partition end (userdata may be
+  SMALLER than 16GB; the notes' "22.8 GiB" was never verified on
+  hardware).  The GPT scan from this boot settles it.
+- **The eMMC GPT still holds Windows-on-ARM leftovers**: user reports
+  `win` 22.1GB + `esp` 4GB partitions carved out (the phone ran WOA
+  before).  User wants userdata grown back (~64GB eMMC).  Plan: read the
+  real GPT from the boot log -> confirm win/esp disposable with the user
+  -> mtkclient GPT surgery (delete win+esp, extend userdata) -> rebuild
+  iosroot.img at the final size (mkiosroot.sh OUT SIZE) -> re-flash.
+  Growing the partition does NOT grow the HFS+ fs inside.
+- Android userdata is overwritten regardless (MIUI unbootable; no backup
+  was taken).  Empty-Android restore path exists: stock ROM tgz OS
+  partitions + `fastboot format userdata` - personal data unrecoverable.
+- NEXT: photo of the settled boot -> MERLIN MSDC/GPT/mount lines decide:
+  (a) mount OK -> iOS userland live, then plan the resize+reflash;
+  (b) mount fail/GPT shows userdata<16GB -> rebuild image to fit or
+  resize first via mtkclient.
+
 ## Agent handoff / active work (2026-10-24 LATEST-27: IOSROOT.IMG BUILT - HFS+ iOS 16.7.16 ROOTFS READY FOR FLASH; WSL HFSPLUS MODULE RECIPE)
 
 - **research/ipsw-x/iosroot.img EXISTS**: 16 GB journaled case-sensitive
