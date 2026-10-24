@@ -1,5 +1,73 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-24 LATEST-35: launchd SIGKILL DECODED = EXEC_EXIT_REASON_WRONG_PLATFORM; ROOTFS MOUNTS; FIX = unentitled_ios_sim_launch BOOT-ARG (no CI needed) + FORK PATCH 0083 (79c3634, CI building))
+
+- BOOT #3 (shim-boot-merlin-msdc-blknum.img, kernel artifact
+  69a42869d99d7a9e79b3f72e2db1753938228a7e590ad84beb68cc8d17a1d405, CI
+  40093673378 @7350bf4) - MILESTONE: the whole eMMC/MSDC/GPT/HFS+ stack
+  works END-TO-END ON HARDWARE. Console proof: `BSD root: msdcroot0,
+  major 1, minor 0`; `hfs: Initializing the journal...` (no more
+  strategy err 0x1e - the CMD24/RMW write path makes the journal!);
+  `hfs: mounted iOSBoot on device h(1, 0)`;
+  `hfs: root volume is not authenticated (error 25); continuing
+  unsealed` (SSV gate passed unsealed); Serial Keyboard started; then
+  `load_init_program: attempting to load /usr/appleinternal/sbin/launchd`
+  -> `/sbin/launchd` -> PANIC.
+- PANIC (photo): `panic(cpu 0 caller 0xfffffe0027ac63dc): unexpected
+  SIGKILL of launchd (CS_KILLED) with reason -- namespace [9] code
+  [0xe] description [..]`. Transcription of digits was fuzzy; symboli
+  zation of the caller failed BOTH raw forms - RESOLVED: caller =
+  `psignal_internal()` (bsd/kern/kern_sig.c, a STATIC function -> not
+  in symtab by design; static panic-neighbor symbols made the address
+  look off). True caller is 0xfffffe0007ac63dc-adjacent; the leading
+  `2` in the photo read was a blur artifact.
+- DECODE (source of truth now vendored ENTIRELY at research/xnu-full =
+  apple-oss xnu-8796.141.3 tarball, the EXACT tag CI builds via
+  darwin-xnu-build macos-135 release.json):
+  - panic strings found in the kernel binary; site = kern_sig.c
+    `psignal_internal`: on SIGKILL of initproc it prints
+    `unexpected SIGKILL of %s %s with reason -- namespace %d code
+    0x%llx description %.800s` ((CS_KILLED) is the 2nd %s).
+  - namespace 9 = OS_REASON_EXEC; code 0xe = EXEC_EXIT_REASON_WRONG_
+    PLATFORM (both in bsd/sys/reason.h, 8796.141.3 lines 244-262).
+  - kill path = kern_exec.c `process_signature()`: checks BEFORE the
+    platform gate all PASSED (`ip_mac_return==0`, `ip_cs_error==NULL`
+    => vnode/sig validation during activation SUCCEEDED, no codesign
+    rejection at all!) -> `#if XNU_TARGET_OS_OSX` gate: launchd (iOS
+    binary) execs with NO posix_spawn attrs, and is only allowed if
+    DEVELOPMENT-config `unentitled_ios_sim_launch` boot-arg is set or
+    the binary carries com.apple.private.security.no-sandbox (SWEET's
+    builtin AMFI grants nothing) -> EACCES -> CS_KILLED +
+    psignal_vfork_with_reason(SIGKILL, EXEC/WRONG_PLATFORM).
+- FIX (a), NO CI NEEDED: `unentitled_ios_sim_launch` is `static
+  TUNABLE(bool, ..., false)` (kern_exec.c segment-comment) = boot-arg.
+  Built research/merlin-boot/shim-boot-merlin-msdc-simlaunch.img TWO
+  SHA checks: kernel artifact == 69a42869... (same as booted run),
+  image SHA 66d466a8552ce4428d09b808e0453dec06f639e86eb9980c940e7f0f32
+  c00fb8; cmdline
+  `debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam
+  -noprogress rd=msdcroot0 unentitled_ios_sim_launch=1`.
+  build-msdcroot0.py now takes --cmdline/--out (defaults unchanged);
+  its self-check asserts 'rd=msdcroot0' in cmdline (prev. endswith).
+- FIX (b), PERMANENT: fork patch `xnu/patches/0083-merlin-launchd-
+  platform.patch` (msdc-0079 79c3634, PUSHED; only kern_exec.c hunk in
+  that region; 0042 is the only other patch touching it - context
+  written post-0042). Under ARM64_BOARD_CONFIG_SWEET set
+  no_sandbox_entitled=TRUE = same as the DEVELOPMENT boot-arg path.
+  CI run 40096809453 building 79c3634 (in progress); stale duplicate
+  run 40096726697 (dispatched before push, building old 7350bf4) was
+  CANCELLED.
+- EXPECTED after the gate: fork 0042 prints `exec launchd` (SWEET
+  run-every-iOS-binary log) at the allow branch, then launchd really
+  execs: dyld maps /usr/lib/dyld, text pages validate against the
+  embedded CMS blob captured at activation (no trust cache involved
+  for the embedded-signature path - watch for the next wall wherever
+  it appears: page validation, disk fifo, sandbox, launchd hitting a
+  missing AppleXPC service, etc.).
+- Housekeeping: research/xnu-ref file grab was superseded by
+  research/xnu-full (whole 8796.141.3 tree ~135MB);
+  research/xnu-ref/*.c kept for reference. research/ is gitignored.
+
 ## Agent handoff / active work (2026-10-24 LATEST-34: SDC_BLK_NUM FIX WORKED - CMD17 READS + GPT SCAN + ROOTDEV OK; NEW WALL = DRIVER REFUSES ALL WRITES (EROFS) AT HFS+ JOURNAL; CMD24 WRITE PATH COMMITTED + CI BUILDING)
 
 - BLK-NUM IMAGE BOOT VERDICT (shim-boot-merlin-msdc-blknum.img, one
