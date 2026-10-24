@@ -136,12 +136,30 @@
   (independent of which LK-last-chunk theory holds). DONE: image
   padded via truncate/research/tmp-msdc-split/pad-img.py: 17,091,788,800
   -> 17,158,897,664 bytes (+64 MiB zeros; data still ends at
-  11.6565 GiB). NEXT: reflash (expect the same failed FINAL chunk
-  line - benign by construction), then boot the 0083 image and
-  photograph, incl. the `MERLIN MSDC: "userdata" first sector 0x...,
-  NNNN MiB` line (which still has not been captured - it prints the
-  REAL partition size and settles the win/esp grow-back question
-  too).
+  11.6565 GiB).
+- PAD REFLASH (#2) RESULT: IDENTICAL output - 92/92 chunks, same
+  last chunk (126,165 KB) FAILED, all others OKAY. FASTBOOT'S
+  SPARSIFIER DROPS TRAILING ZERO RUNS ENTIRELY (the pad was never
+  transmitted; trailing zeros are implicit) - so flash #1 and #2
+  were the SAME transfer: one identical final data chunk at
+  ~[11.53..11.66 GiB) failed twice. Cannot yet distinguish
+  "LK fails EVERY final chunk" from "that eMMC range is bad".
+  (Fill-write counterpoint: v1's flash carried fill chunks over the
+  same physical region with OKAY - weakens "range is bad" but is
+  not decisive because the v1 range semantics were never decoded.)
+- SPLIT EXPERIMENT (next flash #3): 64 MiB of 0xFF decoy appended
+  past the real data (research/tmp-msdc-split/decoy-append.py; file
+  now 17,226,006,528 B = 16,428 MiB). The decoy lives in the HFS+
+  volume's own FREE blocks (bitmap free; also below the oldest
+  conservative partition-end estimate) -> writing it is harmless and
+  losing it is harmless. Predicted outcomes: (A) "final-chunk
+  always fails": all 92 data chunks OKAY, only the new final decoy
+  chunk(s) fail -> data intact -> boot. (B) "range ~11.4-11.66 GiB
+  is bad": chunk 92 (now NON-final) fails again -> hardware issue in
+  that eMMC region -> switch to mtkclient surgery for precise
+  writes. Also still want the `MERLIN MSDC: "userdata" first sector
+  0x..., NNNN MiB` line from the boot to settle the true partition
+  end once and for all.
 
 ## Agent handoff / active work (2026-10-24 LATEST-35: launchd SIGKILL DECODED = EXEC_EXIT_REASON_WRONG_PLATFORM; ROOTFS MOUNTS; FIX = unentitled_ios_sim_launch BOOT-ARG (no CI needed) + FORK PATCH 0083 (79c3634, CI building))
 
