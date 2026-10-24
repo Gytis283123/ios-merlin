@@ -112,19 +112,42 @@ done
 # logd's log stores, normally made at restore: it checks owner _logd (272)
 # and mode, plus a .migrated marker, else asks a helper and crashes
 # ("BUG IN LIBTRACE: Failed to migrate directory").
+# NOTE: coreutils install/chown reject bare numeric owners ("invalid user:
+# 272"), so ownership goes through python os.chown.
 db="$work/root/private/var/db"
-sudo install -d -o 272 -g 272 -m 0751 "$db/diagnostics"
-sudo install -d -o 272 -g 272 -m 0755 "$db/uuidtext" "$db/diagnostics/timesync"
-for d in diagnostics uuidtext diagnostics/timesync; do
-	sudo install -o 272 -g 272 -m 0644 /dev/null "$db/$d/.migrated"
-done
+python3 - "$db" <<'PYEOF'
+import os, sys
+db = sys.argv[1]
+def d(p, mode):
+    os.makedirs(p, exist_ok=True)
+    os.chmod(p, mode)
+    os.chown(p, 272, 272)
+d(db + "/diagnostics", 0o751)
+d(db + "/uuidtext", 0o755)
+d(db + "/diagnostics/timesync", 0o755)
+for f in (db + "/diagnostics/.migrated", db + "/uuidtext/.migrated",
+          db + "/diagnostics/timesync/.migrated"):
+    open(f, "w").close()
+    os.chmod(f, 0o644)
+    os.chown(f, 272, 272)
+print("logd stores OK")
+PYEOF
 
 # System keybag for the built-in AppleKeyStore (no passcode).
-sudo install -d -m 0700 -o 0 -g 0 "$work/root/private/var/keybags"
-printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
-	'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-	'<plist version="1.0"><dict><key>KeyBagKeys</key><data>U1dFRVQ=</data></dict></plist>' |
-	sudo install -m 0600 -o 0 -g 0 /dev/stdin "$work/root/private/var/keybags/systembag.kb"
+kb="$work/root/private/var/keybags"
+python3 - "$kb" <<'PYEOF'
+import os, sys
+kb = sys.argv[1]
+os.makedirs(kb, exist_ok=True)
+os.chmod(kb, 0o700)
+data = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0"><dict><key>KeyBagKeys</key><data>U1dFRVQ=</data></dict></plist>\n')
+open(kb + "/systembag.kb", "w").write(data)
+os.chmod(kb + "/systembag.kb", 0o600)
+print("keybag OK")
+PYEOF
 
 df -h "$work/root"
 sudo umount "$work/root"
