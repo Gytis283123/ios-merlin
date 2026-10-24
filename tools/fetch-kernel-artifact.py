@@ -20,7 +20,7 @@ download there instead, e.g. in PowerShell:
   curl.exe -L -o kernel.zip -H "Authorization: Bearer $tok" `
     "https://api.github.com/repos/dipa-studio/ios-sweet/actions/artifacts/ID/zip"
 """
-import json, os, subprocess, sys, urllib.request
+import json, os, subprocess, sys, urllib.error, urllib.parse, urllib.request
 
 API = 'https://api.github.com'
 
@@ -41,11 +41,35 @@ def token():
     return None
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Treat every redirect as an HTTPError so fetch() can follow it itself
+    and drop the Authorization header on cross-host hops (Azure blob)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_opener = urllib.request.build_opener(_NoRedirect)
+
+
 def fetch(url, tok):
-    req = urllib.request.Request(url)
-    if tok:
-        req.add_header('Authorization', f'Bearer {tok}')
-    return urllib.request.urlopen(req)
+    for _ in range(10):
+        req = urllib.request.Request(url)
+        if tok:
+            req.add_header('Authorization', f'Bearer {tok}')
+        try:
+            return _opener.open(req)
+        except urllib.error.HTTPError as e:
+            loc = e.headers.get('Location') \
+                if e.status in (301, 302, 303, 307, 308) else None
+            if not loc:
+                raise
+            cross = urllib.parse.urlsplit(loc).netloc != \
+                urllib.parse.urlsplit(url).netloc
+            if cross:
+                return urllib.request.urlopen(urllib.request.Request(loc))
+            url = loc
+    raise SystemExit('too many redirects')
 
 
 def list_artifacts(repo, tok):

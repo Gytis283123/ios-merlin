@@ -1,5 +1,143 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-24 LATEST-31: FETCHER FIXED + UNPATCHED 0079+0082 KERNEL BACK FROM CI + E1 NO-CONSOLE MSDC IMAGE BUILT - A/B PAIR SURGICAL; PHONE TEST NEXT)
+
+- User truth (confirmed): the msdcroot0 image froze AGAIN at
+  `DLIL: running SUM16 self-tests ... PASSED` after a cold power-off,
+  and the very next cold boot of the dlilplain image reached userspace
+  (LATEST-30). Environment no longer explains the msdc image's freeze.
+  Remaining candidates: the fbcon-1x BINARY PATCH vs the
+  0082-compiled-in code/layout.
+- tools/fetch-kernel-artifact.py FIXED: urllib forwarded the GitHub
+  Authorization header on the cross-host 302 to the signed Azure blob
+  URL (productionresultssa15.blob.core.windows.net) and Azure 401s
+  ("Server failed to authenticate... www-authenticate" = an AZURE
+  error). fetch() now follows redirects via a _NoRedirect opener and
+  drops auth on cross-host hops. curl.exe always dropped it - that is
+  why the docstring route worked on Oct 18. GitHub metadata calls
+  (list) worked all along with the same gho_ token.
+- Artifact 12519256732 (msdc-0079 run 39991300459) re-downloaded to
+  research/art-msdc-0079/ (zip 60,029,832 B):
+  kernel.development.sweet SHA256
+  65c85ab77bc5d0ae74447efb22644cf06f86749af59e9f489c318f3e62c8507b =
+  recorded value. Also kernel.development.sweet.link/, SHA256SUMS/,
+  kdk-libs/. The UNPATCHED 0079+0082 kernel Mach-O is thus locally
+  available again (no CI build needed for A/B experiments).
+- PACKED-KERNEL DISSECTION of the stuck image (unpack_bootv2 ->
+  research/tmp-msdc-split/; scripts split.py, payload-diff.py,
+  adtpeek.py live there): payload = 16,611,984 B SWEETXNU v1, nsegs=10
+  = KERNEL SEGMENTS ONLY (seg9 = __LINKEDIT 3,887,000 B at 0xc203f0),
+  **NO embedded ramdisk** - correct for rd=msdcroot0 (roots on
+  iosroot.img, not a mockfs). The earlier "last seg = merlin-init" read
+  was WRONG; bogus merlin-init.bin / payload-noconsole.bin /
+  payload-md0.bin and the invalid
+  shim-boot-merlin-msdc-fb1x-0079-rdmd0.img were DELETED.
+  cmdline at payload 0x48 (debug=0xc serial=3 cpus=1 keepsyms=1
+  -enable_kprintf_spam -noprogress rd=msdcroot0); ADT at 0xfd5390 =
+  9,976 B merlin-phone-msdc.adt WITH /product (identity theory
+  weakens) + /merlin-msdc reg 0x11230000 + sweet-fbcon reg 0x7e605438
+  1080x2340 stride 4320.
+- QEMU check of the patched payload (qemu-shim shim/out-qemu-phone,
+  research/tmp-msdc-qemu/): kprintf init, console 0x7e605438 w=1080
+  h=2340, then EARLY abort at `pe_arm_map_interrupt_controller: failed
+  to find the interrupt-controller` -> data abort (esr 0x56000010,
+  far 0xfffffe000b380000, pc 0xfffffe0007a79a20, SWEET GIC virtual
+  timer INITID before it). EXPECTED: payload carries the PHONE ADT;
+  QEMU virt GIC regs differ. So QEMU cannot cross-examine the DLIL
+  region for this payload as-is; a hybrid-ADT rebuild (mkpayload with
+  a mkadt --qemu-gic ADT) is now POSSIBLE (kernel Mach-O available)
+  but optional.
+- E1 (splits fbcon-patch vs 0082-layout): research/tmp-msdc-split/
+  payload-noconsole2.bin built by mkpayload (CI kernel + extracted
+  ADT + original cmdline, NO --ramdisk) = 16,611,984 B, byte-size
+  identical to the stuck payload, same kernel_end 0xfffffe00084cc000,
+  same seg table; payload-diff.py: all differing bytes confined to
+  0xa77ed4..0xa78384 (~1.9 KB in __TEXT_EXEC = the two patched fbcon
+  functions) - PURE A/B. Packed with the same shim blob (190,674 B)
+  and dtb (181,203 B) into research/merlin-boot/
+  shim-boot-merlin-msdc-noconsole.img (16,990,208 B), verified by
+  unpack_bootv2 (header mirrors the stuck image, ramdisk 16,611,984,
+  rd=msdcroot0 intact).
+- NEXT: cold power-off; fastboot boot
+  research/merlin-boot/shim-boot-merlin-msdc-noconsole.img; watch
+  >= 5 min; photo the settled screen bottom. MSDC/GPT/BSD-root lines
+  visible -> the CONSOLE PATCH was the killer (then drop 1x for
+  bring-up, or re-derive it for this kernel). Still frozen at SUM16 ->
+  0082-compiled-in suspect -> merge 0083 DLIL prints onto msdc-0079
+  (needs push + CI build = user approval). If clear to launchd ->
+  first real iOS userspace on iosroot.img.
+- Commit: "fetch-kernel-artifact: drop auth on cross-host artifact
+  redirects; notes LATEST-31" (research/ paths are gitignored; only
+  the tool fix + notes go in).
+
+## Agent handoff / active work (2026-10-24 LATEST-30: DLILPLAIN BOOTS PHONE TO USERSPACE - DLIL THREADS VERIFIED RUNNING ON HW; MSDC COLD-RETRY OUTCOME PENDING)
+
+- Photo (rotated 90; read with ring-wrap semantics - the dlilplain kernel
+  uses the STOCK scale-2 console, newest lines wrap to the TOP):
+  **research/merlin-boot/shim-boot-merlin-dlilplain.img (a00abe2+0083
+  DLIL-instrumented kernel, rd=md0) booted the phone ALL THE WAY TO
+  USERSPACE.** Visible chain: `DLILDBG: detacher func entered` /
+  `detacher lock taken` / `detacher block now` / `main cont embryonic,
+  decr` -> `dlil_init: All the created dlil kernel threads have been
+  scheduled at least once. Proceeding.` -> `SK101: skmem_region_init` ->
+  full Skywalk self-test battery PASSED -> `bsd_autoconf: calling
+  kminit` -> ifnet_attach waits for lo0/gif0/stf0 all `Proceeding.` ->
+  `BSD root: md0, major 1, minor 0` -> userspace `MERLIN init: still
+  alive` x6 (newest lines at the top post-wrap).
+- This ANSWERS LATEST-23's open question for the healthy case: the DLIL
+  main input + detacher threads get created, scheduled AND call
+  dlil_decr_pending_thread_count - scheduler and locks fine in principle.
+  Also re-proves environment sensitivity: the same phone that freezes at
+  SUM16 in other boot states boots the instrumented kernel cleanly.
+- PENDING (asked the user): was the msdcroot0 image
+  (shim-boot-merlin-msdc-fb1x-0079.img) cold-retried BEFORE the dlilplain
+  boot, and did it still freeze at SUM16? Fork:
+  (a) still frozen at SUM16 (cold) -> the 1x fbcon binary patch on the
+  msdc-0079 kernel is a suspect (a console-side hang looks identical:
+  last printf drawn, kernel may live on; note LATEST-23's Test C only
+  exonerated the console for the OLD dlil-region hang, which is one step
+  LATER than this one). Next: pack a no-1x-console msdc image locally
+  from the unpatched kernel (xnu/out-0079 artifact) and/or merge 0083
+  DLIL prints onto msdc-0079 (CI build, user approval).
+  (b) not retried yet -> cold power-off, boot the msdc image first.
+- The msdcroot0 boot remains the required next step for the LATEST-28
+  questions (MERLIN MSDC/GPT/mount lines, `BSD root: msdcroot0`, iOS
+  launchd on the flashed iosroot.img).
+
+## Agent handoff / active work (2026-10-24 LATEST-29: MSDCROOT0 BOOT FREEZES RIGHT AFTER `DLIL: SUM16 ... PASSED` - BEFORE THE dlil WAIT PRINT; DLILDBG IMAGE = READY DISSECTION)
+
+- **Correction of LATEST-28 + new datum**: "booted past the dlil hang" was
+  never substantiated (the settled-bottom photo was pending). Today the
+  user reports the msdcroot0 boot console freezes with
+  `DLIL: running SUM16 self-tests ... PASSED` as the bottom line, watched
+  ~5 min. Per dlil.c (research/tmp-gic/dlil.c, dlil_init ~2675-2715) and the
+  healthy QEMU reference (abtest/fullfix60/fb.txt:72-75), the VERY next
+  console line is `dlil_init: Waiting for all the create dlil kernel
+  threads...` - it never printed. So the stop is in
+  `dlil_create_input_thread` / detacher `kernel_thread_start` /
+  `lck_mtx_lock(dlil_thread_sync_lock)` - a step EARLIER than the LATEST-23
+  hang (which printed `Waiting...`), and nowhere near the MERLIN MSDC
+  driver (no `MERLIN MSDC:` lines at all; storage questions unanswerable
+  from this boot). Nothing in that window has a timeout; QEMU clears it
+  instantly.
+- Top hypothesis unchanged: environment-sensitive DLIL bring-up on warm
+  boot (phone reached userspace once, hung repeatedly in this DLIL region,
+  cold power-off un-stuck it once; QEMU unaffected with identical payloads).
+- Non-destructive plan (fastboot boot only): (1) cold power-off -> (2) retry
+  `shim-boot-merlin-msdc-fb1x-0079.img` (rd=msdcroot0; if it clears we get
+  the MERLIN MSDC/GPT/mount + `BSD root: msdcroot0` lines finally);
+  (3) if still stuck at SUM16, `fastboot boot
+  research/merlin-boot/shim-boot-merlin-dlilplain.img` (a00abe2+0083
+  DLIL-instrumented kernel, DLILDBG prints: created/pending, waiting,
+  thread entry + decr lines; rd=md0; QEMU-validated to userspace) and
+  photograph the settle point - that answers whether the DLIL threads get
+  created and run at all (scheduler) or block on dlth_lock /
+  dlil_thread_sync_lock. NOTE: dlilplain is a DIFFERENT kernel build and
+  rd=md0 - it dissects DLIL, not the storage path.
+- Fallback: merge the 0083 dlil-debug print patch onto the msdc-0079 branch
+  (0079+0082) so one instrumented kernel boots rd=msdcroot0 directly;
+  needs an ios-sweet CI build (push = user approval).
+
 ## Agent handoff / active work (2026-10-24 LATEST-28: PHONE BOOTED PAST THE DLIL HANG ON THE MSDCROOT0 IMAGE; IOSROOT FLASHED TO USERDATA (66/67 CHUNKS); AWAITING MSDC/GPT LOG)
 
 - **The phone boots the msdcroot0 image past the dlil hang** (cold power-off
