@@ -31,21 +31,23 @@ os=$1 sysos=$2 appos=$3 out=$4 size=${5:-16G}
 
 # The WSL kernel ships no hfsplus; load the module built per the LATEST-27
 # recipe (the /lib/modules copy vanishes on VM restarts, /root/hfsmod does
-# not - insmod directly and it is back for this session).
-if ! grep -q '^nodev[[:space:]]\+hfsplus$' /proc/filesystems; then
-	if ! modprobe hfsplus 2>/dev/null; then
-		[[ -e /root/hfsmod/hfsplus.ko ]] || {
-			echo "no hfsplus filesystem support: build /root/hfsmod/hfsplus.ko" >&2
-			echo "(out-of-tree module recipe in NOTES.md LATEST-27)" >&2
-			exit 1
-		}
-		insmod /root/hfsmod/hfsplus.ko
-		grep -q '^nodev[[:space:]]\+hfsplus$' /proc/filesystems || {
-			echo "insmod of /root/hfsmod/hfsplus.ko did not provide hfsplus" >&2
-			exit 1
-		}
-		echo "hfsplus module loaded (insmod)"
-	fi
+# not - insmod directly and it is back for this session). NOTE: hfsplus is
+# a block-device fs, /proc/filesystems lists it WITHOUT a "nodev" prefix.
+if ! grep -qw 'hfsplus' /proc/filesystems; then
+	modprobe hfsplus 2>/dev/null || true
+fi
+if ! grep -qw 'hfsplus' /proc/filesystems; then
+	[[ -e /root/hfsmod/hfsplus.ko ]] || {
+		echo "no hfsplus filesystem support: build /root/hfsmod/hfsplus.ko" >&2
+		echo "(out-of-tree module recipe in NOTES.md LATEST-27)" >&2
+		exit 1
+	}
+	insmod /root/hfsmod/hfsplus.ko 2>/dev/null || true
+	grep -qw 'hfsplus' /proc/filesystems || {
+		echo "hfsplus still not registered in /proc/filesystems" >&2
+		exit 1
+	}
+	echo "hfsplus module loaded (insmod)"
 fi
 
 work=$(mktemp -d)
