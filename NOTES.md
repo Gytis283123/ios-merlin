@@ -1,5 +1,81 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-24 LATEST-37: FLASH #3 COMPLETE (47/47 OK, decoy tail worked); BOOT #5 = DYLD CACHE ACCEPTED + launchd RAN DEEP USERLAND JOBS; NEW WALL DECODED "Unable to find AMFI" = launchd_cache_loader's IOKIT LOOKUP; FIX = launchd_unsecure_cache BOOT-ARG; BOOT #6 IMAGE READY)
+
+- FLASH #3 SUCCESS: `fastboot flash userdata iosroot-v2.img` with the
+  64 MiB `0xFF` decoy tail appended (17,226,006,528 B) -> 47/47 chunks
+  ALL OKAY, "Finished. Total time: 1013.498s". The decoy changed the
+  sparsifier geometry (7x~256MB chunks instead of 92x~128MB) and under
+  that geometry EVERY chunk incl. the last wrote OKAY. The eMMC volume
+  is now complete (incl. the ~123 MiB lost in flashes #1/#2). The
+  LK final-chunk root cause is NOT solved - the decoy is the standing
+  mitigation (keep it for future userdata flashes); root-cause from LK
+  source later if time permits.
+- BOOT #5 (0083 image + flashed v2 rootfs): **THE SHARED-CACHE FIX
+  WORKS.** No "no dyld cache" wall. launchd ran REAL iOS jobs on HW:
+  FudEarlyBoot (Starting/Exiting Early Boot, no accessories, critical
+  entries 0.000000 sec), tzinit (nonfatal "Bad zonelnfo Link : no such
+  file", "Invalid current symlinks; resetting to system partition"),
+  FinishRestoreFromBackup/finish_restore/systemstasuschack,
+  prng_prngseedctl ("apple rng seed: (-76) no such file" - expected
+  without APCFS; "failed to load virtual random (-356870212)").
+  then: `panic(cpu 0 caller 0xffffffe0007a7b2fc): launchd_cache_loader[231]
+  exited -- exit reason namespace 7 subcode 0x1 description: Unable to
+  find AMFI` (+ "pid 23 exited" line, core-gen errno 14 harmless).
+  reason.h decode: ns 7 = **OS_REASON_LIBXPC** (reconfirms ns 9 = EXEC,
+  0xe = WRONG_PLATFORM for boot #4). "handshake structure not
+  initialized" = xnu kdp out_shmem.c panic-printer path - red herring,
+  ignore. "launchd_cache_loader" is NOT in xnu = userspace helper.
+- AMFI ROOT CAUSE DECODED (disassembly of /usr/libexec/
+  launchd_cache_loader, 72,336 B, extracted to research/forensics/):
+  - It is launchd's bootstrap verifier: opens launchd's stashed mach
+    ports (mach_ports_lookup), logs to
+    /var/log/com.apple.xpc.launchd/launchd_cache_loader.log, reads
+    /System/Library/xpc/launchd.plist + .sig, SecStaticCodeCreateWithPath
+    -> SecCodeSetDetachedSignature -> SecStaticCodeCheckValidity ->
+    SecCodeCopySigningInformation (kSecCodeInfoUnique = cdhash),
+    then IOKit: IOServiceMatching("AppleMobileFileIntegrity") ->
+    IOServiceGetMatchingService -> cbz w0 -> abort "Unable to find
+    AMFI" -> libxpc exit reason ns 7 -> launchd panics the system.
+    (Later: IOServiceOpen type 0 + IOConnectCallMethod selector 6 with
+    cdhash bytes -> "cdhash trusted"/"not in trust cache"; amfid has
+    the identical dependency: "Unable to find AMFI service." /
+    "Unable to open AMFI user client".)
+  - SWEET's builtin AMFI (patches 0025/0035/0036) is kernel-internal
+    only: amfi_interface_register() (libkern/amfi/amfi.h) +
+    SweetEntitlements + CS_SIGNED/platformBinary marking. It publishes
+    NO IOKit IOService -> nothing userspace can find.
+  - **ESCAPE HATCH FOUND IN THE BINARY**: it reads sysctl kern.bootargs
+    and substring-searches for **`launchd_unsecure_cache=`** (presence
+    only, any value). When present it prints "Using unsecure cache:
+    <path>" and jumps STRAIGHT to the send-to-launchd path (mmap plist
+    -> copy into launchd's mapped memory -> "Cache sent to launchd
+    successfully"), BYPASSING SecStaticCode + the entire AMFI
+    handshake. Apple-internal testing mechanism shipped on both sides
+    (sender + launchd). This is a cmdline-only fix: no CI, no reflash.
+- BOOT #6 BUILT + SELF-VERIFIED:
+  research/merlin-boot/shim-boot-merlin-msdc-0083-simlaunch-unsec.img
+  (16,989,139 B; same 0083 kernel 66750d31..., same proven cmdline PLUS
+  `launchd_unsecure_cache=1`).
+- NEXT USER STEPS:
+      fastboot boot research\merlin-boot\shim-boot-merlin-msdc-0083-simlaunch-unsec.img
+  Photograph: (1) the EARLY screen with `MERLIN MSDC: "userdata" first
+  sector 0x..., NNNN MiB` line (still never captured - settles the true
+  partition size + win/esp grow-back); (2) launchd_cache_loader lines
+  (expect "Using unsecure cache: /System/Library/xpc/launchd.plist" +
+  "Cache sent to launchd successfully" instead of the AMFI abort);
+  (3) whatever comes next - the next candidates are amfid (same IOKit
+  dependency; if IT panics, the escalation is a kernel-side IOKit
+  "AppleMobileFileIntegrity" service + user client, a real patch), the
+  preboot/errno-25 ignition path, and personableness.
+- AMFI DISASM ARTIFACTS (gitignored research/forensics/): amfid,
+  launchd_cache_loader binaries, lcl-strings.txt, lcl-disasm.txt (full
+  symbol-annotated, 1349 lines), amfid-bind.txt. probe-amfi{1,2,3}.sh
+  in research/tmp-msdc-split/. WSL mounts /tmp/mOSv (OS dmg) +
+  /tmp/mDSCv (DSC dmg) are FRESH user-mode apfs-fuse mounts (previous
+  /tmp/apfs* died in a VM restart; stale root-owned dirs block
+  remounting AT THE SAME PATH - always mkdir fresh names).
+
 ## Agent handoff / active work (2026-10-24 LATEST-36: launchd RAN (libignition prints on HW!) BUT DYLD 'no dyld cache' KILLED THE STAGED RE-EXEC; ROOTFS MISSING THE WHOLE SHARED CACHE - SOURCE = SECOND IPSW DMG 087-86593-047.dmg; mkiosroot v2 READY; USER TO REBUILD + REFLASH)
 
 - BOOT #4 (shim-boot-merlin-msdc-simlaunch.img = SAME kernel artifact
