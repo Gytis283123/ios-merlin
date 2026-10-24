@@ -98,8 +98,17 @@
       read bug (fix the CMD17 path); zero mismatches while the slide
       overflow recurs -> eMMC content wrong -> mtkclient read-back hash
       of the cache-file LBA ranges (extent map from the HFS+ catalog).
-  (2) SAME boot image, no rebuild: add `zlog1=kalloc.8192 -zc` to the
-      cmdline to catch the UAF writer's allocating/freeing backtraces.
+  (2) DONE - ZLOG BOOT IMAGE BUILT + SELF-VERIFIED:
+      research/merlin-boot/shim-boot-merlin-msdc-0083-simlaunch-unsec-zlog.img
+      (16,989,139 B, SHA256 47f84b16e0c13a3eb750244e92e44971b9bd790f440
+      ba6e3f855fc10c1c60ef5). Same 0083 kernel (66750d31... re-verified
+      pre-build), same shim slot + dtb byte-identical to E1, cmdline =
+      the proven boot-6 args + `zlog1=kalloc.8192 -zc`. zlog1=kalloc.
+      8192 tracks BOTH kalloc.8192 and data.kalloc.8192 (prefix match,
+      zalloc.c:2929-2936); -zc = corruption_debug TUNABLE (:3233); btlog
+      creation is boot-arg-driven, not config-gated (:3311-3316) ->
+      DEVELOPMENT kernel logs alloc/free backtraces and zalloc_uaf_panic
+      prints them. Boot it exactly like boot #6 and photograph.
 - Artifacts: workflow deliverable "Boot #6 decode report" (markdown,
   primary) + "Boot #6 signature decodes" (table), attached to run
   dwfrun-c906df4f-0fe8-40e1-9d9a-a9bea2867524. research/tmp-msdc-split/
