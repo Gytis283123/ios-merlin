@@ -1,5 +1,99 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-24 LATEST-36: launchd RAN (libignition prints on HW!) BUT DYLD 'no dyld cache' KILLED THE STAGED RE-EXEC; ROOTFS MISSING THE WHOLE SHARED CACHE - SOURCE = SECOND IPSW DMG 087-86593-047.dmg; mkiosroot v2 READY; USER TO REBUILD + REFLASH)
+
+- BOOT #4 (shim-boot-merlin-msdc-simlaunch.img = SAME kernel artifact
+  69a42869 + boot-arg `unentitled_ios_sim_launch=1`): THE PLATFORM-GATE
+  FIX WORKS. iOS 16.7.16 launchd EXECUTED AND RAN USERLAND CODE ON HW:
+  libignition state dump (`initproc 0x1`, `rootfs mount flags
+  0x04048001`, `platform 0xffffffffffffffff` (watch), `boot space 0x2`,
+  `stage count 0x7`), `hello: commence primary ignition`, `hello: hello
+  from launchd,1`; then `preboot : mounting preboot` ->
+  `failed to to lookup preboot : 25` -> `preboot : failed to get preboot
+  devices: 25` -> `ignite() returned 25` -> `ignition boot failed: 25`.
+  launchd CONTINUED past the ignite failure to its next stage.
+- NEW WALL = the staged re-exec (same pid 1, vfork-exec of
+  /sbin/launchd): dyld `Library not loaded:
+  /usr/lib/libSystem.B.dylib ... Reason: tried '/usr/lib/libSystem.B.dylib'
+  (no such file), no dyld cache), '/usr/local/lib/libSystem.B.dylib'
+  (no such file)` -> `pid 1 exited -- exit reason namespace 6 subcode
+  0x1` (ns 6 = OS_REASON_DYLD); core dump attempt failed errno 14;
+  kernel panic `initproc failed to start -- exit reason namespace 6
+  subcode 0x1 description: library not loaded: /usr/lib/libSystem.B.dylib`
+  (the CORRECT kern_exit.c proc_handle_critical_exit panic, caller
+  0xfffffe000807af02f0c; panic machinery all working as designed).
+- ROOTFS FACTS (7z listing research/ipsw-x/iosroot.img, 318k entries):
+  /usr/lib/dyld loader PRESENT (922,912 B); /System/Library/dyld ABSENT
+  entirely; /System/Library/Caches has NO com.apple.dyld. The SOURCE
+  is dirty too: apfs-fuse of BOTH 087-86698-044.dmg (the OS dmg) and
+  rootfs.img (its previous raw conversion) show NO dyld dir anywhere.
+  -> THE CACHE LIVES IN THE SECOND IPSW DMG: `087-86593-047.dmg`
+  2,743,074,816 B - never mounted by previous sessions (the "no
+  cryptex dmgs" verdict came from size-guessing; it IS a cryptex-like
+  dsc volume). apfs-fuse shows
+  `/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64{,
+  .01..40}` + `.27/.41.dylddata` + `.28/.42.dyldlinkedit` + `.symbols`
+  = 44 files, 3,330,359,296 B LOGICAL (dmg 2.55 GB compressed; sparse
+  split-map clone layout - du shows 0, logical sizes are real);
+  headers `dyld_v1  arm64` verified; head/tail/sha256 probes all read
+  PROBE script: research/tmp-msdc-split/probe-dsc.sh (WSL apfs-fuse
+  works USER-MODE, /dev/fuse is 666 - no sudo needed for the dmg side).
+  The trampoline loose dylibs (usr/lib/libobjc-trampolines.dylib,
+  libffi-trampolines.dylib, libstdc++*) are in the dsc volume too;
+  mkiosroot's loose-file cryptex loop will link them into the root.
+- FIX COMMITTED (ios-merlin 2ccbfc5): tools/mkiosroot.sh ALSO hard-links
+  the cache to `/System/Library/dyld` (the regular iOS 13+ lookup path)
+  in addition to the existing `/System/Library/Caches/com.apple.dyld`
+  (script comment: ignition_level=1 looks there). Neither path was
+  reached before because the A11 build passed `-` for sysos.
+- NEXT USER STEP (WSL build ~10-20 min, then flash ~15-25 min):
+    wsl: cd /mnt/d/things/Merlin/ios-merlin
+         sudo bash tools/mkiosroot.sh \
+             research/ipsw-x/087-86698-044.dmg \
+             research/ipsw-x/087-86593-047.dmg \
+             - research/ipsw-x/iosroot-v2.img 16G
+    then Windows:
+         fastboot flash userdata research\ipsw-x\iosroot-v2.img
+         (same reflash decision as LATEST-28; wipes phone-rootfs state
+          incl. journal mutations of boots #3/#4)
+         fastboot boot research\merlin-boot\shim-boot-merlin-msdc-0083-simlaunch.img
+  (0083 kernel = permanent platform-gate fix; the
+  unentitled_ios_sim_launch=1 boot-arg stays in the cmdline as harmless
+  redundancy.)
+- OPEN RISKS for boot #5: (a) the preboot-volume lookup may STILL fail
+  (single-partition root, errno 25 was non-fatal pre-cache); (b) 3.1 GB
+  cache maps lazily - file-backed/evictable, fine on 3-4 GB RAM;
+  (c) dyld will hammer the driver with scattered reads across 3GB of
+  sparse split files - reads are proven through 0082.
+- FORK CI: 0083-merlin-launchd-platform @79c3634 - run 40096809453
+  COMPLETED SUCCESS. ARTIFACT-GOTCHA RESOLVED (do not repeat): the
+  repo-wide artifact list shows an `xnu-kernel` id 12561570287
+  (178 KB, kdk-libs only, EMPTY SHA256SUMS) - that one belongs to
+  STALE run 40096726697 @7350bf4 (the cancelled duplicate; its upload
+  still landed, created 13:08:20Z). The REAL artifact for run
+  40096809453 is id 12560954555 (60 MB, created 13:15:52Z).
+  LESSON: an artifact id from the generic list must be cross-checked
+  against its `workflow_run` (run id + head sha) or the job log line
+  `Artifact xnu-kernel has been successfully uploaded! ... Artifact
+  ID is ...` - never take the newest-looking id.
+- 0083 KERNEL FETCHED + VERIFIED: research/art-0083/ now holds the
+  real payload: kernel.development.sweet 17,207,192 B,
+  SHA256 66750d3185e4d978e65c44ff6d0a974f3d3d26bd0cba6f573b2c2da9733c48c5
+  == artifact's SHA256SUMS (verified). Same byte size as the
+  on-device-proven 69a42869 build, different SHA - consistent with
+  the small in-place process_signature change (0083 adds no strings).
+  Chain: artifact <- run 40096809453 <- head 79c3634 (msdc-0079 +
+  0083).
+- BOOT IMAGE BUILT: research/merlin-boot/
+  shim-boot-merlin-msdc-0083-simlaunch.img 16,989,139 B,
+  SHA256 71f9c3e6cb112f254e00bf9cc9ae3d896707c46a952c17fa21987f0d6bafe5f0
+  - kernel = art-0083 0083 build; cmdline IDENTICAL to the proven
+  simlaunch image (`... rd=msdcroot0 unentitled_ios_sim_launch=1`;
+  boot-arg KEPT - harmless redundancy next to the in-kernel 0083
+  fix); repacker self-checks passed (shim slot + dtb byte-identical
+  to the E1 image; payload 16,611,984 B).
+- BOOT #5 SHOULD USE THIS IMAGE (kernel-side gate fix + boot-arg).
+
 ## Agent handoff / active work (2026-10-24 LATEST-35: launchd SIGKILL DECODED = EXEC_EXIT_REASON_WRONG_PLATFORM; ROOTFS MOUNTS; FIX = unentitled_ios_sim_launch BOOT-ARG (no CI needed) + FORK PATCH 0083 (79c3634, CI building))
 
 - BOOT #3 (shim-boot-merlin-msdc-blknum.img, kernel artifact
