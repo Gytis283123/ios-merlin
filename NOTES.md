@@ -1,5 +1,110 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-24 LATEST-38: BOOT #6 = AMFI WALL CLEARED + SPRINGBOARD LAUNCHED (FIRST EVER); NEW WALL = SHARED-CACHE SLIDE OVERFLOW WITH IMAGE BYTES PROVEN GOOD -> SUSPECT = DEVICE READ PATH (0082 CMD17 DRIVER OR eMMC CONTENT); Jnl 0x19 = MISSING DKIOCSYNCHRONIZE (BENIGN); TERMINAL PANIC = GENUINE kalloc.8192 UAF; NEXT = 0084 READ-VERIFY + IOCTL PATCH)
+
+- BOOT #6 (shim-boot-merlin-msdc-0083-simlaunch-unsec.img, boot-arg
+  launchd_unsecure_cache=1) RESULT (user photo): THE ESCAPE HATCH WORKS.
+  No "Unable to find AMFI" abort; launchd exec'd real iOS daemons
+  (AppleCredentialManagerDaemon, CommCenter, fseventsd, mobiletimerd,
+  imagent, Logd helper, xpcproxy - the "exec X" lines are SWEET 0042's
+  logger) and **SpringBoard[26] launched and crashed - the first boot
+  ever to reach SpringBoard**. Then processes died SIGBUS and the kernel
+  panicked. Photo OCR is fuzzy on some hex digits (caveats below).
+- FULL DECODE via dynamic workflow (run
+  dwfrun-c906df4f-0fe8-40e1-9d9a-a9bea2867524; 4 source decoders + WSL
+  cache-integrity verifier + citation-rechecking synthesizer;
+  deliverable = "Boot #6 decode report" artifact). Findings:
+- (1) SOURCE-PROVEN: `vm_shared_region_slide_page() offset overflow:
+  pageIndex=9184, start_offset=8` = the v2 chained-fixup slider walking
+  the rebase chain past the 4K page end (osfmk/vm/vm_shared_region.c:3088
+  inside rebase_chain; v2-only path - v1/v3/v4 have separate code). On
+  failure the kernel neither skips nor panics: the shared-region pager
+  fails THAT page's fault with KERN_MEMORY_ERROR
+  (vm_shared_region_pager.c:752-756) -> every process touching the page
+  dies SIGBUS. SpringBoard's `code 0x10000000a` = EXC_BAD_ACCESS<<32 |
+  KERN_MEMORY_ERROR(10), far inside the tag-32 (VM_MEMORY_SHARED_PMAP)
+  shared-cache map; the crash lines themselves are SWEET patches
+  0043-sweet-console-crash-log.patch:34,74 (printer: code/sub/slide/mh;
+  photo "wih" = "mh" = task mach_header) + 0066-sweet-crash-fault-region
+  .patch:13-18 (the map line). xpcproxy's `sub 0x3a6f727940` holds
+  ASCII (":ory@") - a wild pointer from garbage data, same class.
+- (2) IMAGE EXONERATED (byte-proven this session): all 44 dyld-cache
+  files inside iosroot-v2.img are size+sha256-identical to the
+  087-86593-047.dmg sources (full digests in
+  research/tmp-msdc-split/img.sha; the (size,sha256) bijection consumes
+  all 44 cache-sized iNodes, 0 mismatches). Kernel-exact simulation of
+  the v2 chain walk (research/tmp-msdc-split/probe3.py, port of
+  rebase_chain_64) over the ON-IMAGE bytes: pageIndex 9184 (and sweep
+  9170-9200) in ALL FOUR slide-info mappings walk clean (342/110/321/351
+  hops); on-image page_starts[9184] is 0x0 or 0x4 - NEVER the 2
+  (=start_offset 8) the runtime consumed. A zero-filled page terminates
+  in 1 hop (cannot trip the print). Only the two split-DATA files
+  (.27/.41 dylddata, 187,105,280 B and 102,547,456 B) carry slide info
+  (v2, 4K pages); TEXT subcaches have none.
+  => THE BYTES THE KERNEL CONSUMED AT RUNTIME WERE NOT THE IMAGE'S BYTES.
+- (3) THEREFORE (INFERENCE, not yet discriminated): the divergence is
+  in the DEVICE read path - either (a) the 0082 MSDC CMD17 basic-DMA
+  read served wrong bytes for some reads (e.g. a silent failure leaving
+  stale bounce-buffer content), or (b) the eMMC content differs from the
+  flashed image (fastboot OKAY is NOT data verification; flashes #1/#2
+  demonstrably lost chunks, #3 was 47/47 OKAY but unverified).
+- (4) SOURCE-PROVEN BENIGN: `Jnl: b(1, 0): flushing fs disk buffer
+  returned 0x19` = ENOTTY (25; errno.h:117): the HFS journal's
+  write_journal_header() issues DKIOCSYNCHRONIZE (hfs-627.100.6
+  core/hfs_journal.c:482,498 - upstream Apple code, sha pinned by
+  0026-stage-hfs.sh) and merlin_msdc_ioctl (0082 patch :563-596) does
+  not implement it -> default ENOTTY. NOT an I/O failure; the journal
+  continued. Fix = `case DKIOCSYNCHRONIZE: return 0;` (truthful: 0082
+  writes are synchronous, on media before strategy returns). Also add
+  DKIOCGETFEATURES (probed at journal open; ENOTTY -> no barrier ->
+  full flush every header write = why the line repeated). The boots
+  #4/#5 "lookup preboot : 25" same-errno theory is UNPROVEN (libignition
+  is closed-source, no artifact in workspace). DKIOCGETMAXBLOCKCOUNTWRITE
+  returning 0 is a separate oddity worth the next driver rev.
+- (5) SOURCE-PROVEN: terminal `panic ... [data.kalloc.8192]: element
+  modified after free (off:704 ...)` = the always-on arm64 kalloc
+  zero-check (zalloc.c:3069-3097 zalloc_uaf_panic; frees bzero the
+  element, so a non-zero word at off 704 = genuine WRITE-AFTER-FREE).
+  The panic's caller is the DETECTOR, not the writer. EXCLUDED as
+  writers: the 0082 driver's DMA (permanent 64KiB kmem bounce buffer,
+  DMA never targets kalloc memory) and the SWEET crash reporter
+  (allocates nothing, balanced refs). Writer unknown - most consistent
+  with an independent kernel UAF or crash-storm fallout (kalloc.8192 =
+  6145-8192 B kalloc_data buffers; hottest users this boot: AMFI
+  entitlement XML copies (patch 0035), HFS journal buffers). Catch it:
+  boot-args `zlog1=kalloc.8192 -zc` (cmdline-only, NO kernel rebuild:
+  build-msdcroot0.py --cmdline).
+- IMAGE-CONTAINER GOTCHA (integrity verifier): iosroot-v2.img can NO
+  LONGER be mounted read-only by Linux hfsplus - the decoy tail moved
+  the file end so the backup-volume-header slot the Linux driver checks
+  (device_end-1024) lands in 0xFF decoy ("invalid secondary volume
+  header"). XNU never needs the backup VH (boots fine). The verifier
+  read the image side via 7-Zip 26.04's HFS+ handler instead (primary
+  VH + catalog + forks; cross-validated against raw VH bytes). Future
+  image-side checks: 7z, or repair the backup VH after padding.
+- NEXT STEPS (recommended order):
+  (0) FREE: if the panic screen still persists on the phone, one sharp
+      photo of the panic block (off/val/ptr + dump lines and the CRASH
+      lines' exact hex) - settles OCR-fuzzy digits (slide_amount
+      4006251568 = 0xEECA8C30 is NOT 16K-aligned and would have been
+      rejected at map time = misread; xpcproxy slide 0x167e10000
+      exceeds the 32-bit sr_slide field).
+  (1) THE DECISIVE EXPERIMENT - driver patch 0084: boot-arg
+      `msdc_readverify=1` double-read+compare in strategy (re-read every
+      completed read and memcmp against the served copy; print LBA +
+      attempt count on mismatch) PLUS DKIOCSYNCHRONIZE /
+      DKIOCGETFEATURES / MAXBLOCKCOUNTWRITE ioctl fixes. Needs fork push
+      + CI build (user approval). Verdicts: mismatch prints -> DRIVER
+      read bug (fix the CMD17 path); zero mismatches while the slide
+      overflow recurs -> eMMC content wrong -> mtkclient read-back hash
+      of the cache-file LBA ranges (extent map from the HFS+ catalog).
+  (2) SAME boot image, no rebuild: add `zlog1=kalloc.8192 -zc` to the
+      cmdline to catch the UAF writer's allocating/freeing backtraces.
+- Artifacts: workflow deliverable "Boot #6 decode report" (markdown,
+  primary) + "Boot #6 signature decodes" (table), attached to run
+  dwfrun-c906df4f-0fe8-40e1-9d9a-a9bea2867524. research/tmp-msdc-split/
+  img.sha holds the 44 reference digests; probe3.py the chain simulator.
+
 ## Agent handoff / active work (2026-10-24 LATEST-37: FLASH #3 COMPLETE (47/47 OK, decoy tail worked); BOOT #5 = DYLD CACHE ACCEPTED + launchd RAN DEEP USERLAND JOBS; NEW WALL DECODED "Unable to find AMFI" = launchd_cache_loader's IOKIT LOOKUP; FIX = launchd_unsecure_cache BOOT-ARG; BOOT #6 IMAGE READY)
 
 - FLASH #3 SUCCESS: `fastboot flash userdata iosroot-v2.img` with the
