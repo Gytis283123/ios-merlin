@@ -61,6 +61,16 @@ def posix_path(p):
     return os.path.abspath(p).replace('\\', '/')
 
 
+def append_cmdline(payload, extra):
+    """Append a boot-arg to the payload's fixed 608-byte cmdline field."""
+    cmd = payload[0x48:0x48 + BOOT_LINE_LENGTH].split(b'\0', 1)[0]
+    if extra.encode() in cmd.split():
+        return payload
+    cmd += b' ' + extra.encode()
+    assert len(cmd) < BOOT_LINE_LENGTH, 'cmdline overflow'
+    return payload[:0x48] + cmd.ljust(BOOT_LINE_LENGTH, b'\0') + payload[0x48 + BOOT_LINE_LENGTH:]
+
+
 def build_image(payload):
     """Return (phys_base, ram_image, boot_args_pa, entry_pa)."""
     magic, ver, nsegs = struct.unpack_from('<8sII', payload, 0)
@@ -164,18 +174,18 @@ def payload_data(payload, va, size):
     raise ValueError(f'VA {va:#x}+{size:#x} not in initialized payload segments')
 
 
-def decode_screen(raw, font):
-    """Exact glyph matching for pe_serial.c's 2x, white-on-black fbcon."""
+def decode_screen(raw, font, scale=2):
+    """Exact glyph matching for the white-on-black framebuffer console."""
     glyphs = {font[c * 16:(c + 1) * 16]: chr(c) for c in range(32, 127)}
     rows, unknown = [], 0
-    for row in range(FB_H // 32):
+    for row in range(FB_H // (16 * scale)):
         chars = []
-        for col in range(FB_W // 16):
+        for col in range(FB_W // (8 * scale)):
             glyph = bytearray(16)
             for y in range(16):
-                offset = (row * 32 + y * 2) * FB_STRIDE + col * 16 * 4
+                offset = (row * 16 + y) * scale * FB_STRIDE + col * 8 * scale * 4
                 for x in range(8):
-                    if raw[offset + x * 8:offset + x * 8 + 4] == b'\xff' * 4:
+                    if raw[offset + x * scale * 4:offset + (x * scale + 1) * 4] == b'\xff' * 4:
                         glyph[y] |= 1 << x
             key = bytes(glyph)
             char = glyphs.get(key, '?')
@@ -236,15 +246,22 @@ def main():
     ap.add_argument('--hmp', action='append', default=[], help='extra monitor command run after stop (repeatable), e.g. "x /8gx 0xfffffe..."')
     ap.add_argument('--cpu', default='cortex-a76')	# ARMv8.2 class (MT6768's A75 has no named QEMU model); proven default from ios-sweet
     ap.add_argument('--kernel', help='matching unstripped kernel, for exact framebuffer text decoding')
+    ap.add_argument('--font-scale', type=int, choices=(1, 2), default=2,
+                    help='console glyph scale: 1 for the 8x16 patch, 2 for stock (default)')
     ap.add_argument('--fail-on-panic', action='store_true', help='exit 2 for a visible panic, 3 for incomplete/blank decoding; requires --kernel')
     ap.add_argument('--dump-ram', action='store_true', help='keep a pmemsave of the whole RAM image for post-mortem string forensics')
     ap.add_argument('--gui', action='store_true',
-                    help='show the guest framebuffer in a QEMU/GTK window (ramfb on --fb-base)')
+                    help='show the guest framebuffer in a QEMU/GTK window (ramfb on --fb-base); '
+                         'appends wdt=-1 to the cmdline unless --strict-hygiene')
     ap.add_argument('--fb-base', type=lambda s: int(s, 0), default=FB_BASE,
                     help='framebuffer VAs to dump/decode/GUI (default 0x9c000000)')
     ap.add_argument('--qargs', action='append', default=[], help='extra raw QEMU CLI args (repeatable), e.g. -trace enable=arm_gt_cval_write')
     ap.add_argument('--fb-geom', default=None,
                     help='framebuffer WxH for boot_args/ramfb/decode (default 1080x2400)')
+    ap.add_argument('--cmdline-append', default=None,
+                    help='append a boot-arg to the payload cmdline, e.g. wdt=-1')
+    ap.add_argument('--strict-hygiene', action='store_true',
+                    help='keep XNU sched-hygiene panics enabled under --gui')
     a = ap.parse_args()
     global FB_W, FB_H, FB_STRIDE
     if a.fb_geom:
@@ -254,6 +271,16 @@ def main():
     if a.fail_on_panic and not a.kernel:
         ap.error('--fail-on-panic requires --kernel')
     payload = open(a.payload, 'rb').read()
+    if a.cmdline_append:
+        payload = append_cmdline(payload, a.cmdline_append)
+    if a.gui and not a.strict_hygiene:
+        # The GTK/ramfb repaint of the ~10 MB console plane stalls the single
+        # TCG vCPU for tens of ms, and XNU's DEVELOPMENT sched-hygiene then
+        # panics on whichever interrupt handler was in flight (deadline
+        # 0xd0000 ticks = 13.63 ms at QEMU's 62.5 MHz counter).  wdt=-1 sets
+        # interrupt_masked_debug_mode/sched_preemption_disable_debug_mode OFF
+        # (osfmk/arm/arm_init.c).
+        payload = append_cmdline(payload, 'wdt=-1')
     font = None
     if a.kernel:
         fonts = [macho_iso_font(a.kernel)]	# portable LC_SYMTAB walk (llvm-nm on Linux is equivalent)
@@ -324,7 +351,7 @@ def main():
             write_png(f'{out}/fb.png', raw)
             result = {'status': 'not_decoded'}
             if font is not None:
-                screen, unknown = decode_screen(raw, font)
+                screen, unknown = decode_screen(raw, font, a.font_scale)
                 open(f'{out}/fb.txt', 'w').write(screen)
                 result = screen_result(screen, unknown)
             os.unlink(f'{out}/fb.raw')

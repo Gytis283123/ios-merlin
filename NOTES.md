@@ -1,5 +1,59 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-24 LATEST-25: QEMU GUI PANIC ROOT-CAUSED - SCHED-HYGIENE VS TCG STALL; RUNNERS NOW BOOT --gui WITH wdt=-1)
+
+- The 1080-wide GUI panic screenshot ("Processing of an interrupt (type =
+  2, handler address 0xfffffe00079495xx, vector = 0) took 47934992 ns ...
+  timeout = 13631488 ns @machine_routines_common.c:839", right after
+  "IOKit IOMD setownership ENABLED"/BNK/IPC_PTHREAD_PRIORITY, i.e. mid
+  kernel_bootstrap) is XNU's sched-hygiene watchdog, not a driver bug.
+  Facts from the xnu-8796.141.3 source (sparse clone kept at
+  research/xnu-8796, gitignored):
+  - DEVELOPMENT kernels build SCHED_HYGIENE_DEBUG with
+    interrupt_masked_debug_mode defaulting to SCHED_HYGIENE_MODE_PANIC
+    (osfmk/arm/arm_init.c, TUNABLE "interrupt-masked-debug-mode").
+  - The deadline is MACHINE_TIMEOUT "interrupt-masked" = 0xd0000
+    timebase ticks; at QEMU virt's 62.5 MHz counter that is 851,968 /
+    62.5 MHz = 13.631 ms - exactly the printed "timeout = 13631488 ns".
+  - On interrupt exit, ml_handle_interrupt_handler_duration() panics when
+    the handler straddled more than the deadline.  Under GTK/ramfb the
+    ~10 MB console plane repaint (plus the fbcon scroll) stalls the
+    single TCG vCPU for tens of ms, so whichever handler was in flight
+    (timer/console bystander - the address is not a buggy driver)
+    measures 47.9 ms and the kernel panics.  This also explains
+    LATEST-24: 1080x2400 panicked (~17 ms case), 540x1200 survived only
+    because the stalls stayed under the deadline.
+- The rest of the panic screen is benign fallout: "handshake structure
+  not initialized" = osfmk/kdp/output_stages/out_shmem.c (no hw
+  debugger), "debug_log_init: Error!! gPanicBase is still not
+  initialized" = osfmk/kern/debug.c ordering, "Original panic string:" =
+  double-panic bookkeeping.
+- FIX (no kernel change needed): boot-arg `wdt=-1` - arm_init.c maps it
+  to interrupt_masked_debug_mode = OFF AND
+  sched_preemption_disable_debug_mode = OFF (also disables the
+  zone-exhaustion timeout via zalloc.c; pexpert does not read "wdt").
+  Softer alternatives that keep diagnostics: boot-args
+  ml-timeout-interrupt-masked=<picoseconds> or
+  ml-timeout-global-scale=<factor> (MACHINE_TIMEOUT scheme, startup.h).
+- Implemented in the runners: tools/qemu-merlin.py and tools/qemu-shim.py
+  gained append_cmdline() + `--cmdline-append`; `--gui` now appends
+  `wdt=-1` automatically (opt out with `--strict-hygiene`).  qemu-shim
+  writes the patched payload copy to OUT/payload.bin when the cmdline
+  changes (the shim copies the payload cmdline into boot_args verbatim,
+  shim/loader.c:428).
+- Validated: qemu-payload-fb1x2.bin + `--cmdline-append wdt=-1` boots
+  headless to userspace (research/tmp-gic/q-wdt-smoke2: "MERLIN init:
+  still alive", exit 0).  NOTE: that payload's ADT is the phone plane -
+  console at 0x7e605000 1080x2340, so dump/decode with `--fb-base
+  0x7e605000 --fb-geom 1080x2340 --font-scale 1` (default 0x9c000000
+  dump reads a blank plane).
+- NEXT: rerun the GUI: `python tools/qemu-merlin.py
+  research/tmp-gic/qemu-payload-fb1x2.bin research/tmp-gic/qgui2340-fix
+  --gui --fb-geom 1080x2340 --kernel xnu/out-0001/kernel.development.sweet
+  --font-scale 1` - should now reach userspace with the readable
+  135-column console; keep 540x1200 + q-adt-540.adt as the low-load
+  fallback for slow hosts.
+
 ## Agent handoff / active work (2026-10-23 LATEST-24: QEMU GUI LIVE VIEW; 1x CONSOLE FRAGILE ON 0083; PHONE HANG ENVIRONMENTAL)
 
 - **QEMU now has a live, readable GUI**: `tools/qemu-merlin.py --gui`
