@@ -89,6 +89,12 @@ if [[ -d "$work/root/$dsc" ]]; then
 	for f in "$work/root/$dsc"/*; do
 		sudo ln "$f" "$work/root/System/Library/Caches/com.apple.dyld/${f##*/}"
 	done
+	# The regular iOS 13+ location as well: dyld checks /System/Library/dyld
+	# first, and dyld2.3+ reports "no dyld cache" from neither path.
+	sudo mkdir -p "$work/root/System/Library/dyld"
+	for f in "$work/root/$dsc"/*; do
+		sudo ln "$f" "$work/root/System/Library/dyld/${f##*/}"
+	done
 fi
 
 # dyld does not search the cryptexes at ignition level 1: hard-link every
