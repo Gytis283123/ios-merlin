@@ -109,10 +109,64 @@
       creation is boot-arg-driven, not config-gated (:3311-3316) ->
       DEVELOPMENT kernel logs alloc/free backtraces and zalloc_uaf_panic
       prints them. Boot it exactly like boot #6 and photograph.
+- BOOT #7 = ZLOG BOOT (user photo 2026-10-24 ~20:53): panicked again,
+  but DIFFERENT ZONE: `panic(cpu 0 caller 0xfffffe0007ab77e0):
+  "kalloc.type.var.4096: element modified after free (off:768,
+  val:0xfffd?debfe7bab5b, sz:4096, ptr:0xfffffe250f172000)"` (photo OCR:
+  zone digits "var2.40961" = var.4096 + fuzz; val contains a non-hex
+  "h" char). NO btlog output - zlog1=kalloc.8192 tracks only the 8192
+  kalloc-heap zones and the corruption MOVED (boot #6: data.kalloc.8192
+  off:704; boot #7: kalloc.type.var.4096 off:768 = the DEFAULT kalloc
+  heap's 4096 band, kalloc.c:380-387 naming). The dump words are
+  HIGH-ENTROPY ~75%-bits-set binary (0xfff7f3575fff7fe9,
+  0xdeffdfbf7eeffd7b, ...) - NOT ARM64 code (no stp/ldp/sub-sp
+  signatures), NOT ASCII; consistent with compressed/asset-class disk
+  content. CONCLUSION (fact): generalized kernel-heap write-after-free
+  across boots and zones. Screen showed no CRASH/Jnl/slide lines (ring
+  scrolled; how far boot #7 got is UNKNOWN - if it panicked EARLY, the
+  corrupter works under light I/O too).
+- 0082 DRIVER AUDIT (this session, full source extracted to
+  research/tmp-msdc-split/msdc-drv.c):
+  - strategy/read/write offset accounting CORRECT: per-iteration
+    want = MIN(count-done, 512-skip), memcpy bounded by vaddr+done+want
+    <= vaddr+count and mo.dma+skip+want <= 512; GPT reads bounded
+    (nent*esz <= sizeof(msdc_gpt) enforced). No caller-buffer overrun.
+  - DMA cache handling CORRECT: flush_dcache64(pa, len, TRUE) on arm64
+    = clean+INVALIDATE via FlushPoC_DcacheRegion + outer-cache dispatch
+    (osfmk/arm/caches.c:61-96), called before AND after every DMA -
+    stale-cache theory for boot #6's wrong bytes is DEAD. Late DMA arm
+    is safe on eMMC (SD flow control: card stalls until host clocks).
+  - REAL DEFECT #1: the DMA-stop wait (msdc_read_sector :282-287 and
+    write path :360-365) BREAKS on timeout and CONTINUES AS SUCCESS -
+    a hung DMA engine stays live while the driver serves data and
+    programs the next transfer. Fix in 0084: timeout => EIO + full
+    controller reset + print.
+  - DEFECT #2 (known): missing DKIOCSYNCHRONIZE / DKIOCGETFEATURES
+    ioctls (the Jnl 0x19 lines); DKIOCGETMAXBLOCKCOUNTWRITE returns 0.
+  - Writer of the freed elements NOT found in-source (only DMA engine
+    in the system is MSDC, SA always = bounce; kalloc panics remain
+    consistent with a misbehaving DMA engine OR an unknown kernel bug;
+    eMMC content mismatch CANNOT explain RAM writes).
+- ZLOG4 TRAP IMAGE BUILT + SELF-VERIFIED:
+  research/merlin-boot/shim-boot-merlin-msdc-0083-simlaunch-unsec-zlog4.img
+  (16,989,139 B, SHA256 67ae7cccf35b1e79a58079b8df0a52afe5724339411
+  0045608c968ada7df6527). Cmdline = boot-6 args + `zlog1=kalloc.8192
+  zlog2=kalloc.4096 zlog3=kalloc.type.var.4096 zlog4=kalloc.type.4096
+  -zc` - covers both hit zones plus neighbors (zlogN tokens verified
+  against track_kalloc_zones zalloc.c:2905-2945: kalloc.<size> matches
+  heap zones incl data.*; kalloc.type.var.<size> matches the KT_VAR
+  band = boot #7's zone). If the corruption lands in ANY tracked zone,
+  the panic dump prints the element's alloc/free BACKTRACES = the
+  victim's owner + last freeer. NOTE: 4 hot zones logged => boot will
+  run noticeably slower (btlog on every alloc/free) - that is expected.
+  NEXT USER STEP: cold power-off, then
+  fastboot boot research\merlin-boot\shim-boot-merlin-msdc-0083-simlaunch-unsec-zlog4.img
+  photograph the panic block (backtrace lines under the element dump).
 - Artifacts: workflow deliverable "Boot #6 decode report" (markdown,
   primary) + "Boot #6 signature decodes" (table), attached to run
   dwfrun-c906df4f-0fe8-40e1-9d9a-a9bea2867524. research/tmp-msdc-split/
-  img.sha holds the 44 reference digests; probe3.py the chain simulator.
+  img.sha holds the 44 reference digests; probe3.py the chain simulator;
+  msdc-drv.c the extracted driver source.
 
 ## Agent handoff / active work (2026-10-24 LATEST-37: FLASH #3 COMPLETE (47/47 OK, decoy tail worked); BOOT #5 = DYLD CACHE ACCEPTED + launchd RAN DEEP USERLAND JOBS; NEW WALL DECODED "Unable to find AMFI" = launchd_cache_loader's IOKIT LOOKUP; FIX = launchd_unsecure_cache BOOT-ARG; BOOT #6 IMAGE READY)
 
