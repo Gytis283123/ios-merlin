@@ -30,7 +30,7 @@ diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
 diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -533,4 +533,598 @@
+@@ -533,4 +533,702 @@
  	*dev = su.bdev;
  	return 0;
  }
@@ -47,7 +47,8 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 + *
 + * All DMA goes through one physically contiguous 64 KiB bounce buffer; the
 + * host is not assumed cache coherent, so caches are flushed around each
-+ * command.  Writes are refused.
++ * command.  Writes go through CMD24 single-block writes with the same DMA
++ * shape (source = bounce buffer; direction is implied by the CMD RW bit).
 + *
 + * Register map from the stock kernel's ComboA driver
 + * (drivers/mmc/host/mediatek/ComboA/msdc_reg.h, MT6768).
@@ -93,6 +94,7 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +#define SDC_BLK_NUM     0x50
 +#define MSDC_DMA_SA_HIGH 0x8c
 +#define MSDC_DMA_SA     0x90
++#define MSDC_DMA_CA     0x94
 +#define MSDC_DMA_CTRL   0x98
 +#define MSDC_DMA_CFG    0x9c
 +#define MSDC_DMA_LEN    0xa8
@@ -264,6 +266,12 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +	msdc_wr(MSDC_INT, 0xffffffffu);
 +	msdc_dma_sync(MSDC_SECTOR);
 +
++	/* The data engine's block count lives in SDC_BLK_NUM; the stock
++	 * driver writes it before every data command (sd.c,
++	 * msdc_do_request_prepare). LK left a multi-block count here from
++	 * its boot-image reads, which would stream far more than our
++	 * 512-byte buffer and fail the data phase. */
++	msdc_wr(SDC_BLK_NUM, 1);
 +	msdc_wr(SDC_ARG, (uint32_t)lba);
 +	msdc_wr(SDC_CMD, raw);
 +
@@ -295,8 +303,11 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +	error = msdc_wait_int(dat_int, MSDC_DATA_TIMEOUT_NS, &sts);
 +	if (error || (sts & (MSDC_INT_DATTMO | MSDC_INT_DATCRCERR | MSDC_INT_BDCSERR |
 +	    MSDC_INT_GPDCSERR | MSDC_INT_AXI_RESP_ERR))) {
-+		printf("MERLIN MSDC: CMD17(%llu) data failed: int 0x%08x\n",
-+		    (unsigned long long)lba, sts);
++		printf("MERLIN MSDC: CMD17(%llu) data failed: int 0x%08x "
++		    "sts 0x%08x dcfg 0x%08x ca 0x%08x fifocs 0x%08x\n",
++		    (unsigned long long)lba, sts, msdc_rd(SDC_STS),
++		    msdc_rd(MSDC_DMA_CFG), msdc_rd(MSDC_DMA_CA),
++		    msdc_rd(MSDC_FIFOCS));
 +		error = EIO;
 +	} else {
 +		error = 0;
@@ -313,6 +324,88 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +	}
 +	msdc_wr(MSDC_INT, 0xffffffffu);
 +	msdc_dma_sync(MSDC_SECTOR);
++	return error;
++}
++
++/* CMD24: one 512-byte sector at absolute lba, source = bounce buffer.
++ * Mirrors the read path; the SDC_CMD RW bit selects the write direction
++ * (stock: rawcmd |= (1 << 13) for MMC_DATA_WRITE) and the card R1b busy
++ * is consumed by the trailing wait_idle. */
++static int
++msdc_write_sector(uint64_t lba)
++{
++	uint32_t sts;
++	int error;
++	uint32_t cmd_int = MSDC_INT_CMDRDY | MSDC_INT_CMDTMO | MSDC_INT_RSPCRCERR;
++	uint32_t dat_int = MSDC_INT_XFER_COMPL | MSDC_INT_DATTMO | MSDC_INT_DATCRCERR |
++	    MSDC_INT_BDCSERR | MSDC_INT_GPDCSERR | MSDC_INT_AXI_RESP_ERR;
++	uint32_t raw = 24u | (1u << 7) | (1u << 13) |
++	    (MSDC_SECTOR << 16) | (1u << 11);
++
++	error = msdc_wait_idle(MSDC_CMD_TIMEOUT_NS);
++	if (error) {
++		return error;
++	}
++	msdc_wr(MSDC_INT, 0xffffffffu);
++	msdc_dma_sync(MSDC_SECTOR);
++
++	msdc_wr(SDC_BLK_NUM, 1);
++	msdc_wr(SDC_ARG, (uint32_t)lba);
++	msdc_wr(SDC_CMD, raw);
++
++	error = msdc_wait_int(cmd_int, MSDC_CMD_TIMEOUT_NS, &sts);
++	if (error || (sts & (MSDC_INT_CMDTMO | MSDC_INT_RSPCRCERR))) {
++		msdc_wr(MSDC_INT, sts & cmd_int);
++		printf("MERLIN MSDC: CMD24(%llu) failed: int 0x%08x\n",
++		    (unsigned long long)lba, sts);
++		return EIO;
++	}
++	msdc_wr(MSDC_INT, sts & cmd_int);
++
++	uint32_t resp = msdc_rd(SDC_RESP0);
++	if (resp & MSDC_R1_OUT_OF_RANGE) {
++		printf("MERLIN MSDC: CMD24(%llu) out of range (status 0x%08x)\n",
++		    (unsigned long long)lba, resp);
++		return EIO;
++	}
++
++	msdc_wr(MSDC_DMA_SA_HIGH, (msdc_rd(MSDC_DMA_SA_HIGH) & ~0xfu));
++	msdc_wr(MSDC_DMA_SA, (uint32_t)mo.dma_pa);
++	msdc_wr(MSDC_DMA_LEN, MSDC_SECTOR);
++	uint32_t ctrl = msdc_rd(MSDC_DMA_CTRL);
++	ctrl &= ~(MSDC_DMA_CTRL_START | MSDC_DMA_CTRL_STOP | MSDC_DMA_CTRL_MODE |
++	    MSDC_DMA_CTRL_BRUSTSZ | MSDC_DMA_CTRL_LASTBUF);
++	ctrl |= MSDC_DMA_CTRL_LASTBUF | (6u << 12);  /* 64-byte burst, basic mode */
++	msdc_wr(MSDC_DMA_CTRL, ctrl | MSDC_DMA_CTRL_START);
++
++	error = msdc_wait_int(dat_int, MSDC_DATA_TIMEOUT_NS, &sts);
++	if (error || (sts & (MSDC_INT_DATTMO | MSDC_INT_DATCRCERR | MSDC_INT_BDCSERR |
++	    MSDC_INT_GPDCSERR | MSDC_INT_AXI_RESP_ERR))) {
++		printf("MERLIN MSDC: CMD24(%llu) data failed: int 0x%08x "
++		    "sts 0x%08x dcfg 0x%08x ca 0x%08x fifocs 0x%08x\n",
++		    (unsigned long long)lba, sts, msdc_rd(SDC_STS),
++		    msdc_rd(MSDC_DMA_CFG), msdc_rd(MSDC_DMA_CA),
++		    msdc_rd(MSDC_FIFOCS));
++		error = EIO;
++	} else {
++		error = 0;
++	}
++	msdc_wr(MSDC_INT, sts & dat_int);
++
++	ctrl = msdc_rd(MSDC_DMA_CTRL);
++	msdc_wr(MSDC_DMA_CTRL, ctrl | MSDC_DMA_CTRL_STOP);
++	uint64_t dl = deadline_in(MSDC_DMA_STOP_NS);
++	while (msdc_rd(MSDC_DMA_CFG) & MSDC_DMA_CFG_STS) {
++		if (mach_absolute_time() > dl) {
++			break;
++		}
++	}
++	error = error ? error : msdc_wait_idle(MSDC_DATA_TIMEOUT_NS);
++	if (error) {
++		printf("MERLIN MSDC: CMD24(%llu) idle busy after write\n",
++		    (unsigned long long)lba);
++	}
++	msdc_wr(MSDC_INT, 0xffffffffu);
 +	return error;
 +}
 +
@@ -385,12 +478,12 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +}
 +
 +static int
-+merlin_msdc_open(__unused dev_t dev, int flags, __unused int devtype, __unused struct proc *p)
++merlin_msdc_open(__unused dev_t dev, __unused int flags, __unused int devtype, __unused struct proc *p)
 +{
 +	if (!mo.ready) {
 +		return ENXIO;
 +	}
-+	return (flags & FWRITE) ? EROFS : 0;
++	return 0;
 +}
 +
 +static int
@@ -409,10 +502,7 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +	uint64_t part_bytes = mo.nblocks * MSDC_SECTOR;
 +
 +	buf_setresid(bp, count);
-+	if (!(buf_flags(bp) & B_READ)) {
-+		error = EROFS;
-+		goto done;
-+	}
++	int is_write = !(buf_flags(bp) & B_READ);
 +	if (off > part_bytes || count > part_bytes - off) {
 +		error = EINVAL;
 +		goto done;
@@ -431,11 +521,25 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +		uint64_t lba = pos / MSDC_SECTOR;
 +		uint32_t skip = (uint32_t)(pos % MSDC_SECTOR);
 +		uint32_t want = MIN(count - done, MSDC_SECTOR - skip);
-+		error = msdc_read_sector(mo.first_block + lba);
++		if (is_write) {
++			/* read-modify-write for partial sectors */
++			if (skip != 0 || want != MSDC_SECTOR) {
++				error = msdc_read_sector(mo.first_block + lba);
++				if (error) {
++					break;
++				}
++			}
++			memcpy((void *)(mo.dma + skip), vaddr + done, want);
++			error = msdc_write_sector(mo.first_block + lba);
++		} else {
++			error = msdc_read_sector(mo.first_block + lba);
++			if (error == 0) {
++				memcpy(vaddr + done, (const void *)(mo.dma + skip), want);
++			}
++		}
 +		if (error) {
 +			break;
 +		}
-+		memcpy(vaddr + done, (const void *)(mo.dma + skip), want);
 +		done += want;
 +		buf_setresid(bp, count - done);
 +	}
@@ -476,7 +580,7 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +		*o = mo.nblocks * MSDC_SECTOR / mo.secsize;
 +		return 0;
 +	case DKIOCISWRITABLE:
-+		*f = 0;
++		*f = 1;
 +		return 0;
 +	case DKIOCGETMAXBLOCKCOUNTREAD:
 +		*o = MSDC_BOUNCE_SIZE / mo.secsize;
@@ -518,9 +622,9 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 +}
 +
 +static int
-+merlin_msdc_write(__unused dev_t dev, __unused struct uio *uio, __unused int ioflag)
++merlin_msdc_write(dev_t dev, struct uio *uio, __unused int ioflag)
 +{
-+	return EROFS;
++	return physio(merlin_msdc_strategy, NULL, dev, B_WRITE, minphys, uio, (int)mo.secsize);
 +}
 +
 +static const struct bdevsw merlin_msdc_bdevsw = {

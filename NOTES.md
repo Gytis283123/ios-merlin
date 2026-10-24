@@ -1,5 +1,68 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-24 LATEST-34: SDC_BLK_NUM FIX WORKED - CMD17 READS + GPT SCAN + ROOTDEV OK; NEW WALL = DRIVER REFUSES ALL WRITES (EROFS) AT HFS+ JOURNAL; CMD24 WRITE PATH COMMITTED + CI BUILDING)
+
+- BLK-NUM IMAGE BOOT VERDICT (shim-boot-merlin-msdc-blknum.img, one
+  photo): PAST THE READ WALL. `BSD root: msdcroot0, major 1, minor 0`
+  printed = the driver read the GPT (multiple sectors - the GPT header
+  AND the entry table), matched the partition and returned a dev_t.
+  The mount attempt then fails in hfs journal init, RETRIED by
+  IOFindBSDRoot at least through attempts 4/5/6 (constant NotFound
+  loop, no panic observed on this screen; attempts 1-3 scrolled off the
+  console ring).
+- Failure anatomy (identical each attempt):
+  `hfs: Initializing the journal (joffset 0x628000 sz 0x6800000)` ->
+  `jnl: do_jnl_io: strategy err 0x1e` (0x1e = 30 = EROFS) ->
+  `write_journal_header: error writing the journal header!` ->
+  `journal_create: failed to write journal header.` ->
+  `hfs: late_init: failed to open/create the journal (retval 0).` ->
+  `hfs_late_journal_init returned (22)` (EINVAL) ->
+  `hfs_mount: hfs_mountfs returned error=22 for device unknown-dev` ->
+  `cannot mount root, errno = 19`.
+  Note: `journal_create`, not replay - the volume wants a NEW journal
+  created at mount time (iosroot.img journal state from the LATEST-27
+  build pipeline), and every single one of those writes EROFSes.
+- ROOT CAUSE: BY DESIGN - the 0082 driver was read-only: open() refused
+  FWRITE with EROFS, strategy() refused write buffers, d_write returned
+  EROFS, DKIOCISWRITABLE=0. `do_jnl_io strategy err 0x1e` = OUR OWN
+  strategy refusing the journal header write. Not an iosroot.img state
+  problem.
+- FIX (committed ios-sweet msdc-0079 7350bf4): CMD24 single-block write
+  path mirroring the read path - SDC_CMD raw = 24 | R1(1<<7) | RW
+  (1<<13, direction per stock sd.c `rawcmd |= (1 << 13)` for
+  MMC_DATA_WRITE) | BLKLEN 512 | DTYP single (1<<11); SDC_BLK_NUM=1
+  before ARG/CMD; same basic-DMA SA/LEN/LASTBUF/burst; same dat_int
+  wait with the enriched failure dump; trailing wait_idle consumes card
+  R1b busy; bdev strategy writes with read-modify-write around partial
+  sectors; d_write -> physio B_WRITE; DKIOCISWRITABLE=1; open() no
+  longer refuses FWRITE. Reference cross-checks: single-SGE always
+  BASIC mode regardless of direction; no extra direction programming
+  beyond the RW bit.
+- eMMC write viability is established: LK WROTE the boot image to this
+  card and left working timing config - reads already pass with it.
+- Validation: patch hunks consistent under strict git apply (hunk1 7/25
+  unchanged; hunk2 4/702 via fix-hunk.py; 736 lines). Context lines
+  still untouched from the CI-validated chain; bare-tree apply still
+  fails only with "No such file" for files created by earlier patches.
+- PUSHED msdc-0079 (f2a9322 -> 7350bf4) + workflow_dispatch run
+  40093673378 in progress (approved by user, same loop as LATEST-33).
+- AFTER BUILD: fetch-kernel-artifact.py GET <artifact_id> (from run
+  40093673378, name xnu-kernel) -> research/art-writecmd24/ ->
+  build-msdcroot0.py <kernel.development.sweet> (payload-new.bin +
+  shim-boot-merlin-msdc-blknum... image name shim-boot-merlin-msdc-
+  blknum.img is reused - the script overwrites it) -> unpack verify ->
+  cold power-off -> fastboot boot -> photograph.
+- EXPECTED next outcomes: (a) journal_create's writes succeed -> mount
+  proceeds -> `BSD root` + HFS+ mounts + launchd (WINS); (b) CMD24
+  fails: first write/command failures will print
+  `MERLIN MSDC: CMD24(...) failed/data failed: int ... sts ... dcfg ...
+  ca ... fifocs ...` -> diagnose from the dump; (c) mount succeeds
+  but hits a LATER fs/sandbox/log wall - read the next failure.
+- FYI observation: `for device unknown-dev` in hfs_mountfs = cosmetic
+  (alias vnode naming), and `cannot mount root, errno = 19` mapping
+  (ENODEV) is IOFindBSDRoot's wrapper errno - the real error is the 22
+  from hfs_mountfs. Don't chase either.
+
 ## Agent handoff / active work (2026-10-24 LATEST-33: MSDC DATA-PHASE FAILURE ROOT-CAUSED - SDC_BLK_NUM NEVER WRITTEN; PATCH FIXED + COMMITTED ON msdc-0079 (f2a9322); PUSH+CI AWAITING USER GO)
 
 - Panic photo parsed (E1 boot, LATEST-32): `MERLIN MSDC: cfg ... ps
