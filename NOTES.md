@@ -49,10 +49,16 @@
   dump reads a blank plane).
 - NEXT: rerun the GUI: `python tools/qemu-merlin.py
   research/tmp-gic/qemu-payload-fb1x2.bin research/tmp-gic/qgui2340-fix
-  --gui --fb-geom 1080x2340 --kernel xnu/out-0001/kernel.development.sweet
-  --font-scale 1` - should now reach userspace with the readable
-  135-column console; keep 540x1200 + q-adt-540.adt as the low-load
-  fallback for slow hosts.
+  --gui --fb-base 0x7e605000 --fb-geom 1080x2340 --kernel
+  xnu/out-0001/kernel.development.sweet --font-scale 1` - the
+  `--fb-base 0x7e605000` is REQUIRED for this payload (its ADT puts the
+  console on the phone plane; the ramfb window and the post-run dump
+  default to 0x9c000000 and show/decode blank otherwise).  `--gui` now
+  also defaults to a 600 s session (--secs overrides).  Should reach
+  userspace with the readable 135-column console; keep 540x1200 +
+  q-adt-540.adt as the low-load fallback for slow hosts.  Validated
+  headless with the corrected flags: research/tmp-gic/qgui2340-fix-hl
+  boots to `*** MERLIN userspace: init running as PID 1 ***`.
 
 ## Agent handoff / active work (2026-10-23 LATEST-24: QEMU GUI LIVE VIEW; 1x CONSOLE FRAGILE ON 0083; PHONE HANG ENVIRONMENTAL)
 

@@ -241,7 +241,8 @@ def qmp(sock_path, *cmds, pmemsave=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('payload'); ap.add_argument('outdir')
-    ap.add_argument('--secs', type=float, default=20)
+    ap.add_argument('--secs', type=float, default=None,
+                    help='seconds to run before stopping and dumping (default 20, 600 with --gui)')
     ap.add_argument('--gdb', action='store_true', help='start halted, gdb stub on :1234, no timeout')
     ap.add_argument('--hmp', action='append', default=[], help='extra monitor command run after stop (repeatable), e.g. "x /8gx 0xfffffe..."')
     ap.add_argument('--cpu', default='cortex-a76')	# ARMv8.2 class (MT6768's A75 has no named QEMU model); proven default from ios-sweet
@@ -336,7 +337,8 @@ def main():
             p.wait()
             return
         t0 = time.time()
-        while p.poll() is None and time.time() - t0 < a.secs:
+        secs = a.secs if a.secs is not None else (600.0 if a.gui else 20.0)
+        while p.poll() is None and time.time() - t0 < secs:
             time.sleep(0.2)
         result = {'status': 'qemu_exited', 'qemu_returncode': p.returncode}
         if p.poll() is None:
