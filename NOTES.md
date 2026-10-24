@@ -1,5 +1,113 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-24 LATEST-33: MSDC DATA-PHASE FAILURE ROOT-CAUSED - SDC_BLK_NUM NEVER WRITTEN; PATCH FIXED + COMMITTED ON msdc-0079 (f2a9322); PUSH+CI AWAITING USER GO)
+
+- Panic photo parsed (E1 boot, LATEST-32): `MERLIN MSDC: cfg ... ps
+  ... sts ...` (take_over OK - alive/clocked/idle), then
+  `MERLIN MSDC: CMD17(1) data failed ...` - the FIRST data read, LBA 1
+  = the GPT header - fails in the DATA phase (command phase passed:
+  RSPTYP=R1 response OK, no CMDTMO/RSPCRCERR), then
+  `panic(cpu 0 caller 0xfffffe0007a42a5d): "root msdcroot0 unavailable: 5"
+  @IOKitBSDInit.cpp:736`. The `:5` = EIO returned by our driver; the
+  panic site = our patched IOKitBSDInit.cpp branch (verified against
+  the patch source). NOT an iosroot.img problem - the driver never got
+  past its first 512-byte read.
+- ROOT CAUSE (from reference code): we never wrote SDC_BLK_NUM (0x50).
+  The stock MT6768 driver writes it before EVERY data command
+  (research/msdc-ref/sd.c, msdc_do_request_prepare, ~line 3004:
+  `MSDC_WRITE32(SDC_BLK_NUM, data->blocks)`). LK left its count from
+  the boot-image read (multi-block); our CMD17 with DMA_LEN=512 then
+  streams LK's count x 512 bytes - once our 512 B buffer is full the
+  DMA stops draining and the FIFO overflows -> DATCRCERR/DATTMO.
+  Exactly our signature. High confidence: not a guess - the register
+  semantics come from the real driver.
+- Reference sources (gitignored, research/msdc-ref/): sd.c 147 KB +
+  msdc_reg.h 57 KB + msdc_io.h 7 KB from UBports
+  ubports/porting/community-ports/android11/xiaomi-redmi-9/
+  kernel-xiaomi-mt6768 branch halium-11
+  (drivers/mmc/host/mediatek/ComboA/; Xiaomi never released merlin's
+  sources - MiCode request issue still open; this tree is the same
+  MT6768 SoC).
+- Cross-checks vs reference (all CONFIRMED correct): our SDC_CMD word
+  = 17 | 1<<7 (RSPTYP R1) | 512<<16 (BLKLEN bits 27:16) | 1<<11
+  (DTYP single block) matches msdc_reg.h fields; our basic-DMA shape
+  matches the stock MSDC_MODE_DMA_BASIC path one-for-one (SA_HIGH low
+  nibble, SA low 32, LASTBUF, DMA_LEN, BRUSTSZ=6=64 B burst,
+  MODE bit=0); DMA offsets verified (SA_HIGH 0x8c SA 0x90 CA 0x94
+  CTRL 0x98 CFG 0x9c LEN 0xa8).
+- Patch edited (xnu/patches/0082-merlin-msdc-root.patch, local +
+  copied into ios-sweet): (1) `msdc_wr(SDC_BLK_NUM, 1)` + comment
+  before the SDC_ARG/SDC_CMD go-write in msdc_read_sector; (2) added
+  `#define MSDC_DMA_CA 0x94`; (3) enriched the data-failed printf to
+  dump int/sts/dcfg/ca/fifocs so any NEXT failure self-identifies.
+  Only '+'-lines changed; both hunks' context lines are untouched from
+  the last CI-validated build.
+- Patch-file hygiene fixed: git apply (strict) rejected the file the
+  CI's `patch -p1` (lenient) had tolerated - hunk counts were 1-off
+  and a trailing-empty line. research/tmp-msdc-split/fix-hunk.py now
+  keeps counts internally consistent: hunk1 (IOKitBSDInit.cpp)
+  old7/new25, hunk2 (sweet_ufs.c add) old4/new608, 641 lines, ends
+  with single newline. Local `git apply --check` still fails ONLY with
+  "No such file" for iokit/bsddev/IOKitBSDInit.cpp +
+  bsd/dev/sweet_ufs.c (files created by earlier patches 0028+ in the
+  chain) - can't simulate the full local chain (research/xnu-8796 is
+  osfmk/pexpert only); residual risk accepted, CI runs make -k.
+- D:\things\Merlin\ios-sweet: branch msdc-0079 (tracks fork/msdc-0079
+  = 531e93f) now has commit f2a9322 "msdc: write SDC_BLK_NUM=1 before
+  data commands + failure diag dump". NOT pushed.
+- IMPORTANT workflow fact: .github/workflows/xnu.yml push trigger
+  fires ONLY for branches: [main] (paths xnu/patches/**). Branch
+  builds are therefore triggered via workflow_dispatch on the ref:
+  POST /repos/Gytis283123/ios-sweet/actions/workflows/xnu.yml/
+  dispatches body {"ref":"msdc-0079"} (gho token has workflow scope;
+  dispatch uses the workflow's defaults: DEVELOPMENT/SWEET/13.5,
+  make -k). Build ~30-60 min -> artifact xnu-kernel.
+- BLOCKED on user decision: pushing msdc-0079 to the fork + running
+  the CI build (same loop previous sessions used).
+- After CI: download artifact via tools/fetch-kernel-artifact.py (GET
+  <repo> <artifact_id> <destdir>), mkpayload from the NEW
+  kernel.development.sweet with adt.bin (research/tmp-msdc-split/) +
+  cmdline `debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam
+  -noprogress rd=msdcroot0`, NO --ramdisk; mkbootimg with the same
+  header set as shim-boot-merlin-msdc-noconsole.img (page 2048,
+  kernel 0x40080000 + kernel_size, ramdisk 0x47c80000, dtb_addr
+  0x4bc80000, os_version 11.0.0, patch 2021-07); verify via
+  unpack_bootv2, then boot (cold power-off first) and photograph.
+
+## Agent handoff / active work (2026-10-24 LATEST-32: E1 VERDICT - THE FBCON-1X BINARY PATCH WAS THE SUM16-FREEZE KILLER; BOOT REACHES MERLIN MSDC AND DIES AT AN EXPLICIT PANIC; PANIC TEXT PHOTO PENDING)
+
+- E1 result (research/merlin-boot/shim-boot-merlin-msdc-noconsole.img,
+  the surgical A/B: ONLY the fbcon-1x patch removed): THE BOOT DID NOT
+  FREEZE. It sailed through the exact point where the msdcroot0 image
+  always stopped (SUM16 ... PASSED), printed the full
+  ifnet_attach "have been scheduled at least once / Proceeding."
+  sequence for lo0/gif0/stf0, Skywalk self-tests PASSED,
+  `bsd_autoconf: calling kminit`, then MERLIN MSDC lines appear (the
+  0082 driver code finally EXECUTED - it never ran in any earlier
+  boot), and the boot ends in an EXPLICIT kernel panic screen (banner
+  "...report this panic" visible) instead of a silent freeze.
+- VERDICT: the fbcon-1x binary patch on the msdc-0079 kernel is guilty
+  of the SUM16 freeze. Implication for bring-up: keep the stock scale-2
+  console for msdcroot0 boots; the 1x patch is not worth re-deriving
+  until after iOS boots.
+- The first (blurry) photo allowed reading the stage progression but not
+  the panic message. User is taking one clear photo of the panic screen
+  (it persists until reboot). Parse pending: panic(pc/caller/user
+  message, backtrace) and the MSDC/GPT/BSD-root lines around it.
+- Next-step forks by panic content:
+  (a) root mount failure / IOFindBSDRoot messages -> iosroot.img state
+      issue (remember the userdata flash ended with a last-chunk sparse
+      write failure - only the alternate HFS+ header missed, primary
+      intact). Likely fix = re-flash iosroot.img (FLASH = explicit user
+      confirmation) or mount-side tweak.
+  (b) data abort / register fault inside the MSDC driver -> missing
+      clock/power gating for MSDC0 in the bare-metal path; instrument
+      or gate cfg bits.
+  (c) launchd/panic later than mount -> read the message first.
+- Environment facts for reading console photos: stock scale-2 console
+  ring-wraps (newest lines at top after wrap, oldest at bottom); photos
+  are rotated 90 deg.
+
 ## Agent handoff / active work (2026-10-24 LATEST-31: FETCHER FIXED + UNPATCHED 0079+0082 KERNEL BACK FROM CI + E1 NO-CONSOLE MSDC IMAGE BUILT - A/B PAIR SURGICAL; PHONE TEST NEXT)
 
 - User truth (confirmed): the msdcroot0 image froze AGAIN at
