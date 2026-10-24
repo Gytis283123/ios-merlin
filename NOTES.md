@@ -1,5 +1,34 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-24 LATEST-26: QEMU GUI CONFIRMED BY USER; NEXT = MSDC HW TEST + IOSROOT BUILD)
+
+- User confirmed the fixed GUI: the 1080x2340 window boots past the old
+  sched-hygiene panic (wdt=-1) through Skywalk self-test (all PASSED -
+  the dlil wait completes in QEMU) to `load_init_program: attempting to
+  load /sbin/launchd`.  Gotchas fixed on the way (commit 514bd69):
+  `--gui` now runs 600 s by default, and this payload's console is on
+  the phone plane - `--fb-base 0x7e605000` is REQUIRED for ramfb/dump
+  (default 0x9c000000 shows blank).
+- mkiosroot.sh now accepts `-` for SYSTEMOS.dmg/APPOS.dmg: the 16.7.16
+  A11 IPSW has NO cryptex dmgs (checked via zipremote against the Apple
+  CDN: only the 4.731 GB OS dmg + small recovery dmgs), so the merlin
+  build is `mkiosroot.sh research/ipsw-x/087-86698-044.dmg - -
+  research/ipsw-x/iosroot.img 16G`.  WSL check: rsync present; apfs-fuse
+  and hfsprogs MISSING (one-time sudo install; apfs-fuse must be built
+  from github.com/sgan81/apfs-fuse: cmake g++ libfuse3-dev libb2-dev
+  libicu-dev).
+- The msdc read-path test image exists and is untested on hardware:
+  research/merlin-boot/shim-boot-merlin-msdc-fb1x-0079.img (0079+0082,
+  rd=msdcroot0).  Previous attempt stopped at the environmental dlil
+  hang before the driver ran (LATEST-23) - cold power-off first, then
+  `fastboot boot`, read/photograph the `MERLIN MSDC:` + GPT lines.
+  "HFS mount fails" is the SUCCESS signal (userdata is still Android).
+- Order to iOS userland: (A) msdc hardware log (non-destructive) ->
+  (B) build iosroot.img in WSL (needs user sudo) -> (C) WRITE iosroot.img
+  to the userdata partition (DESTRUCTIVE - fastboot flash userdata wipes
+  Android userdata; confirm with the user first) -> boot rd=msdcroot0,
+  launchd = real iOS PID 1.
+
 ## Agent handoff / active work (2026-10-24 LATEST-25: QEMU GUI PANIC ROOT-CAUSED - SCHED-HYGIENE VS TCG STALL; RUNNERS NOW BOOT --gui WITH wdt=-1)
 
 - The 1080-wide GUI panic screenshot ("Processing of an interrupt (type =

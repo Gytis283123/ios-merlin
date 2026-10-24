@@ -4,6 +4,10 @@
 #
 #   mkiosroot.sh OS.dmg SYSTEMOS.dmg APPOS.dmg OUT.img [SIZE]     (SIZE default 16G)
 #
+# Pass - for SYSTEMOS.dmg/APPOS.dmg when the target has no cryptex volumes
+# (A11 iOS builds ship everything inside the one OS volume; only A12+ split
+# SystemOS/AppOS out).
+#
 # The IPSW images are raw APFS with LZBITMAP-compressed files: they are read
 # through apfs-fuse (decompressing), so the HFS+ copy is uncompressed. On a
 # device /private/preboot is its own volume holding the cryptexes, which
@@ -53,8 +57,8 @@ apfs_mount() {
 	mounts+=("$work/$2")
 }
 apfs_mount "$os" os
-apfs_mount "$sysos" sysos
-apfs_mount "$appos" appos
+if [[ $sysos != - ]]; then apfs_mount "$sysos" sysos; fi
+if [[ $appos != - ]]; then apfs_mount "$appos" appos; fi
 
 truncate -s "$size" "$out"
 mkfs.hfsplus -s -J -v iOSRoot "$out"
@@ -68,20 +72,27 @@ copy() {
 	sudo rsync -aH --numeric-ids "$1/" "$2/"
 }
 copy "$work/os/root" "$work/root"
-copy "$work/sysos/root" "$work/root/private/preboot/Cryptexes/OS"
-copy "$work/appos/root" "$work/root/private/preboot/Cryptexes/App"
+if [[ $sysos != - ]]; then
+	copy "$work/sysos/root" "$work/root/private/preboot/Cryptexes/OS"
+fi
+if [[ $appos != - ]]; then
+	copy "$work/appos/root" "$work/root/private/preboot/Cryptexes/App"
+fi
 
 # Shared cache where dyld looks at ignition level 1: hard links, no extra space.
 dsc=private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld
-sudo mkdir -p "$work/root/System/Library/Caches/com.apple.dyld"
-for f in "$work/root/$dsc"/*; do
-	sudo ln "$f" "$work/root/System/Library/Caches/com.apple.dyld/${f##*/}"
-done
+if [[ -d "$work/root/$dsc" ]]; then
+	sudo mkdir -p "$work/root/System/Library/Caches/com.apple.dyld"
+	for f in "$work/root/$dsc"/*; do
+		sudo ln "$f" "$work/root/System/Library/Caches/com.apple.dyld/${f##*/}"
+	done
+fi
 
 # dyld does not search the cryptexes at ignition level 1: hard-link every
 # cryptex file that has no counterpart in the OS root (libobjc-trampolines,
 # libffi-trampolines, libstdc++, ...) to its root path.
 for c in OS App; do
+	[[ -d "$work/root/private/preboot/Cryptexes/$c" ]] || continue
 	(cd "$work/root/private/preboot/Cryptexes/$c" && sudo find . ! -type d ! -path './System/Library/Caches/com.apple.dyld/*') |
 	while IFS= read -r f; do
 		f=${f#./}
