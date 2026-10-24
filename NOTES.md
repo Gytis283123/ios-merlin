@@ -162,11 +162,59 @@
   NEXT USER STEP: cold power-off, then
   fastboot boot research\merlin-boot\shim-boot-merlin-msdc-0083-simlaunch-unsec-zlog4.img
   photograph the panic block (backtrace lines under the element dump).
-- Artifacts: workflow deliverable "Boot #6 decode report" (markdown,
-  primary) + "Boot #6 signature decodes" (table), attached to run
-  dwfrun-c906df4f-0fe8-40e1-9d9a-a9bea2867524. research/tmp-msdc-split/
-  img.sha holds the 44 reference digests; probe3.py the chain simulator;
-  msdc-drv.c the extracted driver source.
+- BOOT #8 = ZLOG4 BOOT (user VIDEO 2026-10-24 ~21:43, full-screen pan):
+  the element-modified-after-free panic class REPRODUCED; no
+  zone-history/backtrace print appeared. SOURCE-EXPLAINED (not a trap
+  failure): the stock panic path NEVER prints the btlog - zalloc_uaf_
+  panic prints only the element dump (zalloc.c:3069-3096); the -zc+zlog
+  comment block (zalloc.c:3150-3192) documents RECORDING only ("when
+  the corruption is detected, EXAMINING the log will show...", via a
+  debugger/MIG); btlog_get_records (btlog.c:1592+) returns deduplicated
+  backtrace populations (leak reports), not per-element history, and
+  allocates from ipc_kernel_map - unusable at panic. => A CMDLINE-ONLY
+  TRAP CAN NEVER PRINT THE WRITER HISTORY; a kernel patch is required.
+  (Zone name/digits in the video sit below readable resolution; same
+  panic family, exact zone unconfirmed.)
+- PATCH 0084 WRITTEN + VALIDATED (ios-merlin xnu/patches/0084-merlin-
+  msdc-hardening.patch, 217 lines, LF; copied + committed LOCALLY to
+  ios-sweet msdc-0079 as 00ce338 - NOT pushed, awaiting user approval):
+  (a) driver (bsd/dev/sweet_ufs.c appended region): DKIOCSYNCHRONIZE
+      returns 0 (truthful: polled CMD24 writes are on media before
+      strategy returns - kills the Jnl 0x19 spam); DKIOCGETFEATURES=0;
+      DKIOCGETMAXBLOCKCOUNTWRITE = BOUNCE/secsize (was 0); the DMA-stop
+      timeout in BOTH read and write paths now prints and returns EIO
+      instead of proceeding as success; boot-arg msdc_readverify=1
+      double-reads every sector and memcpars - prints
+      "READVERIFY MISMATCH lba ... off N: XX vs YY (total T)" - the
+      decisive driver-vs-eMMC discriminator; init announces when on.
+  (b) zalloc.c: zalloc_uaf_panic now dumps the corrupted element's
+      zone-log history before panicking (when the zone is tracked).
+  (c) btlog.c/btlog.h: new btlog_dump_element_history(btlog, element)
+      walks BTLOG_LOG entries for that element under __btlog_lock,
+      decodes each record (__bt_ref/__bt_op/btref_decode_unslide) and
+      prints "zone-log #N: elem %p op %u bt: <up to 15 addrs>" (op:
+      1=ZOP_ALLOC, 0=ZOP_FREE - zone_info.h:186-187).
+  VALIDATION: dry-run apply on exact synthetic tree (536-line filler
+  mapping derived from 0082 hunk2 @@ -533,4 +533,702 @@) = all hunks
+  OK; on a +40-line shifted tree all 6 driver hunks apply at offset
+  (the real upstream sweet_ufs.c length is unknown locally - offset
+  tolerance proven for CI); applied output byte-identical to the edited
+  sources; MSYS patch needs --binary locally (text-mode CRLF quirk,
+  local-only - CI's Linux patch unaffected).
+- NEXT STEPS:
+  (1) USER APPROVAL PENDING: push ios-sweet msdc-0079 (00ce338 = 0083 +
+      0084) + workflow_dispatch CI build; then fetch artifact and build
+      the test image with cmdline: proven boot-6 args + `zlog1=kalloc.
+      8192 zlog2=kalloc.4096 zlog3=kalloc.type.var.4096 zlog4=kalloc.
+      type.4096 -zc msdc_readverify=1` (all four size families hit so
+      far are covered; expect slower boot from 4 logged zones).
+      VERDICTS: READVERIFY MISMATCH lines => driver read path serves
+      wrong bytes (fix 0082 read engine); "zone-log ... bt:" lines at
+      panic => the UAF victim's alloc/free owners (symbolicate vs the
+      new kernel.development.sweet); neither + slide overflow persists
+      => eMMC content differs from the image => mtkclient read-back.
+  (2) The zlog4 cmdline-only image (built earlier tonight) remains
+      bootable but CANNOT print history - superseded by (1).
 
 ## Agent handoff / active work (2026-10-24 LATEST-37: FLASH #3 COMPLETE (47/47 OK, decoy tail worked); BOOT #5 = DYLD CACHE ACCEPTED + launchd RAN DEEP USERLAND JOBS; NEW WALL DECODED "Unable to find AMFI" = launchd_cache_loader's IOKIT LOOKUP; FIX = launchd_unsecure_cache BOOT-ARG; BOOT #6 IMAGE READY)
 
@@ -2085,3 +2133,9 @@ From the stock boot DTB (`merlin_extracted.dtb`, FDT v17, via tools/dtb-facts.py
    read live FDT memory/GIC/FB facts from the shim diagnostics; fix the
    phone ADT constants; repeat QEMU with phone-realistic values.
 5. MSDC0 eMMC driver, then root on userdata, then iOS root/launchd.)
+- Artifacts: workflow deliverable "Boot #6 decode report" (markdown,
+-  primary) + "Boot #6 signature decodes" (table), attached to run
+-  dwfrun-c906df4f-0fe8-40e1-9d9a-a9bea2867524. research/tmp-msdc-split/
+-  img.sha holds the 44 reference digests; probe3.py the chain simulator;
+-  msdc-drv.c/-v2.c the extracted driver sources; p0084/ the patch
+-  workdir (edited kernel files + synth trees).
