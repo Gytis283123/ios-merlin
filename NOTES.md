@@ -1,5 +1,48 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-24 LATEST-27: IOSROOT.IMG BUILT - HFS+ iOS 16.7.16 ROOTFS READY FOR FLASH; WSL HFSPLUS MODULE RECIPE)
+
+- **research/ipsw-x/iosroot.img EXISTS**: 16 GB journaled case-sensitive
+  HFS+ volume, 8.6 GB used, holds the full 16.7.16 A11 rootfs copied out
+  of the OS dmg via apfs-fuse + rsync (built as /root/iosroot.img in WSL
+  ext4, copied to D:).  fsck.hfsplus -f -y: "appears to be OK".  NOTE:
+  `fsck.hfsplus -n` on ANY journaled volume (even fresh mkfs) reports
+  "Volume header needs minor repair (1,0)" - verified with a control
+  volume; it is the mkfs-inherent inconsistent bit (attr 0x80002100) so
+  the first mount replays the journal.  XNU replays journals; not a
+  defect.  The mkiosroot.sh recipe ends with that -n and will exit 8 -
+  ignore/rerun-tolerate.
+- WSL kernel has NO hfsplus (Microsoft kernel).  Fixed by building the
+  module out-of-tree: clone microsoft/WSL2-Linux-Kernel at tag
+  linux-msft-wsl-6.18.54.1 (= running kernel), cp Microsoft/config-wsl
+  .config, scripts/config -m HFSPLUS_FS, make olddefconfig, make -j
+  modules_prepare, then build via a STANDALONE Kbuild dir (/root/hfsmod:
+  obj-m := hfsplus.o + the fs/hfsplus/Makefile object list) - building
+  M=fs/hfsplus in-tree silently builds nothing; KBUILD_MODPOST_WARN=1
+  needed (Module.symvers missing, MODVERSIONS=y but insmod accepts).
+  insmod /root/hfsmod/hfsplus.ko works; the copy into /lib/modules
+  VANISHED after a WSL VM idle-restart (quirk) - insmod the file
+  directly in every new VM session.
+- Other fixes that were needed on the way:
+  - **CRLF**: git autocrlf checked ALL .sh out with CRLF; `set -euo
+    pipefail\r` kills every shell.  Added .gitattributes (*.sh/*.py/*.S/
+    *.ld = LF), de-CRLF'd the working tree (commit 790f233).
+  - mkiosroot.sh: `-` cryptex args must be compared BEFORE realpath;
+    coreutils rejects `install -o <numeric>` ("invalid user: 272") - the
+    logd/keybag steps now use python os.chown (committed).
+  - WSL VM idle-restarts drop manually insmod'd modules - scripts must
+    insmod at start.
+- fastboot/adb on this PC: "D:\things\ADB Tools % odin\PlatformTools\
+  platform-tools\".  NOT needed yet.
+- NEXT: (A) msdc driver hardware log - cold power-off, `fastboot boot
+  research/merlin-boot/shim-boot-merlin-msdc-fb1x-0079.img`, photograph
+  the `MERLIN MSDC:` + GPT lines (non-destructive).  (C) deploy needs
+  the user's explicit OK: `fastboot flash userdata research/ipsw-x/
+  iosroot.img` WIPES ANDROID USERDATA (~15-25 min over USB), then
+  `fastboot boot` the same image - kernel mounts /dev/msdcroot0, real
+  iOS launchd becomes PID 1.  Recovery mode is NOT involved; boot/
+  recovery/modem/persist stay untouched.
+
 ## Agent handoff / active work (2026-10-24 LATEST-26: QEMU GUI CONFIRMED BY USER; NEXT = MSDC HW TEST + IOSROOT BUILD)
 
 - User confirmed the fixed GUI: the 1080x2340 window boots past the old
