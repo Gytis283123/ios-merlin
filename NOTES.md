@@ -93,6 +93,36 @@
   fix); repacker self-checks passed (shim slot + dtb byte-identical
   to the E1 image; payload 16,611,984 B).
 - BOOT #5 SHOULD USE THIS IMAGE (kernel-side gate fix + boot-arg).
+- **USER BUILT research/ipsw-x/iosroot-v2.img** (2026-10-24 ~17:00):
+  OS copy + sysos -> /private/preboot/Cryptexes/OS + the 44 split-cache
+  files hard-linked to BOTH /System/Library/Caches/com.apple.dyld and
+  /System/Library/dyld (also the DSC's System/DriverKit inner cache +
+  trampolines); df 16G total / 12G used (8.6 OS + 3.3 cache counted
+  once) / 4.4G avail. fsck needed two -y repair passes (thread/leaf
+  record counts flip-flopped) but ended "repaired successfully";
+  the final read-only -n pass reports ONLY the documented benign
+  "Volume header needs minor repair (1,0)" (exit 8, journal
+  mkfs-inherent bit - same as the control volume in LATEST-27).
+- WSL GOTCHAS REENCOUNTERED + FIXED IN mkiosroot.sh: (a) the out-of
+  tree hfsplus.ko needed re-insmod after a VM restart; (b) FIRST FIX
+  USED A WRONG GREP - /proc/filesystems lists hfsplus WITHOUT the
+  nodev prefix (block-device fs) so the detection never matched ->
+  twice false-failed; commits 4aaeeb1 then 3fdfe57 (final: `grep -qw
+  hfsplus`, tolerates insmod EEXIST when already inserted). Module
+  is loaded in the VM now; /root/hfsmod/hfsplus.ko SURVIVES VM
+  restarts, only the /lib/modules copy is transient.
+- **FLASH SIZE FACT SETTLED (by chunk math, not yet by the boot log)**:
+  iosroot.img's 16GiB flash failed ONLY its last sparse chunk
+  (60,752 KB) = write range crossed partition end -> userdata
+  partition size is in \[15.9425 GiB, 16 GiB). Countermeasures for
+  the v2 flash: truncate the image to 16300 MiB (15.918 GiB) first
+  so fastboot never writes past the partition end (no benign-failure
+  chunk this time). The REAL size comes from the next boot's
+  `MERLIN MSDC: "userdata" first sector 0x..., NNNN MiB, read-only`
+  line - PHOTOGRAPH IT (it also feeds the planned win/esp GPT
+  surgery the user asked about in LATEST-28). Volume inside is still
+  16 GiB - fine: the driver clamps to the partition and the previous
+  mount never touched blocks past the partition end.
 
 ## Agent handoff / active work (2026-10-24 LATEST-35: launchd SIGKILL DECODED = EXEC_EXIT_REASON_WRONG_PLATFORM; ROOTFS MOUNTS; FIX = unentitled_ios_sim_launch BOOT-ARG (no CI needed) + FORK PATCH 0083 (79c3634, CI building))
 
