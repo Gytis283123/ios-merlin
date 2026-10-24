@@ -111,18 +111,37 @@
   hfsplus`, tolerates insmod EEXIST when already inserted). Module
   is loaded in the VM now; /root/hfsmod/hfsplus.ko SURVIVES VM
   restarts, only the /lib/modules copy is transient.
-- **FLASH SIZE FACT SETTLED (by chunk math, not yet by the boot log)**:
-  iosroot.img's 16GiB flash failed ONLY its last sparse chunk
-  (60,752 KB) = write range crossed partition end -> userdata
-  partition size is in \[15.9425 GiB, 16 GiB). Countermeasures for
-  the v2 flash: truncate the image to 16300 MiB (15.918 GiB) first
-  so fastboot never writes past the partition end (no benign-failure
-  chunk this time). The REAL size comes from the next boot's
-  `MERLIN MSDC: "userdata" first sector 0x..., NNNN MiB, read-only`
-  line - PHOTOGRAPH IT (it also feeds the planned win/esp GPT
-  surgery the user asked about in LATEST-28). Volume inside is still
-  16 GiB - fine: the driver clamps to the partition and the previous
-  mount never touched blocks past the partition end.
+- **FLASH-SIZE FACT UPDATED (v2 flash run #1, 2026-10-24 ~17:20)**: even
+  after truncating to 16300 MiB the final chunk (92/92, 126,165 KB)
+  FAILED `sparse image write failure` - chunks 1..91 wrote OKAY.
+  Chunk-size sums (~11.78 GiB) + a tailscan of the image
+  (research/tmp-msdc-split/tailscan.py) prove the sparse transfer
+  carried ONLY nonzero bytes: the file's last nonzero byte is at
+  11.6565 GiB (filesystem data), followed by 4.5 GiB of zeros. OLD
+  INTERPRETATION OF THE V1 FLASH IS THEREFORE WRONG: chunk covers are
+  data-relative, not file-range-contiguous - the old failed chunk did
+  NOT establish a >=15.9425 GiB partition end. Conclusions: (a) the
+  partition-end theory is DEAD (the failed chunk's range ~11.4-11.66
+  GiB is FAR inside even the most conservative end estimate, and v1's
+  flash fill-wrote that physical region successfully); (b) the
+  failure hits the LAST data chunk at ANY location (v1: last chunk;
+  v2: last chunk at a totally different offset) - something in the
+  LK sparse-write path chokes on the final chunk (root cause
+  unresolved, need LK source later); (c) CONSEQUENCE: the flashed
+  eMMC volume was left WITHOUT ~123 MiB of real fs content around
+  ~11.4-11.66 GiB (would likely fail mount/painfully).
+- COUNTERMEASURE (committed decision): append a ZERO-RUN to the image
+  so the real-data chunk is no longer the final chunk - the new final
+  chunk is an all-zero fill whose failed write loses NOTHING
+  (independent of which LK-last-chunk theory holds). DONE: image
+  padded via truncate/research/tmp-msdc-split/pad-img.py: 17,091,788,800
+  -> 17,158,897,664 bytes (+64 MiB zeros; data still ends at
+  11.6565 GiB). NEXT: reflash (expect the same failed FINAL chunk
+  line - benign by construction), then boot the 0083 image and
+  photograph, incl. the `MERLIN MSDC: "userdata" first sector 0x...,
+  NNNN MiB` line (which still has not been captured - it prints the
+  REAL partition size and settles the win/esp grow-back question
+  too).
 
 ## Agent handoff / active work (2026-10-24 LATEST-35: launchd SIGKILL DECODED = EXEC_EXIT_REASON_WRONG_PLATFORM; ROOTFS MOUNTS; FIX = unentitled_ios_sim_launch BOOT-ARG (no CI needed) + FORK PATCH 0083 (79c3634, CI building))
 
