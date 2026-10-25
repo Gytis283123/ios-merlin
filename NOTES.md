@@ -20,6 +20,20 @@
   [0x9f800000, 0x9fa80000) = 2.5 MB covers both with ≥0x88000 /
   ≥0x78000 margin; if a future victim lands outside, adjust via
   merlin_excl_pa boot-arg (no rebuild needed).
+- CI 40221667737 GREEN (~7 min), GOLDEN RULE VERIFIED: kernel sha
+  881326f7… (research/art-0092, 17,207,952 B); probes PASS incl.
+  "MERLIN: pmap excluding PA" + "merlin_excl_pa"; skip set =
+  known-good five; chain 0082→0092 applied.  BOOT #22 IMAGE BUILT:
+  research/merlin-boot/shim-boot-merlin-msdc-0092-full-fv.img
+  (16,989,139 B, sha c5385b80…, payload 16,612,752 B, cmdline =
+  #19/#20/#21).  READY: user fastboot boot + photo(s).  EXPECT:
+  early console shows "MERLIN: pmap excluding PA 0x9f800000-
+  0x9fa80000 (640 pages…)" (the fix firing); NO more element-
+  modified-after-free panics; death point moves to the SpringBoard
+  read-divergence wall (dyld malformed load command / CRASH
+  SpringBoard sig 6) — that is SUCCESS for 0092; then the next
+  milestone = eMMC content verification (userdata reflash decision)
+  per LATEST-38 evidence chain.
 
 ## Agent handoff / active work (2026-10-25 LATEST-60: BOOT #20 (0091) = pa= DELIVERED — TWO victims, BOTH scribbler classes in ONE boot, PAs CAPTURED: scp-code victim kalloc.24576@8192 pa=0x9f98a000 (Thumb-2 "29 46 00 22 fe f7 b1 fe…"), panic victim kalloc.8192@0 = ALL-0xFF fill pa=0x9f9ea000 (Δ0x60000, same 0x9f9 neighborhood); APDMA REAL verdict found=0 quiesced=0 map=0 (scan ran at fixed PA — UART-DMA EXONERATED); readverify 0 mismatches @544,438 reads; lk dma state identical to #19 (deterministic LK).  MODEL: fixed-PA writer footprint ≈ [0x9f98a000, 0x9f9f0000) copying SCP-firmware dump blocks (code verbatim + 0xFF padding = a structured dump fill); BOTH boot-11/13/14's 0xFF class AND #15/19's code class = one mechanism.  NEXT: one more 0091 boot for a second pa= sample → 0092 = boot-arg physical exclusion of the region)
 
