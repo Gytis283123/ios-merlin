@@ -1,0 +1,103 @@
+xnu: MERLIN 0092 physical-address exclusion - boots 11-21 evidence chain: an address-anchored SCP-side scribbler (verbatim SCP firmware bytes + all-0xff fill into freed zone elements) owns a fixed DRAM window (victims at pa 0x9f98a000/0x9f9ea000 boot 20, 0x9fa08000 boot 21); pmap_next_page() now skips the whole window (default 0x9f800000+0x280000, boot-arg merlin_excl_pa=START-LEN overrides) so the VM never allocates the scribbler's territory — zone elements can no longer be its victims
+
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -2630,19 +2630,98 @@
+ 	__unused boolean_t might_free)
+ {
+ 	return pmap_next_page(pnum);
+ }
+ 
++/* MERLIN (0092): boots 11-21 photographed a physical-address-anchored
++ * scribbler (an SCP-side dump writer): freed zone elements were
++ * modified after free at pa 0x9f98a000 / 0x9f9ea000 (boot 20) and
++ * 0x9fa08000 (boot 21), carrying verbatim SCP firmware bytes or an
++ * all-0xff fill.  The writer is blind to XNU, so the robust fix is to
++ * never hand its window to the VM.  Boot-arg merlin_excl_pa=START-LEN
++ * (hex, e.g. 0x9f800000-0x280000) overrides the default window. */
++static uint64_t merlin_excl_start = 0x9f800000ull;
++static uint64_t merlin_excl_len = 0x280000ull;
++
++static uint64_t
++merlin_hex(const char *s, const char **end)
++{
++	uint64_t v = 0;
++
++	if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
++		s += 2;
++	}
++	for (;;) {
++		int c = *s, d;
++
++		if (c >= '0' && c <= '9') {
++			d = c - '0';
++		} else if (c >= 'a' && c <= 'f') {
++			d = c - 'a' + 10;
++		} else if (c >= 'A' && c <= 'F') {
++			d = c - 'A' + 10;
++		} else {
++			break;
++		}
++		v = (v << 4) | (uint64_t)d;
++		s++;
++	}
++	*end = s;
++	return v;
++}
++
++static void
++merlin_excl_init(void)
++{
++	static bool done;
++	char buf[64];
++	const char *p;
++
++	if (done) {
++		return;
++	}
++	done = true;
++	if (!PE_parse_boot_argn("merlin_excl_pa", buf, sizeof(buf))) {
++		return;
++	}
++	merlin_excl_start = merlin_hex(buf, &p);
++	if (*p != '-') {
++		return;
++	}
++	merlin_excl_len = merlin_hex(p + 1, &p);
++	if (merlin_excl_len == 0) {
++		merlin_excl_start = 0x9f800000ull;
++		merlin_excl_len = 0x280000ull;
++	}
++}
++
+ 
+ boolean_t
+ pmap_next_page(
+ 	ppnum_t *pnum)
+ {
+ 	if (need_ram_ranges_init) {
+ 		initialize_ram_ranges();
+ 	}
+ 
++	merlin_excl_init();
++	if (first_avail != avail_end &&
++	    (uint64_t)first_avail >= merlin_excl_start &&
++	    (uint64_t)first_avail < merlin_excl_start + merlin_excl_len) {
++		uint64_t excl_end = merlin_excl_start + merlin_excl_len;
++		uint64_t skip = excl_end - (uint64_t)first_avail;
++		uint64_t pages = skip >> PAGE_SHIFT;
++
++		printf("MERLIN: pmap excluding PA 0x%llx-0x%llx (%llu "
++		    "pages, scribbler window)\n", (uint64_t)first_avail,
++		    excl_end, pages);
++		first_avail += skip;
++		if (pages > (uint64_t)avail_page_count) {
++			pages = avail_page_count;
++		}
++		avail_page_count -= (unsigned int)pages;
++	}
+ 
+ 	if (first_avail != avail_end) {
+ 		*pnum = (ppnum_t)atop(first_avail);
+ 		first_avail += PAGE_SIZE;
+ 		assert(avail_page_count > 0);
