@@ -1,5 +1,62 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-55: 0089 CI GREEN (run 40205264342 @ c8d5aadc) + FULL GOLDEN-RULE VERIFIED (SHA match; 15/15 binary probes; log skip set = known-good ONLY, 0082→0089 all applied); boot image shim-boot-merlin-msdc-0089-fv.img BUILT (16,989,139 B) — READY FOR BOOT #15: user flash + ONE photo; decode table below)
+
+- Run 40205264342 (workflow_dispatch, ref msdc-0079 @ c8d5aadc74d38eaab
+  8c180daff4b8e50f8fbbade) = success.  Artifacts: kernel 12603383225
+  → research/art-0089; buildtree 12603867217 → research/art-0089-
+  buildtree.
+- GOLDEN RULE (all satisfied):
+  1. SHA256SUMS: kernel sha 98239dbafbcced2f6cbf1bffd2cd58feac50b92
+     232c919d45b0eaa97fc38e7d1 == actual ✓ (17,224,136 B = +16,528
+     vs 0088).
+  2. Binary probes 15/15 True: "MERLIN MSDC: apdma win", "apdma: no
+     /ap_dma@11000000 reg", "apdma %u window(s) with live state",
+     "lk dma ctrl 0x%08x cfg 0x%08x", "MERLIN FORENSICS: victim
+     b[%u..%u] %s", "apdma channel would not stop", "apdma flush did
+     not clear", "apdma armed window outside the DT" + 0088 set
+     ("MERLIN MSDC: dma ctrl", "DMA SPILL count", "dma spill=%llu",
+     "inherited DMA would not stop") + 0086/0087 set.
+  3. CI log: SKIPPING = only corrupt-0083 + dxb's
+     TrustCache/iobuffermemd_monterey/skywalk_sonoma/
+     syntax_checker_sonoma (×2 job logs); 85 patch files applied,
+     full merlin chain 0082/0084/0086/0087/0088/0089 present ✓.
+- Buildtree layout note: artifact zip = buildtree.tgz with top-level
+  build/, fakeroot/, sdk-kernel-platform/, xnu/ — moved under src/ to
+  match the 0088 convention → research/art-0089-buildtree/src/xnu is
+  the NEXT PATCH BASE (make-0089 base needs updating when drafting
+  0090).  Semi-probed: sweet_ufs.c 52,663 B with merlin_apdma_quiesce
+  def @1030, snapshot @1128, init call @1733; zalloc.c lk dma line
+  @3114, victim-b dump @3156, externs @3079 ✓ = post-0089 tree.
+- Boot image: research/merlin-boot/shim-boot-merlin-msdc-0089-fv.img
+  = 16,989,139 B, sha 989C711F85B019AC31E0E83403275B9F3658209DD9222F0
+  A52FED2BA635FC77D; payload 16,612,544 B; builder verified shim slot
+  + dtb byte-identical to E1; cmdline identical to boot #14 (0088) —
+  msdc_readverify=1 kept.
+- BOOT #15 DECODE TABLE (one photo):
+  - "MERLIN MSDC: apdma win 0x%03x en …" lines = LK left VFF channels
+    armed (0x980/0xa00 or 0xa80/0xb00 = uart0/uart1 RX+TX); "apdma N
+    window(s) with live state, M armed window(s) quiesced" = cleanup
+    ran (M>0 = hypothesis CONFIRMED territory).
+  - "MERLIN FORENSICS: lk dma ctrl … cfg … sa … ca … len …" = LK MSDC0
+    state at handoff (retroactive answer for every earlier boot).
+  - "MERLIN FORENSICS: victim b[0..15] …" + "victim b[off..off+15] …"
+    = all-0xff → wire-feed scribbler (APDMA or other wire); sparse
+    pattern → software poker inside the sweet patch family.
+  - ASIDE: readverify mismatches=0 / dma spill=0 must stay; SPILL>0
+    would resurrect the MSDC overshoot class (0088 canary).
+- VERDICT BRANCHES after #15: (a) armed window found + quiesced +
+  boot survives LONGER (ideally past SpringBoard exec) + spill=0 →
+  wire-feed confirmed → 0090 moves the quiesce into the SHIM (before
+  xnu, kill it at handoff) + attack slide overflow next.  (b) no
+  armed window / victim bytes sparse → software-poker hunt in sweet
+  family (0083-class reintroduce? bisect 0035-0050?).  (c) unarmed +
+  all-0xff victim bytes → wire feed NOT apdma-uart: extend scan to
+  OTHER DMA engines (audit 4-cell reg nodes; e.g. MSDC1/i2c/spi).
+- NEXT CONCRETE: user flashes shim-boot-merlin-msdc-0089-fv.img
+  (fastboot flash boot) + boots + ONE final-screen photo → I decode
+  and verdict.
+
 ## Agent handoff / active work (2026-10-25 LATEST-54: 0089 DRAFTED, VALIDATED byte-exact (t7/t8), committed BOTH repos LOCAL ONLY — APDMA/UART-DMA quiesce (stock stop sequence; full 4 KB /ap_dma scan prints any armed window; stops only the 4 DT windows) + LK MSDC0 state frozen into msdc_lk_* + forensics gains "lk dma ctrl=…" line + first-victim BYTE DUMPS (head 16 + at-off 16 → all-0xff = wire feed, sparse = software poke). BLOCKED: need push approval for ios-sweet 0089 CI)
 
 - 0089 = `xnu/patches/0089-merlin-apdma-quiesce-victim-dump.patch`
