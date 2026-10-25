@@ -43,6 +43,22 @@
   one photo decodes it.  (2) 0091 design updates regardless:
   APDMA scan via HARDCODED PA 0x11000000/0x1000 (kill the DT
   dependency); HW-watchpoint discriminator unchanged (parked).
+- FOLLOW-UP (same session): user reports boot #16 STUCK at the
+  photographed stage (no panic, no userspace; console frozen at
+  v_swap ON).  Boot #17 image BUILT:
+  research/merlin-boot/shim-boot-merlin-msdc-0090-usb-fv.img
+  (16,989,139 B, sha cb032b5c…; cmdline = #16 + sweetusb=2 ONLY,
+  kernel unchanged — the USB gadget boot-arg defaults to 1 =
+  report-only, which is why #16 has no USB).  DISCRIMINATOR at the
+  next hang: plug USB → Windows Device Manager, gadget VID 0x1209
+  PID 0x0001 (pid.codes test ID; CDC-ECM class 02/06, no in-box
+  Win10 driver — ENUMERATION ITSELF is the signal: device listed =
+  kernel/IOKit/interrupts ALIVE → hang = blocked thread, prime
+  suspect launchd first-exec stuck on a root-volume storage read;
+  "Device Descriptor Request Failed" = hard wedge).  With a Linux
+  host or WSL2+usbipd, tools/sweet-usbnet.sh (192.168.7.1 ↔ .2,
+  live console on udp/5140) gives the streamed tail.  0091 queue
+  unchanged (heartbeat + apdma hardcode) if this doesn't localize.
 
 ## Agent handoff / active work (2026-10-25 LATEST-57 (upd): 0090-v1 WAS pushed (ios-sweet 59ced39) and CI-RED — run 40208702420, build exit 2: v1 declared 'years' but used 'beyond' 3x (diff-verified in the committed patch; t7/t8 byte-compare cannot catch this class — both sides share the same edit). 0090-v2 (identifier fix + generator identifier-contract asserts) committed local BOTH repos (ios-merlin d3dc0b3 / ios-sweet 0adeac7, ahead 1), re-validated t7/t8 + regenerated==committed. PUSHED 0adeac7 (user-approved) → CI run 40212507739 GREEN, GOLDEN RULE FULLY VERIFIED (sha 20e6fd54…; 17/17 probes incl. "victim islands"+"apdma found="; skip set = known-good five ×2; merlin chain 0082→0090 applied) → shim-boot-merlin-msdc-0090-fv.img BUILT (16,989,139 B, sha 1d76f240…, payload 16,612,640 B, cmdline = 0088/0089 + msdc_readverify=1, shim+dtb byte-identical to E1) → READY FOR BOOT #16: user fastboot boot + ONE photo)
 
