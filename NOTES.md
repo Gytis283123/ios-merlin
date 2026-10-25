@@ -59,6 +59,27 @@
   host or WSL2+usbipd, tools/sweet-usbnet.sh (192.168.7.1 ↔ .2,
   live console on udp/5140) gives the streamed tail.  0091 queue
   unchanged (heartbeat + apdma hardcode) if this doesn't localize.
+- BOOT #17 (usb image cb032b5c): STUCK AGAIN but the frame goes
+  further — last line = "load_init_program: attempting to load
+  /usr/appleinternal/sbin/launchd.development" then SILENCE (no
+  "failed loading", no next "attempting", no panic).  Source
+  (kern_exec.c:6834-6930): init_programs = {debug?, development,
+  /sbin/launchd}; ENOENT falls through SILENTLY, other errors print,
+  all-fail panics.  Silence ⇒ execve() of the development variant
+  NEVER RETURNED ⇒ blocked inside namei/parse_machfile (storage
+  reads via msdc, or a lock).  readverify mismatch path PRINTS and
+  returns (not the hang).  HISTORY: 0083-era consoles show the
+  ENOENT fall-through to /sbin/launchd (so launchd.development does
+  NOT exist on iosroot-v2.img) and /sbin/launchd exec'd — but only
+  ever from RAMDISK-MOCKFS roots; NO msdc-root boot ever reached
+  exec before ⇒ this hang is the FIRST arrival at this path, not a
+  regression.  A missing-file lookup needs only catalog reads; the
+  walk itself is stuck (or the console died — USB check tells).
+  BOOT #18 image BUILT: shim-boot-merlin-msdc-0090-lrel-fv.img
+  (sha 57534d6b…; cmdline + launchdsuffix=release — kern_exec.c
+  6890-6902 forces /sbin/launchd directly, shallow path, skips the
+  appleinternal walk; on exec error it PANICS with errno + full
+  replay instead of hanging silently).
 
 ## Agent handoff / active work (2026-10-25 LATEST-57 (upd): 0090-v1 WAS pushed (ios-sweet 59ced39) and CI-RED — run 40208702420, build exit 2: v1 declared 'years' but used 'beyond' 3x (diff-verified in the committed patch; t7/t8 byte-compare cannot catch this class — both sides share the same edit). 0090-v2 (identifier fix + generator identifier-contract asserts) committed local BOTH repos (ios-merlin d3dc0b3 / ios-sweet 0adeac7, ahead 1), re-validated t7/t8 + regenerated==committed. PUSHED 0adeac7 (user-approved) → CI run 40212507739 GREEN, GOLDEN RULE FULLY VERIFIED (sha 20e6fd54…; 17/17 probes incl. "victim islands"+"apdma found="; skip set = known-good five ×2; merlin chain 0082→0090 applied) → shim-boot-merlin-msdc-0090-fv.img BUILT (16,989,139 B, sha 1d76f240…, payload 16,612,640 B, cmdline = 0088/0089 + msdc_readverify=1, shim+dtb byte-identical to E1) → READY FOR BOOT #16: user fastboot boot + ONE photo)
 
