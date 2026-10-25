@@ -70,6 +70,14 @@
   build-msdcroot0.py → shim-boot-merlin-msdc-0091-full-fv.img (SAME
   full cmdline as #19) → boot #20 flash + ONE photo (expect: victim
   pa= names the stale buffer; apdma verdict REAL).
+- CI 40218760447 GREEN (~6 min), GOLDEN RULE FULLY VERIFIED: kernel
+  sha 4e1a04d4… (research/art-0091); 19/19 probes (incl. "pa=0x%llx"
+  + "using fixed PA 0x11000000+0x1000"); skip set = known-good five;
+  chain 0082→0091 applied.  BOOT #20 IMAGE BUILT:
+  research/merlin-boot/shim-boot-merlin-msdc-0091-full-fv.img
+  (16,989,139 B, sha 751a2a88…, cmdline identical to #19).  READY:
+  user fastboot boot + ONE photo → decode victim pa= + apdma
+  found=/quiesced=/map= (now REAL) → 0092 design.
 
 ## Agent handoff / active work (2026-10-25 LATEST-58: BOOT #16 (0090) = NO PANIC IN FRAME — DEEPEST BOOT EVER: root FS mounted from userdata (read-only, journal replayed, SWEET unsealed), serial keyboard started, swap ON; the kalloc.16384 UAF that killed boots 11/13/14/15 did NOT fire in frame.  APDMA VERDICT = SCAN SKIPPED EVERY BOOT: runtime DT lacks /ap_dma@11000000 (slot dtb HAS it w/ reg, but runtime tree ≠ slot tree — sweet-ufs/merlin-msdc = 0 hits in slot dtb yet resolve at runtime) ⇒ 0089's DT-based quiesce was structurally dead code.  WHAT HAPPENED AFTER THE FRAME = UNKNOWN → user report / next photo decides)
 
