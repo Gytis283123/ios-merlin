@@ -63,6 +63,13 @@
   allocator (or quiesce the caught channel); separately the
   SpringBoard read-divergence wall (eMMC verify/reflash decision)
   waits behind the scribbler fix.
+- DISPATCHED (user approved "go on"): ios-sweet bccd91d PUSHED → CI
+  run 40218760447 (workflow_dispatch) in progress; background poll
+  running.  On green: artifacts → research/art-0091*, golden rule
+  (probes + "pa=0x%llx" + "using fixed PA 0x11000000+0x1000") →
+  build-msdcroot0.py → shim-boot-merlin-msdc-0091-full-fv.img (SAME
+  full cmdline as #19) → boot #20 flash + ONE photo (expect: victim
+  pa= names the stale buffer; apdma verdict REAL).
 
 ## Agent handoff / active work (2026-10-25 LATEST-58: BOOT #16 (0090) = NO PANIC IN FRAME — DEEPEST BOOT EVER: root FS mounted from userdata (read-only, journal replayed, SWEET unsealed), serial keyboard started, swap ON; the kalloc.16384 UAF that killed boots 11/13/14/15 did NOT fire in frame.  APDMA VERDICT = SCAN SKIPPED EVERY BOOT: runtime DT lacks /ap_dma@11000000 (slot dtb HAS it w/ reg, but runtime tree ≠ slot tree — sweet-ufs/merlin-msdc = 0 hits in slot dtb yet resolve at runtime) ⇒ 0089's DT-based quiesce was structurally dead code.  WHAT HAPPENED AFTER THE FRAME = UNKNOWN → user report / next photo decides)
 
