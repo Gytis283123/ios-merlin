@@ -1,5 +1,51 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-41: WORKFLOW FACT CORRECTED BY USER - ALL BOOTS 1-9 WERE `fastboot flash boot` (PERSISTENT), NOT `fastboot boot`; LK READS THE BOOT IMAGE FROM eMMC RIGHT BEFORE EVERY KERNEL BOOT; STALE-LK MSDC/DMA SCRIBBLER THEORY SHARPENS; NEW FREE A/B EXPERIMENT UNLOCKED)
+
+- USER FACT (2026-10-25): boots are done via `fastboot flash boot
+  <image>` and ALWAYS HAVE BEEN (boots 1-9; answer to explicit question).
+  The NOTES' standing instruction `fastboot boot <image>` never actually
+  happened - every "boot #N" observation = a power-on boot of the
+  LAST-FLASHED boot-partition image. Consequences recut:
+  (a) LK loads the 17 MB boot image FROM eMMC (MSDC) on every boot,
+      immediately before handing off to the kernel. The MSDC controller +
+      DMA engine therefore carry REAL block-read state (CMD17/18 work,
+      image buffer SA, timing cfg) at kernel takeover on EVERY boot so far.
+      (Ramdisk-less XNU took the controller over with a driver that has a
+      PROVEN defect: DMA-stop timeout = continue-as-success, LATEST-38.)
+  (b) The UAF victims' dumped bytes are 0xFF-heavy FLASH-LIKE content -
+      exactly what LK's last eMMC reads carry. A stale/re-armed MSDC DMA
+      writing to LK's stale buffer address explains: cross-zone victims
+      (the stale PA region gets reused by different kalloc elements as
+      the heap churns), persistence, and the wrong-diverging read bytes
+      theory all at once.
+  (c) The ~17 MiB raw flash to boot also cannot hit the userdata
+      last-chunk sparse bug (small raw image, different fastboot path).
+  (d) Persistent flash: the phone boots the test image standalone on
+      every power-on (photo/video capture can be done untethered);
+      each NEW test image needs a fresh flash; the boot partition no
+      longer holds stock boot.img (restore path = MIUI fastboot ROM tgz
+      boot.img; userdata already iOS so Android is unbootable anyway).
+- NEW FREE A/B EXPERIMENT (same image, same cmdline, NO CI - do before
+  building any 0085): (A) flashed-boot boot (current flow) vs (B)
+  `fastboot boot research\merlin-boot\shim-boot-merlin-msdc-0084-rv-zlog5.img`
+  from a fastboot session entered STRAIGHT FROM POWER-OFF (button combo
+  only - no prior flash/I/O in that LK session). UAF panic in A only ->
+  the corrupter lives in the LK-eMMC-handoff state => 0085 driver-init
+  hardening (full MSDC reset + clear SA/CFG/CTRL/INT before first use)
+  becomes THE fix to write. UAF in both -> kernel-code bug, handoff
+  largely exonerated. Neither -> environment/timing (revisit heat, event
+  counting).
+- BOOT #10 PROCEDURE UPDATED (flash-boot workflow):
+  `fastboot flash boot research\merlin-boot\shim-boot-merlin-msdc-0084-rv-zlog5.img`
+  -> power off -> power ON (standalone, no PC) -> FILM from the EARLIEST
+  console lines (MERLIN MSDC first-sector line never captured yet; also
+  any READVERIFY MISMATCH lines) through the panic. To re-test
+  reproducibly just power off/on again (same image reboots itself).
+- Summaries of boots #9/10 with the OLD method are still comparable
+  against each other (same method), but any comparison with future
+  `fastboot boot` runs must respect the method axis.
+
 ## Agent handoff / active work (2026-10-25 LATEST-40: BOOT #9 DECODED = SAME UAF CLASS IN data.kalloc.16384 (off:704, SAME OFF AS BOOT #6) - CORRUPTION ESCAPED THE 4 TRACKED ZONES; "handShake" LINE = BENIGN KDP PANIC-PRINTER NOISE (NOT A FIX TARGET); BOOT #10 BUILT WITH zlog5=kalloc.16384 + zlog6=kalloc.12288)
 
 - USER QUESTION ANSWERED: "fix the handshake for have support of it?" =
