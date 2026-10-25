@@ -1,5 +1,50 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-57: 0090 (island run-map + cached APDMA verdict) DRAFTED, VALIDATED byte-exact, committed BOTH repos LOCAL — advances boot #15's two missing answers (full island structure; apdma armed/quiesced) to be readable in ONE photo at boot #16. BLOCKED: push approval for ios-sweet 59ced39 → CI)
+
+- 0090 = `xnu/patches/0090-merlin-island-map-apdma-verdict.patch`
+  (4,317 B) by make-0090.py from research/art-0089-buildtree/src/xnu;
+  git apply clean; both files byte-identical (t7/t8).  Commits:
+  ios-merlin 2be10a0, ios-sweet 59ced39 (msdc-0079 ahead 1, NOT
+  pushed).
+- CONTENT:
+  1. zalloc_uaf_panic: bounded island run-map — nonzero 8-byte runs
+     (≤8, "0x%x-0x%x " entries + "+%u more" overflow), one line
+     "MERLIN FORENSICS: victim islands %u %s" printed BEFORE the
+     (panic) call so it is the LAST thing before the banner →
+     bottom of the visible frame by construction (boot #15's buf
+     copy lost the 15872 island via the 1024 B cap; the run-map
+     makes that truncation harmless).
+  2. sweet_ufs.c: verdict cache statics after msdc_lk_*:
+     `uint32_t msdc_apdma_map;` (bitmask, bit = window>>7),
+     `uint8_t msdc_apdma_count, msdc_apdma_stopped;` — set inside
+     merlin_apdma_quiesce's scan (map |= 1u << (w >> 7) for any
+     live-state window; count/stopped copied after the summary
+     print).  NON-static (0088 link lesson; assert in generator).
+  3. zalloc replay: externs + "MERLIN FORENSICS: apdma found=%u
+     quiesced=%u map=0x%08x" → the tail screen finally carries the
+     APDMA story every boot.
+- GENERATOR ASSERTS: verdict vars non-static + decl-before-use;
+  island map printed before the panic line; probes for both new
+  formats; mbuf[128] (8 runs × ≤13 chars + overflow marker).
+- BOOT #16 DECODE TABLE: "victim islands" line = full corruption
+  outline (compare island sizes/offsets across boots: 64-B-aligned
+  bursts? ::  stride?); "apdma found=" line >0 = LK armed channels
+  existed (map shows WHICH windows 0x980/0xa00/0xa80/0xb00 = bits
+  19/20/21/22; found>0 with quiesced==found = cleanup complete);
+  "lk dma ctrl=" line = LK MSDC0 handoff state; victim b[] byte
+  samples = fill class; reads/spill = MSDC canary health.
+- NEXT CONCRETE: push approval → dispatch (ref msdc-0079 @
+  59ced39) → poll → golden-rule verify (SHA + probes: "victim
+  islands", "apdma found=" + all earlier sets; log skip set =
+  known-good) → build-msdcroot0.py research\art-0090\
+  kernel.development.sweet (SAME cmdline as 0088/0089 boots,
+  msdc_readverify=1) → shim-boot-merlin-msdc-0090-fv.img → boot
+  #16 flash + ONE photo.
+- Parked next (needs evidence first): 0091 HW-watchpoint prototype
+  (freed-elem write watch under cpus=1 → CPU writer traps with PC;
+  DMA silent) — the CPU-vs-DMA discriminator.
+
 ## Agent handoff / active work (2026-10-25 LATEST-56: BOOT #15 (0089) DECODED — UAF RECURRED but the content class CHANGED: victim = freed elem mostly ZEROED with FOUR SHORT Thumb-2 CODE ISLANDS at elem+0x26c0/0x2e80/0x31c0/0x3e00 (~64–120 B each; val 0x8718681b4b27e034 = first nonzero word); NO MERLIN forensics lines visible in frame (replay scrolled off + buf[1024] truncated the island list mid-12856 — copy A tail shows the 15872 island, copy B head does NOT); apdma verdict NOT readable this boot. NO FIX JUSTIFIED YET — 0090 = forensics completeness (island run-map + cached apdma verdicts in replay) then a HW-watchpoint CPU-vs-DMA discriminator)
 
 - Boot #15 = shim-boot-merlin-msdc-0089-fv.img (verified sha 989C711F…).
