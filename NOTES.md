@@ -1,5 +1,76 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-53: BOOT #14 (0088) DECODED — VERDICT: dma spill=0 in BOTH panic rounds + readverify clean (round 1 at reads=175, round 2 at reads=520175) → MSDC engine class FULLY EXONERATED (inherited LK DMA + our own paths + overshoot all dead); scribbler STILL strikes (UAF on data.kalloc.16384, val=0xff…, elem ≈ 0xfffffe29a02b5800 in both rounds) + SpringBoard slide overflow persists → scribbler is NOT the MSDC → 0089 broaden hunt next)
+
+- BOOT #14 = shim-boot-merlin-msdc-0088-fv.img, ONE photo decoded, TWO
+  panic rounds visible (kernel panic → auto-reboot → second panic):
+  ROUND 1: `MERLIN FORENSICS: msdc reads=175 readverify mismatches=0 dma
+  SPILL=0` + victim block (data.kalloc.16384-ish, elem 0xfffffe29a02b5800,
+  val=0xffffffffFFFFFFFF, off≈10366/16K-element tail area) → the first
+  round died with barely any storage traffic — scribbler active VERY
+  early (seconds after take-over), NOT correlated with read volume.
+  ROUND 2 (full second boot): exec list progressed past earlier boots
+  (peakpowermanagerd, runningboardd, tccd, bluetoothuserd,
+  CloudPairing(?), OTRCrashCopier …), SpringBoard exec'd, then
+  `vm_shared_region_slide_page() offset overflow: pageIndex=17564,
+  start_off_set=8, slide amount=306499556` + CRASH SpringBoard[271] sig
+  10/map/ns 2 code 0xa story; forensics: `msdc reads=520175 readverify
+  mismatches=0 dma SPILL=0`; SAME victim element neighborhood
+  (0xfffffe2…b58/b5b00, kalloc.16384) as round 1.
+- VERDICT (decision tree, LATEST-52 logic branch 3): UAF persists with
+  dma spill=0 AND full readverify cleanliness across 520,175 reads →
+  the msdc controller/driver/DMA is OUT as the scribbler mechanism.
+  (0088 hardening stays in the tree — it protects the only storage
+  engine we control; its canary machinery now continuously certifies
+  that in EVERY future boot's forensics line.)
+- OBSERVATIONS to carry forward:
+  - Victim VALUE = all-0xFF (whole-element fill, few deltas) both
+    rounds — same class as boots 11/13.  All-FF is the natural content
+    of an IDLE-HIGH WIRE read continuously (floating UART RX!) or of
+    erased-NAND padding — i.e., a CONTINUOUS BYTE STREAM writer, not a
+    one-shot poke.
+  - Victims cluster in the SAME physmap neighborhood across rounds
+    (0xfffffe2…a02b5_b00-ish) while also differing from boot 13's
+    0xfffffe29a02be000 → layout shifted (0088 grew the kernel) but the
+    TARGET PATTERN (one contiguous-ish region reused as heap) stands:
+    fits a stale DMA descriptor buffer or LK-era boot-image buffer
+    being recycled as kernel heap, with the scribbler streaming into
+    whatever lands there.
+  - The SECOND round ran a COMPLETE mount + deep userspace before
+    panicking → the environment is boot-stable; the two remaining
+    kill classes: (a) the scribbler (kalloc.16384 victims), (b) the
+    SpringBoard shared-region slide overflow (pageIndex≈17.5k,
+    amount≈306 MB || boot13's 0x46d14000) — possibly independent bug
+    in the sweet pmap/slide path, possibly scribbler-corrupted VM
+    metadata; DECIDE by re-testing after the scribbler is cut.
+- 0089 PLAN (broadened hunt — draft next, validate locally, push only
+  after user approval):
+  1) Take-over snapshots: save the inherited MSDC0 DMA regs (ctrl/cfg/
+     sa/sa_high/ca/len) into statics AND PRINT THEM inside the FORENSICS
+     replay line (`dma spill=%llu lk ctrl=… cfg=… sa=… len=…`) — answers
+     "was LK's engine in-flight at handoff?" from the same one photo,
+     every boot, retroactively.
+  2) Victim CONTENT dump: extend the forensics/zone-log printout with
+     the first 16 bytes of the victim element + bytes around the
+     reported off (panic-safe reads from the elem VA) — distinguishes
+     "wire-fill 0xFF" from "sparse software poke" without guessing.
+  3) APDMA hunt (hypothesis #1): stale UART/APDMA RX channel armed by
+     LK streaming 0xFF (idle-high serial line) into RAM fits every
+     fingerprint: continuous, deterministic-ish target, all-FF content,
+     invisible to readverify, active within seconds of boot.  Design
+     needs the mt6768 APDMA/UART MMIO bases — pull from research DTB
+     dumps + LK tree facts before writing code; quiesce = disable all
+     UART DMA channels + APDMA enables very early (shim or rootdev
+     time), same pattern as the MSDC0 quiesce.
+  4) Forensics-only alternative if APDMA facts are missing: (1)+(2)
+     alone still discriminate wire-fill vs software-poke next boot.
+- Do NOT reuse 0083 (malformed, deferred — its content is redundant
+  with unentitled_ios_sim_launch=1 anyway). Patch numbering: next
+  available = 0089+ (0085 = reserved gap).
+- NEXT CONCRETE: draft make-0089.py against research/art-0088-buildtree/
+  src (post-0088) for items 1+2 (+3 if DTB facts allow), validate
+  byte-exact, commit, ASK before push/CI.
+
 ## Agent handoff / active work (2026-10-25 LATEST-52: 0088 v3 GREEN + FULLY VERIFIED — kernel + strings + log all confirmed; image packaged: shim-boot-merlin-msdc-0088-fv.img (sha 0b37878a…) — AWAITING user flash + ONE final-screen photo)
 
 - CI: run 40202405879 SUCCESS @ head deab554 (0088 v3).
