@@ -1,0 +1,199 @@
+xnu: MERLIN 0085 MSDC DMA quiesce + spill canary - at take_over print and fully quiesce any DMA state the bootloader left armed (STOP + zero CTRL/SA/SA_HIGH/CA/LEN/BLK_NUM); read/write paths write DMA_CTRL absolutely so no inherited bits survive a START; after every data phase check canary words behind the 512B target and report any DMA overshoot (spill) with extent; forensics replay line gains dma spill=<count>
+
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -999,10 +999,39 @@
+ 	uint32_t sts = msdc_rd(SDC_STS);
+ 
+ 	printf("MERLIN MSDC: cfg 0x%08x ps 0x%08x sts 0x%08x\n",
+ 	    cfg, msdc_rd(MSDC_PS), sts);
+ 
++	/* MERLIN (0085): print the DMA state the bootloader left behind,
++	 * then quiesce everything before touching the controller.  LK
++	 * loaded our boot image through this same DMA engine moments
++	 * earlier; a stale descriptor or leftover CTRL bits are the prime
++	 * scribbler suspects. */
++	printf("MERLIN MSDC: dma ctrl 0x%08x cfg 0x%08x sa 0x%08x "
++	    "sa_hi 0x%08x ca 0x%08x len 0x%08x fifo 0x%08x\n",
++	    msdc_rd(MSDC_DMA_CTRL), msdc_rd(MSDC_DMA_CFG),
++	    msdc_rd(MSDC_DMA_SA), msdc_rd(MSDC_DMA_SA_HIGH),
++	    msdc_rd(MSDC_DMA_CA), msdc_rd(MSDC_DMA_LEN),
++	    msdc_rd(MSDC_FIFOCS));
++	if (msdc_rd(MSDC_DMA_CFG) & MSDC_DMA_CFG_STS) {
++		msdc_wr(MSDC_DMA_CTRL, MSDC_DMA_CTRL_STOP);
++		uint64_t dl = deadline_in(MSDC_DMA_STOP_NS);
++		while (msdc_rd(MSDC_DMA_CFG) & MSDC_DMA_CFG_STS) {
++			if (mach_absolute_time() > dl) {
++				printf("MERLIN MSDC: inherited DMA would not stop\n");
++				break;
++			}
++		}
++	}
++	msdc_wr(MSDC_DMA_CTRL, 0);
++	msdc_wr(MSDC_DMA_SA, 0);
++	msdc_wr(MSDC_DMA_SA_HIGH, 0);
++	msdc_wr(MSDC_DMA_CA, 0);
++	msdc_wr(MSDC_DMA_LEN, 0);
++	msdc_wr(SDC_BLK_NUM, 1);
++
++
+ 	if (!(cfg & MSDC_CFG_MODE)) {
+ 		msdc_wr(MSDC_CFG, cfg | MSDC_CFG_MODE);
+ 	}
+ 	if (cfg & MSDC_CFG_CKPDN) {
+ 		msdc_wr(MSDC_CFG, msdc_rd(MSDC_CFG) & ~MSDC_CFG_CKPDN);
+@@ -1075,18 +1104,18 @@
+ 		printf("MERLIN MSDC: CMD17(%llu) out of range (status 0x%08x)\n",
+ 		    (unsigned long long)lba, resp);
+ 		return EIO;
+ 	}
+ 
+-	msdc_wr(MSDC_DMA_SA_HIGH, (msdc_rd(MSDC_DMA_SA_HIGH) & ~0xfu));
++	msdc_wr(MSDC_DMA_SA_HIGH, 0);
+ 	msdc_wr(MSDC_DMA_SA, (uint32_t)mo.dma_pa);
+ 	msdc_wr(MSDC_DMA_LEN, MSDC_SECTOR);
+-	uint32_t ctrl = msdc_rd(MSDC_DMA_CTRL);
+-	ctrl &= ~(MSDC_DMA_CTRL_START | MSDC_DMA_CTRL_STOP | MSDC_DMA_CTRL_MODE |
+-	    MSDC_DMA_CTRL_BRUSTSZ | MSDC_DMA_CTRL_LASTBUF);
+-	ctrl |= MSDC_DMA_CTRL_LASTBUF | (6u << 12);  /* 64-byte burst, basic mode */
+-	msdc_wr(MSDC_DMA_CTRL, ctrl | MSDC_DMA_CTRL_START);
++	uint32_t ctrl = 0;    /* decl kept for the STOP below */
++	/* MERLIN (0085): DMA_CTRL is written ABSOLUTELY so no bit
++	 * inherited from earlier state can survive to the START. */
++	msdc_wr(MSDC_DMA_CTRL, MSDC_DMA_CTRL_LASTBUF | (6u << 12) |
++	    MSDC_DMA_CTRL_START);
+ 
+ 	error = msdc_wait_int(dat_int, MSDC_DATA_TIMEOUT_NS, &sts);
+ 	if (error || (sts & (MSDC_INT_DATTMO | MSDC_INT_DATCRCERR | MSDC_INT_BDCSERR |
+ 	    MSDC_INT_GPDCSERR | MSDC_INT_AXI_RESP_ERR))) {
+ 		printf("MERLIN MSDC: CMD17(%llu) data failed: int 0x%08x "
+@@ -1112,10 +1141,41 @@
+ 				error = EIO;
+ 			}
+ 			break;
+ 		}
+ 	}
++	/* MERLIN (0085): spill canaries behind the 512-byte transfer
++	 * target.  Any DMA streaming past its requested length (ours or
++	 * one inherited from the bootloader) clobbers these first. */
++	{
++		const volatile uint64_t *c = (const volatile uint64_t *)mo.dma;
++		if (c[64] != 0x4d45524c494e2041ULL ||
++		    c[256] != 0x4d45524c494e2041ULL ||
++		    c[2048] != 0x4d45524c494e2041ULL) {
++			uint32_t first = 0;
++			uint32_t last = 0;
++			uint32_t bad = 0;
++			uint32_t w;
++			for (w = 64; w < MSDC_BOUNCE_SIZE / 8; w++) {
++				if (c[w] == 0x4d45524c494e2041ULL) {
++					continue;
++				}
++				if (bad == 0) {
++					first = w;
++				}
++				last = w;
++				bad++;
++			}
++			msdc_spill_count++;
++			if (msdc_spill_count == 1 ||
++			    (msdc_spill_count % 1000) == 0) {
++				printf("MERLIN MSDC: DMA SPILL count %llu words bad %u first %u (off %u) last %u\n",
++				    (unsigned long long)msdc_spill_count, bad, first,
++				    first * 8, last);
++			}
++		}
++	}
+ 	msdc_wr(MSDC_INT, 0xffffffffu);
+ 	msdc_dma_sync(MSDC_SECTOR);
+ 	return error;
+ }
+ 
+@@ -1125,10 +1185,12 @@
+  * "the eMMC content differs from the flashed image" (stable reads). */
+ static bool msdc_readverify;
+ uint32_t msdc_rv_mismatches;
+ uint64_t msdc_rv_last_lba;
+ unsigned long msdc_strategy_reads;
++
++static uint64_t msdc_spill_count;    /* DMA overshoot detections */
+ 
+ static int
+ msdc_read_sector(uint64_t lba)
+ {
+ 	msdc_strategy_reads++;
+@@ -1200,18 +1262,18 @@
+ 		printf("MERLIN MSDC: CMD24(%llu) out of range (status 0x%08x)\n",
+ 		    (unsigned long long)lba, resp);
+ 		return EIO;
+ 	}
+ 
+-	msdc_wr(MSDC_DMA_SA_HIGH, (msdc_rd(MSDC_DMA_SA_HIGH) & ~0xfu));
++	msdc_wr(MSDC_DMA_SA_HIGH, 0);
+ 	msdc_wr(MSDC_DMA_SA, (uint32_t)mo.dma_pa);
+ 	msdc_wr(MSDC_DMA_LEN, MSDC_SECTOR);
+-	uint32_t ctrl = msdc_rd(MSDC_DMA_CTRL);
+-	ctrl &= ~(MSDC_DMA_CTRL_START | MSDC_DMA_CTRL_STOP | MSDC_DMA_CTRL_MODE |
+-	    MSDC_DMA_CTRL_BRUSTSZ | MSDC_DMA_CTRL_LASTBUF);
+-	ctrl |= MSDC_DMA_CTRL_LASTBUF | (6u << 12);  /* 64-byte burst, basic mode */
+-	msdc_wr(MSDC_DMA_CTRL, ctrl | MSDC_DMA_CTRL_START);
++	uint32_t ctrl = 0;    /* decl kept for the STOP below */
++	/* MERLIN (0085): DMA_CTRL is written ABSOLUTELY so no bit
++	 * inherited from earlier state can survive to the START. */
++	msdc_wr(MSDC_DMA_CTRL, MSDC_DMA_CTRL_LASTBUF | (6u << 12) |
++	    MSDC_DMA_CTRL_START);
+ 
+ 	error = msdc_wait_int(dat_int, MSDC_DATA_TIMEOUT_NS, &sts);
+ 	if (error || (sts & (MSDC_INT_DATTMO | MSDC_INT_DATCRCERR | MSDC_INT_BDCSERR |
+ 	    MSDC_INT_GPDCSERR | MSDC_INT_AXI_RESP_ERR))) {
+ 		printf("MERLIN MSDC: CMD24(%llu) data failed: int 0x%08x "
+@@ -1537,10 +1599,19 @@
+ 	if (!pn) {
+ 		return ENOMEM;
+ 	}
+ 	mo.dma_pa = ptoa_64(pn);
+ 	mo.secsize = DEV_BSIZE;
++	/* MERLIN (0085): fill the canary words behind the 512-byte
++	 * transfer target (the rest of the 64 KiB bounce region). */
++	{
++		uint64_t magic = 0x4d45524c494e2041ULL;
++		uint32_t w;
++		for (w = 64; w < MSDC_BOUNCE_SIZE / 8; w++) {
++			memcpy((void *)(mo.dma + w * 8), &magic, sizeof(magic));
++		}
++	}
+ 
+ 	lck_mtx_lock(&merlin_msdc_lock);
+ 	error = msdc_take_over();
+ 	if (!error) {
+ 		error = msdc_find_partition(want);
+--- a/osfmk/kern/zalloc.c
++++ b/osfmk/kern/zalloc.c
+@@ -3073,10 +3073,11 @@
+  * allocation; single-CPU panicked use only.
+  */
+ extern uint32_t msdc_rv_mismatches;
+ extern uint64_t msdc_rv_last_lba;
+ extern unsigned long msdc_strategy_reads;
++extern uint64_t msdc_spill_count;
+ 
+ struct merlin_uaf_note {
+ 	uint64_t    elem;
+ 	uint64_t    val;
+ 	uint32_t    off, size;
+@@ -3103,12 +3104,13 @@
+ 
+ void
+ merlin_uaf_replay(void)
+ {
+ 	printf("MERLIN FORENSICS: msdc reads=%lu readverify mismatches=%u "
+-	    "last lba=%llu\n", msdc_strategy_reads, msdc_rv_mismatches,
+-	    (unsigned long long)msdc_rv_last_lba);
++	    "last lba=%llu dma spill=%llu\n", msdc_strategy_reads,
++	    msdc_rv_mismatches, (unsigned long long)msdc_rv_last_lba,
++	    (unsigned long long)msdc_spill_count);
+ 	for (unsigned int i = 0; i < sizeof(merlin_uaf_notes) /
+ 	    sizeof(merlin_uaf_notes[0]); i++) {
+ 		struct merlin_uaf_note *n = &merlin_uaf_notes[i];
+ 
+ 		if (n->size == 0) {
