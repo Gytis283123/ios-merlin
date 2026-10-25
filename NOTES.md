@@ -27,7 +27,7 @@
     ADDR/LEN/THRE.
 - 0089 CONTENT:
   - sweet_ufs.c: `uint32_t msdc_lk_ctrl, msdc_lk_cfg, msdc_lk_sa,
-    msdc_lk_len;` NON-static after msdc_spill_count (0088
+    msdc_lk_ca, msdc_lk_len;` NON-static after msdc_spill_count (0088
     lesson: static fails the link — assert in generator), snapshot
     assignments right after the 0085 inherited-state printf in
     take_over.
