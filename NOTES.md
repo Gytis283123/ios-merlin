@@ -1,5 +1,59 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-52: 0088 v3 GREEN + FULLY VERIFIED — kernel + strings + log all confirmed; image packaged: shim-boot-merlin-msdc-0088-fv.img (sha 0b37878a…) — AWAITING user flash + ONE final-screen photo)
+
+- CI: run 40202405879 SUCCESS @ head deab554 (0088 v3).
+- ARTIFACTS: xnu-kernel id 12602746907 → research/art-0088/
+  (kernel.development.sweet sha 2ac0153d62d400d4289c915a8dffe8fb708762bc1f4e5e
+  cc775d15d22ea81c57, size 17,207,608 = +32 B vs 0087's 17,207,576);
+  xnu-buildtree id 12602657154 → research/art-0088-buildtree/ (extracted to
+  src/; sweet_ufs.c 47,951 B = +2,281 B of 0088) — THE NEXT PATCH BASE.
+- VERIFICATION (golden rule, all green): SHA256SUMS match; probes ALL True:
+  "MERLIN MSDC: dma ctrl", "DMA SPILL count", "dma spill=%llu",
+  "MERLIN MSDC: cfg 0x", "inherited DMA would not stop"; CI log apply
+  sequence: 0082 → 0083 (skip, known corrupt, deferred) → 0084 → 0086 →
+  0087 → 0088 → dxb known skips (TrustCache/iobuffermemd_monterey/
+  skywalk_sonoma/syntax_checker_sonoma).  NO unknown skips.
+- IMAGE: python research\tmp-msdc-split\build-msdcroot0.py
+  research\art-0088\kernel.development.sweet --cmdline "debug=0xc serial=3
+  cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=msdcroot0
+  unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 zlog1=kalloc.8192
+  zlog2=kalloc.4096 zlog3=kalloc.type.var.4096 zlog4=kalloc.type.4096
+  zlog5=kalloc.16384 zlog6=kalloc.12288 -zc msdc_readverify=1"
+  --out research\merlin-boot\shim-boot-merlin-msdc-0088-fv.img
+  → 16,989,139 B, sha 0b37878a52a5fba518c30ca89a4a521702cd39a728a345840c94df
+  82b7d3fb9c; verify pass: SWEETXNU payload 16,612,400 B; shim + dtb
+  byte-identical to the standard E1 image; cmdline pinned verbatim.
+- AWAITING: user flashes boot_a/boot slot AS USUAL (persistent flash flow,
+  NOT fastboot boot) + boots + sends ONE final-screen photo.
+- DECODE GUIDE (any agent): early lines should now include the NEW
+  take-over state forensics: `MERLIN MSDC: cfg 0x… ps 0x… sts 0x…` then
+  `MERLIN MSDC: dma ctrl 0x… cfg 0x… sa 0x… sa_hi 0x… ca 0x… len 0x… fis
+  fifo 0x…` — THAT IS WHAT LK LEFT BEHIND (inherited-state evidence!).
+  Possibly `MERLIN MSDC: inherited DMA would not stop` (rage-quarantine of
+  a stuck engine) and/or early `MERLIN MSDC: DMA SPILL count %llu words
+  bad %u first %u (off %u) last %u` prints (first occurrence + every
+  1000th; count continues silently).  Settled tail (0087 hook guarantees):
+  zone-log headers, victim dumps, `Original panic string:` …
+  `handshake structure not initialized` … panic.apple.com footer + spin;
+  the round(s) end with `MERLIN FORENSICS: msdc reads=N readverify
+  mismatches=N last lba=N dma spill=N`.
+- VERDICT LOGIC (decide from photo(s)):
+  1) dma spill=0 AND no `element modified after free` AND no
+     malformed-load/SIGBUS/slide death reached = inherited-state class
+     DEAD → start the multi-boot success streak (criteria LATEST-47).
+  2) dma spill>0 (any) = a DMA overshoot is LIVE: its extent (words bad/
+     first-off) = the register-map deep dive target; compare with whether
+     the UAF alarm still fires.
+  3) UAF alarm persists with dma spill=0 = the scribbler is NOT the msdc
+     engine → broaden hunt (APDMA/other controller) as 0089+.
+  4) boot simply lives longer/deeper than all prior boots = success
+     signal regardless of label.
+- CLEANUP NOTE: previous art dirs: art-0086-buildtree (pre-0087 base),
+  art-0087 + art-0087-buildtree (post-0087 base, superseded by art-0088),
+  art-0085-skipped (never use).  Kernel-build iteration now expects:
+  patch (make-00NN.py) → 0089+ numbering rule → CI → verify → image.
+
 ## Agent handoff / active work (2026-10-25 LATEST-51: 0088 attempt 2 failed at LINK (not compile!): "_msdc_spill_count undefined for arm64" — my counter decl was `static` (file-local) while zalloc.o's replay externs it → v3 makes it non-static (0086-style visibility), re-validated, pushing attempt 3)
 
 - ATTEMPT 2 = run 40201604920 (head d3aea9a) → compile PASSED clean (all
