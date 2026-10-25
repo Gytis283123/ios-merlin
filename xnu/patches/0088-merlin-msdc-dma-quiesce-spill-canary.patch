@@ -2,12 +2,26 @@ xnu: MERLIN 0085 MSDC DMA quiesce + spill canary - at take_over print and fully 
 
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -999,10 +999,39 @@
+@@ -932,10 +932,12 @@
+ 	bool ready;
+ } mo;
+ 
+ static uint8_t msdc_gpt[128 * 128];             /* one GPT entry table */
+ 
++static uint64_t msdc_spill_count;               /* 0088: DMA overshoot detections */
++
+ static LCK_GRP_DECLARE(merlin_msdc_grp, "merlin_msdc");
+ static LCK_MTX_DECLARE(merlin_msdc_lock, &merlin_msdc_grp);
+ 
+ static inline uint32_t
+ msdc_rd(uint32_t off)
+@@ -998,10 +1000,39 @@
+ 	uint32_t cfg = msdc_rd(MSDC_CFG);
  	uint32_t sts = msdc_rd(SDC_STS);
  
  	printf("MERLIN MSDC: cfg 0x%08x ps 0x%08x sts 0x%08x\n",
  	    cfg, msdc_rd(MSDC_PS), sts);
- 
++
 +	/* MERLIN (0085): print the DMA state the bootloader left behind,
 +	 * then quiesce everything before touching the controller.  LK
 +	 * loaded our boot image through this same DMA engine moments
@@ -36,13 +50,12 @@ xnu: MERLIN 0085 MSDC DMA quiesce + spill canary - at take_over print and fully 
 +	msdc_wr(MSDC_DMA_LEN, 0);
 +	msdc_wr(SDC_BLK_NUM, 1);
 +
-+
+ 
  	if (!(cfg & MSDC_CFG_MODE)) {
  		msdc_wr(MSDC_CFG, cfg | MSDC_CFG_MODE);
  	}
  	if (cfg & MSDC_CFG_CKPDN) {
- 		msdc_wr(MSDC_CFG, msdc_rd(MSDC_CFG) & ~MSDC_CFG_CKPDN);
-@@ -1075,18 +1104,18 @@
+@@ -1075,18 +1106,18 @@
  		printf("MERLIN MSDC: CMD17(%llu) out of range (status 0x%08x)\n",
  		    (unsigned long long)lba, resp);
  		return EIO;
@@ -67,7 +80,7 @@ xnu: MERLIN 0085 MSDC DMA quiesce + spill canary - at take_over print and fully 
  	if (error || (sts & (MSDC_INT_DATTMO | MSDC_INT_DATCRCERR | MSDC_INT_BDCSERR |
  	    MSDC_INT_GPDCSERR | MSDC_INT_AXI_RESP_ERR))) {
  		printf("MERLIN MSDC: CMD17(%llu) data failed: int 0x%08x "
-@@ -1112,10 +1141,41 @@
+@@ -1112,10 +1143,41 @@
  				error = EIO;
  			}
  			break;
@@ -109,19 +122,6 @@ xnu: MERLIN 0085 MSDC DMA quiesce + spill canary - at take_over print and fully 
  	return error;
  }
  
-@@ -1125,10 +1185,12 @@
-  * "the eMMC content differs from the flashed image" (stable reads). */
- static bool msdc_readverify;
- uint32_t msdc_rv_mismatches;
- uint64_t msdc_rv_last_lba;
- unsigned long msdc_strategy_reads;
-+
-+static uint64_t msdc_spill_count;    /* DMA overshoot detections */
- 
- static int
- msdc_read_sector(uint64_t lba)
- {
- 	msdc_strategy_reads++;
 @@ -1200,18 +1262,18 @@
  		printf("MERLIN MSDC: CMD24(%llu) out of range (status 0x%08x)\n",
  		    (unsigned long long)lba, resp);

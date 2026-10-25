@@ -1,5 +1,47 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-50: 0088 build attempt 1 FAILED at COMPILE (not apply!) — undedclared msdc_spill_count: my declaration sat BELOW its first use; FIXED + re-validated + re-pushing; SIDE-DISCOVERY: 0083-launchd-platform patch is malformed and has likely NEVER applied — deferred, do not touch exec behavior mid-scribbler-hunt)
+
+- ATTEMPT 1 = run 40200698093 (head d1d4071) → FAILURE, first time a merlin
+  patch actually compiled in the build.  Errors:
+  `sweet_ufs.c:1168..1172: error: use of undeclared identifier
+  'msdc_spill_count'` (4x) → `make[7]: *** [sweet_ufs.o] Error 1`.
+  CAUSE: I declared the spill counter in the readverify var block, but that
+  block sits AFTER msdc_read_sector_once in file order; the canary check in
+  the read tail uses it BEFORE its declaration.  LESSON: git-apply byte-exact
+  validation proves PATCH APPLIES, NOT that C links — declaration ordering is
+  invisible until a real compile.  Fix also asserts decl-before-use in the
+  generator now.
+- FIX (this commit): `static uint64_t msdc_spill_count;` moved directly after
+  the `msdc_gpt` static (~c.936, above all msdc functions); generator asserts
+  decl precedes first use; make-0085.py re-generated the patch (7,199 B) and
+  re-validated byte-exact (t7 apply == t8 expected) → 0088 v2.
+- WHAT THE FAILURE PROVED (good news): 0088 APPLIES (renumber correct, the
+  skip warning this run was only 0083ำ + dxb's own base patches); every other
+  identifier I added (MSDC_FIFOCS, MSDC_DMA_CFG_STOP, MSDC_DMA_CFG_STS,
+  MSDC_DMA_LEN, SDC_BLK_NUM, deadline_in) compiled fine — H1/H2/H3/H5/H7
+  content is C-correct except the counter placement.  0086/0087 unaffected.
+- SIDE-DISCOVERY (this run's log also a first full look at ALL skips):
+  `Skipping patch 0083-merlin-launchd-platform.patch ... error: corrupt patch
+  at line 23` — the 0083 diff hunk counts lines that aren't there (header
+  claims more than exists; file ends mid-hunk without trailing context) ⇒
+  0083 has likely NEVER applied in ANY CI build.  Its purpose
+  (no_sandbox_entitled=TRUE at process_signature for SWEET boards) is
+  REDUNDANT with our cmdline's `unentitled_ios_sim_launch=1` — history boots
+  reached launchd/dyld/SpringBoard without it.  DECISION: DEFER — fix 0083
+  as a fresh 009x patch AFTER the 0088 verdict; do not change exec-signature
+  behavior mid-hunt.
+- LONG-STANDING dxb baseline skips (every run, blacktop's own patches, files
+  already exist in-tree — harmless): TrustCache.patch, iobuffermemd_monterey,
+  skywalk_sonoma, syntax_checker_sonoma.  Known-good skip set is now:
+  [dxb×4 + possibly 0083 until fixed] — any OTHER "Skipping" line = RED FLAG.
+- NEXT: push 0088 v2 → dispatch → poll → verify (SHA + probes "MERLIN MSDC:
+  dma ctrl" / "DMA SPILL count" / "dma spill=%llu" + log greps: 0088/0086/
+  0087 must APPLY, skips = known set only) → build shim-boot-merlin-msdc-0088
+  -fv.img (cmdline unchanged; keep msdc_readverify=1) → flash + ONE photo →
+  decode per LATEST-49/48 (dma spill=0 + no UAF = class dead; spill = live
+  overshoot; inherited-DMA state line = what LK left behind).
+
 ## Agent handoff / active work (2026-10-25 LATEST-49: ROOT CAUSE — the CI SILENTLY SKIPPED the 0085 patch (patch-fail ≠ build-fail!) → renumbered 0085 → 0088 in both repos, re-pushing; GOLDEN RULE: every CI build must be verified by SHA + BINARY STRING PROBES + CI-log grep "Skipping patch" — a "success" artifact is not proof a patch applied)
 
 - ROOT CAUSE (run 40199390379 build log, excerpt saved to
