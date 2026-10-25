@@ -1,6 +1,6 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
-## Agent handoff / active work (2026-10-25 LATEST-57 (upd): 0090-v1 WAS pushed (ios-sweet 59ced39) and CI-RED — run 40208702420, build exit 2: v1 declared 'years' but used 'beyond' 3x (diff-verified in the committed patch; t7/t8 byte-compare cannot catch this class — both sides share the same edit). 0090-v2 (identifier fix + generator identifier-contract asserts) committed local BOTH repos (ios-merlin d3dc0b3 / ios-sweet 0adeac7, ahead 1), re-validated t7/t8 + regenerated==committed. PUSHED 0adeac7 (user-approved) → CI run 40212507739 (run_number 26, workflow_dispatch, defaults 13.5/DEVELOPMENT/SWEET) in progress → golden rule → boot #16)
+## Agent handoff / active work (2026-10-25 LATEST-57 (upd): 0090-v1 WAS pushed (ios-sweet 59ced39) and CI-RED — run 40208702420, build exit 2: v1 declared 'years' but used 'beyond' 3x (diff-verified in the committed patch; t7/t8 byte-compare cannot catch this class — both sides share the same edit). 0090-v2 (identifier fix + generator identifier-contract asserts) committed local BOTH repos (ios-merlin d3dc0b3 / ios-sweet 0adeac7, ahead 1), re-validated t7/t8 + regenerated==committed. PUSHED 0adeac7 (user-approved) → CI run 40212507739 GREEN, GOLDEN RULE FULLY VERIFIED (sha 20e6fd54…; 17/17 probes incl. "victim islands"+"apdma found="; skip set = known-good five ×2; merlin chain 0082→0090 applied) → shim-boot-merlin-msdc-0090-fv.img BUILT (16,989,139 B, sha 1d76f240…, payload 16,612,640 B, cmdline = 0088/0089 + msdc_readverify=1, shim+dtb byte-identical to E1) → READY FOR BOOT #16: user fastboot boot + ONE photo)
 
 - 0090 = `xnu/patches/0090-merlin-island-map-apdma-verdict.patch`
   (v2 4,318 B, sha 8b15a2a5…) by make-0090.py from
@@ -74,15 +74,17 @@
   19/20/21/22; found>0 with quiesced==found = cleanup complete);
   "lk dma ctrl=" line = LK MSDC0 handoff state; victim b[] byte
   samples = fill class; reads/spill = MSDC canary health.
-- NEXT CONCRETE: (IN FLIGHT) ios-sweet 0adeac7 PUSHED (user
-  approved; supersedes red 59ced39) → CI run 40212507739
-  dispatched, polling →
-  golden-rule verify (SHA + probes: "victim islands", "apdma
-  found=" + all earlier sets; log skip set = known-good; v2 alters
-  only the declaration line, probe strings unchanged) →
-  build-msdcroot0.py research\art-0090\ kernel.development.sweet
-  (SAME cmdline as 0088/0089 boots, msdc_readverify=1) →
-  shim-boot-merlin-msdc-0090-fv.img → boot #16 flash + ONE photo.
+- NEXT CONCRETE: BOOT #16 — user runs `fastboot boot
+  research\merlin-boot\shim-boot-merlin-msdc-0090-fv.img`
+  (temporary boot, NO flashing) + ONE photo of the final screen;
+  decode per the BOOT #16 DECODE TABLE above (victim islands line +
+  "apdma found=" line + lk dma ctrl + victim b[] + reads/spill).
+  ASIDE: first builder run used default --out and overwrote
+  research/merlin-boot/shim-boot-merlin-msdc-blknum.img (derived,
+  regenerable; since deleted) and default CMDLINE LACKS
+  msdc_readverify=1 — the fv image was rebuilt with explicit
+  --cmdline.  Parked next: 0091 HW-watchpoint prototype; fetch
+  art-0090-buildtree (artifact id 12605969599) when drafting 0091.
 - Parked next (needs evidence first): 0091 HW-watchpoint prototype
   (freed-elem write watch under cpus=1 → CPU writer traps with PC;
   DMA silent) — the CPU-vs-DMA discriminator.
