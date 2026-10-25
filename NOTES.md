@@ -1,6 +1,6 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
-## Agent handoff / active work (2026-10-25 LATEST-57 (upd): 0090-v1 WAS pushed (ios-sweet 59ced39) and CI-RED — run 40208702420, build exit 2: v1 declared 'years' but used 'beyond' 3x (diff-verified in the committed patch; t7/t8 byte-compare cannot catch this class — both sides share the same edit). 0090-v2 (identifier fix + generator identifier-contract asserts) committed local BOTH repos (ios-merlin d3dc0b3 / ios-sweet 0adeac7, ahead 1), re-validated t7/t8 + regenerated==committed. BLOCKED: push approval for 0adeac7 → re-dispatch CI → boot #16)
+## Agent handoff / active work (2026-10-25 LATEST-57 (upd): 0090-v1 WAS pushed (ios-sweet 59ced39) and CI-RED — run 40208702420, build exit 2: v1 declared 'years' but used 'beyond' 3x (diff-verified in the committed patch; t7/t8 byte-compare cannot catch this class — both sides share the same edit). 0090-v2 (identifier fix + generator identifier-contract asserts) committed local BOTH repos (ios-merlin d3dc0b3 / ios-sweet 0adeac7, ahead 1), re-validated t7/t8 + regenerated==committed. PUSHED 0adeac7 (user-approved) → CI run 40212507739 (run_number 26, workflow_dispatch, defaults 13.5/DEVELOPMENT/SWEET) in progress → golden rule → boot #16)
 
 - 0090 = `xnu/patches/0090-merlin-island-map-apdma-verdict.patch`
   (v2 4,318 B, sha 8b15a2a5…) by make-0090.py from
@@ -74,8 +74,9 @@
   19/20/21/22; found>0 with quiesced==found = cleanup complete);
   "lk dma ctrl=" line = LK MSDC0 handoff state; victim b[] byte
   samples = fill class; reads/spill = MSDC canary health.
-- NEXT CONCRETE: push approval for ios-sweet 0adeac7 (v2 over the
-  red 59ced39) → dispatch (ref msdc-0079 @ 0adeac7) → poll →
+- NEXT CONCRETE: (IN FLIGHT) ios-sweet 0adeac7 PUSHED (user
+  approved; supersedes red 59ced39) → CI run 40212507739
+  dispatched, polling →
   golden-rule verify (SHA + probes: "victim islands", "apdma
   found=" + all earlier sets; log skip set = known-good; v2 alters
   only the declaration line, probe strings unchanged) →
