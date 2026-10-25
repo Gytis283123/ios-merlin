@@ -1,5 +1,69 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-56: BOOT #15 (0089) DECODED — UAF RECURRED but the content class CHANGED: victim = freed elem mostly ZEROED with FOUR SHORT Thumb-2 CODE ISLANDS at elem+0x26c0/0x2e80/0x31c0/0x3e00 (~64–120 B each; val 0x8718681b4b27e034 = first nonzero word); NO MERLIN forensics lines visible in frame (replay scrolled off + buf[1024] truncated the island list mid-12856 — copy A tail shows the 15872 island, copy B head does NOT); apdma verdict NOT readable this boot. NO FIX JUSTIFIED YET — 0090 = forensics completeness (island run-map + cached apdma verdicts in replay) then a HW-watchpoint CPU-vs-DMA discriminator)
+
+- Boot #15 = shim-boot-merlin-msdc-0089-fv.img (verified sha 989C711F…).
+  Photo composition: nz-word dump tail (12816…15928) + panic banner +
+  "Original panic string:" + the SAME dump's head (9920…) ending
+  mid-line at "12856: 0x" = zalloc_uaf_panic's buf[1024] cap (la 0084
+  hook) — the SECOND copy loses the ≥15872 island; the copies agree on
+  shared offsets ✓.  Reader urged by the template: off/val/ptr fields
+  partially OCR-noisy BUT off:9920/val:0x8718681b4b27e034 MATCH the
+  dump's first line exactly ✓; caller normalized
+  0xfffffe0007ab8e8c = _zalloc_uaf_panic + 0x15c (symtab 70,896 syms;
+  dSYM in the artifact zip carries NO DWARF — only lldb scripts).
+- CHECK SEMANTICS (exact, this tree): zalloc_validate_element
+  (zalloc.c:3208) at ALLOC time runs memcmp_zero_ptr_aligned(elem,
+  size) over the taken-from-freelist element and panics unless ALL
+  ZERO (ZALLOC_ENABLE_ZERO_CHECK / zzc).  Our 0084 zalloc_uaf_panic
+  (3164–3205) re-derives off/val as the FIRST NONZERO 8-byte word →
+  so: bytes 0…9919 were ZERO at detection ⇒ islands = writes AFTER
+  the zero-fill, BETWEEN free and re-alloc (dwell window).  Island
+  spans (both copies deduped): 9920–9984, 11904–11968, 12736–12856,
+  15872–15928 (+ an uncertain 2856 line reported by the OCR only).
+  Total corrupting bytes ≲ 350 B in SHORT bursts at 64-B-aligned
+  offsets — NOT a 16 K stream and NOT 0xFF fill.
+- CONTENT: islands are ARM32/Thumb-2 machine code + pointer-pair
+  tables (0x00031k08/0x00086xxx…, span ~0x31908–0x874ed ≈ 352 KB →
+  an ARM32 image of ≥ ~0x87500 B).  Byte-search of those constants
+  (LE) + two 8-byte island words against EVERY local binary
+  (unpack-0001/0002 kernel+ramdisk+dtb, ctlB + 0083 boot imgs, art-
+  0089 kernel) = ZERO MATCHES → the source image lives only on the
+  device (prime candidates: LK itself [ARM32 ~300–600 KB, DDR-
+  resident] / stock Android boot chain pages).  DO NOT symbolize the
+  dump words as a stack — they are data.
+- #15 UNKNOWN (lines not in frame): msdc reads/spill verdict (canary
+  probably still clean but unproven this shot); lk dma line; apdma
+  armed/quiesced counts (0089 prints them at init-time only — a
+  DESIGN GAP).  No SpringBoard slide line visible either.
+- MODEL UPDATE: boots 11/13/14 = 0xFF-interpretation (wire/idle-high),
+  boot 15 = short CODE bursts → the writer's payload is NOT a fixed
+  pattern; classic suspects re-ranked: (a) stale DMA descriptors
+  streaming variable source bytes (APDMA theory NOT confirmed — the
+  0xFF decode fit boot 11/13/14 ONLY), (b) a CPU-side writer (warm-
+  boot stale RAM does NOT self-write), (c) SEVERAL independent scrib
+  blers.  The discriminator that settles CPU-vs-DMA: HARDWARE
+  WATCHPOINT on a freed element (DMA does not trap; CPU writes do)
+  in a cpus=1 boot → 0091 candidate after 0090.
+- 0090 PLAN (diagnostics only, no functional change):
+  1. zalloc_uaf_panic: replace/augment the buf scan with a bounded
+     ISLAND RUN-MAP (≤ 8 runs: start–end offsets), printed AND packed
+     into the panic reason line — kills the buf[1024] truncation loss
+     permanently.
+  2. merlin_apdma_quiesce: record verdict statics (armed windows/
+     quiesced/which offsets) and print them in merlin_uaf_replay →
+     the ONE-photo tail finally proves/disproves the LK-armed-channel
+     story every boot.
+  3. Keep everything else untouched (0088 canary/0087 tail chain).
+- ASSET NOTE: research/art-0089/kernel.development.sweet.link/ IS A
+  DIRECTORY (ships kdk libs + .a + dSYM WITHOUT DWARF + exp files);
+  .a = 134 MB TU objects (symtab candidate for future offline
+  symbolization needs).
+- NEXT CONCRETE: draft make-0090.py against research/art-0089-build
+  tree/src/xnu (BASE note: directory layout now src/xnu ✓), validate
+  byte-exact, commit both repos, ask push approval; simultaneously
+  propose the HW-watchpoint design as 0091.
+
 ## Agent handoff / active work (2026-10-25 LATEST-55: 0089 CI GREEN (run 40205264342 @ c8d5aadc) + FULL GOLDEN-RULE VERIFIED (SHA match; 15/15 binary probes; log skip set = known-good ONLY, 0082→0089 all applied); boot image shim-boot-merlin-msdc-0089-fv.img BUILT (16,989,139 B) — READY FOR BOOT #15: user flash + ONE photo; decode table below)
 
 - Run 40205264342 (workflow_dispatch, ref msdc-0079 @ c8d5aadc74d38eaab
