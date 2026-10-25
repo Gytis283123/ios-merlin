@@ -80,6 +80,33 @@
   6890-6902 forces /sbin/launchd directly, shallow path, skips the
   appleinternal walk; on exec error it PANICS with errno + full
   replay instead of hanging silently).
+- BOOT #18 (lrel image 57534d6b): THE SHALLOW PATH EXEC'D — no hang!
+  Console: "load_init_program: attempting to load /sbin/launchd" →
+  launchd became PID 1 → immediately SIGKILLed → terminal panic
+  "unexpected SIGKILL of launchd [no reason provided]" (kern_sig.c:
+  2061-2074 — initproc SIGKILL with NULL reason; "(CS_KILLED)" tag
+  presence OCR-unresolved; caller 0xfffffe0007afdc34 unnormalized).
+  So #17's hang WAS specific to the /usr/appleinternal deep walk;
+  /sbin/launchd lookup+exec over msdc WORKS.  ROOT CAUSE OF THE
+  KILL (high confidence): CMDLINE REGRESSION — the proven 0083-era
+  cmdline carried `unentitled_ios_sim_launch=1 launchd_unsecure_cache=1`
+  (platform gate + AMFI/cache-loader escape; boot #6 reached
+  SpringBoard with them; even early msdcroot0 boots had them —
+  NOTES:894/1191), but the 0084-era trimmed cmdline DROPPED both.
+  Boots #11-#15 never noticed (UAF killed them pre-exec).  The
+  bypasses still exist in this DEVELOPMENT kernel
+  (kern_codesigning.c:71-139: amfi=/amfi_allow_any_signature=/
+  amfi_get_out_of_my_way=/cs_enforcement_disable= all parse on
+  DEVELOPMENT).  BOOT #19 IMAGE BUILT:
+  shim-boot-merlin-msdc-0090-full-fv.img (sha c2b04671…, cmdline =
+  #18 + the two restored args).  EXPECT: launchd_cache_loader
+  prints "Using unsecure cache: /System/Library/xpc/launchd.plist"
+  → "Cache sent to launchd successfully" (LATEST-37 decode) →
+  deeper userland than ANY boot (boot #6 ceiling = SpringBoard
+  launch + shared-cache slide overflow — that wall's 0084+
+  readverify verdict stays relevant).  If launchd still dies:
+  full-screen photo of the panic block (backtrace + "Original
+  panic string:" + System diagnostics follow the banner).
 
 ## Agent handoff / active work (2026-10-25 LATEST-57 (upd): 0090-v1 WAS pushed (ios-sweet 59ced39) and CI-RED — run 40208702420, build exit 2: v1 declared 'years' but used 'beyond' 3x (diff-verified in the committed patch; t7/t8 byte-compare cannot catch this class — both sides share the same edit). 0090-v2 (identifier fix + generator identifier-contract asserts) committed local BOTH repos (ios-merlin d3dc0b3 / ios-sweet 0adeac7, ahead 1), re-validated t7/t8 + regenerated==committed. PUSHED 0adeac7 (user-approved) → CI run 40212507739 GREEN, GOLDEN RULE FULLY VERIFIED (sha 20e6fd54…; 17/17 probes incl. "victim islands"+"apdma found="; skip set = known-good five ×2; merlin chain 0082→0090 applied) → shim-boot-merlin-msdc-0090-fv.img BUILT (16,989,139 B, sha 1d76f240…, payload 16,612,640 B, cmdline = 0088/0089 + msdc_readverify=1, shim+dtb byte-identical to E1) → READY FOR BOOT #16: user fastboot boot + ONE photo)
 
