@@ -1,0 +1,124 @@
+xnu: MERLIN 0090 island run-map + cached APDMA verdict - boot #15 showed the panic-log word dump truncated mid-element (the 1024-char buf) so the 15872 island vanished from that rendering, and the 0089 APDMA scan verdict only prints at init (and scrolls away); add a bounded nonzero-run map printed before the panic line (one compact "0xa-0x b" list, <=8 runs plus overflow count), cache the APDMA scan results (non-static msdc_apdma_map/count/stopped) and re-print them in the forensics replay tail; diagnostics only
+
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -940,10 +940,17 @@
+  * take-over so the panic-tail forensics line can report the state.
+  * Non-static: the zalloc replay reads these. */
+ uint32_t msdc_lk_ctrl, msdc_lk_cfg, msdc_lk_sa, msdc_lk_ca,
+     msdc_lk_len;
+ 
++/* 0090: the APDMA scan verdict, cached for the panic-tail replay
++ * (non-static: the zalloc replay reads these).  map = bitmask of the
++ * 0x80-byte windows that held live state, count = how many, stopped =
++ * how many we ran the terminate sequence on. */
++uint32_t msdc_apdma_map;
++uint8_t msdc_apdma_count, msdc_apdma_stopped;
++
+ static LCK_GRP_DECLARE(merlin_msdc_grp, "merlin_msdc");
+ static LCK_MTX_DECLARE(merlin_msdc_lock, &merlin_msdc_grp);
+ 
+ static inline uint32_t
+ msdc_rd(uint32_t off)
+@@ -1059,10 +1066,11 @@
+ 		uint32_t rpt = *(volatile uint32_t *)(base + w + MSDC_VFF_RPT);
+ 
+ 		if (!en && !inten && !addr && !len && !wpt && !rpt) {
+ 			continue;
+ 		}
++		msdc_apdma_map |= 1u << (w >> 7);
+ 		armed++;
+ 		printf("MERLIN MSDC: apdma win 0x%03x en 0x%x int_en 0x%x "
+ 		    "addr 0x%08x len 0x%x wpt 0x%x rpt 0x%x\n",
+ 		    w, en, inten, addr, len, wpt, rpt);
+ 		if (en == 0) {
+@@ -1099,10 +1107,12 @@
+ 		*(volatile uint32_t *)(base + w + MSDC_VFF_THRE) = 0;
+ 		quiesced++;
+ 	}
+ 	printf("MERLIN MSDC: apdma %u window(s) with live state, %u armed "
+ 	    "window(s) quiesced\n", armed, quiesced);
++	msdc_apdma_count = (uint8_t)armed;
++	msdc_apdma_stopped = (uint8_t)quiesced;
+ }
+ 
+ static int
+ msdc_take_over(void)
+ {
+--- a/osfmk/kern/zalloc.c
++++ b/osfmk/kern/zalloc.c
+@@ -3076,10 +3076,12 @@
+ extern uint64_t msdc_rv_last_lba;
+ extern unsigned long msdc_strategy_reads;
+ extern uint64_t msdc_spill_count;
+ extern uint32_t msdc_lk_ctrl, msdc_lk_cfg, msdc_lk_sa, msdc_lk_ca,
+     msdc_lk_len;
++extern uint32_t msdc_apdma_map;
++extern uint8_t msdc_apdma_count, msdc_apdma_stopped;
+ 
+ struct merlin_uaf_note {
+ 	uint64_t    elem;
+ 	uint64_t    val;
+ 	uint32_t    off, size;
+@@ -3112,10 +3114,12 @@
+ 	    msdc_rv_mismatches, (unsigned long long)msdc_rv_last_lba,
+ 	    (unsigned long long)msdc_spill_count);
+ 	printf("MERLIN FORENSICS: lk dma ctrl 0x%08x cfg 0x%08x sa 0x%08x "
+ 	    "ca 0x%08x len 0x%08x\n", msdc_lk_ctrl, msdc_lk_cfg, msdc_lk_sa,
+ 	    msdc_lk_ca, msdc_lk_len);
++	printf("MERLIN FORENSICS: apdma found=%u quiesced=%u map=0x%08x\n",
++	    msdc_apdma_count, msdc_apdma_stopped, msdc_apdma_map);
+ 	unsigned int dumped = 0;
+ 
+ 	for (unsigned int i = 0; i < sizeof(merlin_uaf_notes) /
+ 	    sizeof(merlin_uaf_notes[0]); i++) {
+ 		struct merlin_uaf_note *n = &merlin_uaf_notes[i];
+@@ -3181,10 +3185,48 @@
+ 		    "%5d: 0x%016lx", o, v);
+ 		if (first_offs > o) {
+ 			first_offs = o;
+ 			first_bits = v;
+ 		}
++	}
++
++	/* 0090: the full nonzero-run map, bounded, so one photo shows
++	 * the whole corruption outline (boot #15 lost the 15872 island to
++	 * the 1024-char buf cap in the panic-log copy). */
++	{
++		char mbuf[128];
++		uint32_t run_on[8];
++		uint32_t run_sz[8];
++		uint32_t nr = 0, years = 0, o;
++		int mp = 0;
++
++		mbuf[0] = '\0';
++		for (o = 0; o < size; o += sizeof(v)) {
++			if (*(uintptr_t *)(elem + o) == 0) {
++				continue;
++			}
++			if (nr > 0 && o == run_on[nr - 1] + run_sz[nr - 1]) {
++				run_sz[nr - 1] += sizeof(v);
++				continue;
++			}
++			if (nr == 8) {
++				beyond++;
++				continue;
++			}
++			run_on[nr] = o;
++			run_sz[nr] = sizeof(v);
++			nr++;
++		}
++		for (o = 0; o < nr; o++) {
++			mp += scnprintf(mbuf + mp, sizeof(mbuf) - mp,
++			    "0x%x-0x%x ", run_on[o], run_on[o] + run_sz[o]);
++		}
++		if (beyond) {
++			mp += scnprintf(mbuf + mp, sizeof(mbuf) - mp,
++			    "+%u more", beyond);
++		}
++		printf("MERLIN FORENSICS: victim islands %u %s\n", nr, mbuf);
+ 	}
+ 
+ 	merlin_uaf_note(z, (uint64_t)(uintptr_t)elem, first_offs, first_bits,
+ 	    esize);
+ 	merlin_uaf_replay();
