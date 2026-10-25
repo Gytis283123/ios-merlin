@@ -1,5 +1,80 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-44: BOOT #11 DECODED = DEEPEST BOOT EVER, corruption CONFIRMED striking FILE CONTENT (dyld malformed load command #3 of 35 on a just-read SpringBoard[271]) + kalloc.16384 victim full of file-like ASCII; msdc-0079 1a6efd8 PUSHED (user-approved) + CI run 40190497473 DISPATCHED for the 0086 forensics-replay kernel)
+
+- PUSH + CI (user-approved): ios-sweet fork msdc-0079 `00ce338..1a6efd8`
+  pushed 2026-10-25; workflow_dispatch POST accepted (HTTP 204); run
+  **40190497473**, head_sha 1a6efd8479cf85c58e87bc1d7ccc1edb648f666b,
+  status in_progress. ARTIFACT CROSS-CHECK per LATEST-36: use the
+  artifact listing of run 40190497473 ONLY (never the newest-looking
+  id from /actions/artifacts). Fetch with
+  `python tools/fetch-kernel-artifact.py get Gytis283123/ios-sweet <id>
+  research/art-0086`, then verify SHA256SUMS before anything else.
+
+- BOOT #11 (photo 2026-10-25; same flashed shim-boot-msdc-0084-rv-zlog5
+  image, method A; photo much sharper than previous ones) = the deepest
+  boot in the whole log:
+  - `exec` lines for MANY userspace daemons (accessoryupdaterd,
+    bluetoothd…, a *powermanagerd, wcd, healthd, mediaremoted, misd…,
+    atc…, pcpd — OCR best-effort; several never seen before), then
+    SpringBoard[271] launched.
+  - `cs_invalid_page(0x2b1f98000): p=27[SpringBoard] final status
+    0x22008000, allowing (remove VKILL) page` - SWEET CS allowance.
+  - `dyld[271]: malformed load command #3 of 35 at 0x2b1f9808 with
+    mh=0x2b1af800, size (0x110E9C6) not multiple of 4` then CRASH sig 6,
+    sub 0x8, slide 0x42be8000, pc 0x1b5ef75cee4, bt printed; SWEET
+    string-scan of SpringBoard heap: `0 KiB scanned, 0 strings` (died
+    in dyld, before heap populated); `reason ns 6 code 0x9` =
+    OS_REASON_DYLD => SpringBoard murdered WHILE DYLD PARSED ITS
+    JUST-READ BINARY: bytes in the load-command page corrupted in RAM.
+    iOS binaries have exactly ~35 load commands, so this is the REAL
+    binary content with a few bytes scribbled.
+  - `MERLIN zone-log: element history (data.kalloc.16384):` header
+    PRINTED (first time visible for the 16384 family) => 0084 trap +
+    zlog5 tracking confirmed live.  NO `zone-log #N:` lines follow =>
+    zero matching btlog entries for that element (allocated before
+    log start or entries evicted) - info, not a trap failure.
+  - `panic(cpu 0 caller 0xfffffe00...7ab8a50): [data.kalloc.16384]:
+    element modified after free (off:9408, val:0x000a64252b3a776f,
+    sz:16384, ptr:0xffffffe2e4522e1c00...)`; victim dump words decode
+    as ASCII FILE-CONTENT-LIKE fragments (LE: `aw_data,` from
+    0x2c617461645f7761; `VFw_0w_r`-style mixed text/binary words) -
+    an eMMC-stream-like fill, NOT heap metadata or zeros.  A second
+    interleaved dump block starts near off:10560 (same binary+ASCII
+    mix).  Bottom of screen: `Original panic string:` = ANOTHER
+    16384-family panic (storm again, cut at photo edge).
+  - CALLER DIGITS RESOLVED (corrects the LATEST-41/42 zone_nofail
+    attribution): printed callers 0x...7ab8a50 recur IDENTICALLY in
+    boots 10+11 and 0xab8a50 is in the 0084 symbol table EXACTLY the
+    first symbol AFTER _zalloc_uaf_panic (0xab8950).  panic() records
+    the RETURN address; a (panic) call as the function's final
+    instruction returns to 0xab8a50 = next symbol start => the
+    recorded caller IS zalloc_uaf_panic itself.  Text attribution
+    (UAF, tracked zone) always matches too.  Consider caller digits
+    resolved as OUR function; symbolication no longer needed for them.
+- INTERPRETATION AFTER BOOT #11: the corrupter strikes FILE content
+  (dyld/dyld-parsed binary pages) AND freed heap elements with the
+  SAME file-like byte patterns.  Both mechanisms still alive:
+  (i) MSDC read path serves corrupted sectors (readverify would raise
+  mismatches), (ii) a RAM scribbler (stale-LK DMA theory) corrupting
+  pages after a correct read.  DECIDER = the 0086 replay line
+  `MERLIN FORENSICS: msdc reads=%lu readverify mismatches=%u last
+  lba=%llu` now building on CI: mismatches>0 => driver read path
+  guilty => 0085 read-engine investigation; reads>0, mismatches=0,
+  victims persist => scribbler => 0085 MSDC init hardening (reserved:
+  controller reset + clear SA/CFG/CTRL/INT + DMA stop at attach).
+- NEXT (after CI): 1) fetch + SHA256SUMS-verify artifact into
+  research/art-0086/; 2) build the boot image:
+  `python research\tmp-msdc-split\build-msdcroot0.py
+  research\art-0086\kernel.development.sweet --cmdline "debug=0xc
+  serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress
+  rd=msdcroot0 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1
+  zlog1=kalloc.8192 zlog2=kalloc.4096 zlog3=kalloc.type.var.4096
+  zlog4=kalloc.type.4096 zlog5=kalloc.16384 zlog6=kalloc.12288 -zc
+  msdc_readverify=1" --out research\merlin-boot\shim-boot-merlin-msdc-0086-fv.img`
+  3) user flash()es it (their normal flow), boots, ONE final-screen
+  photo; 4) decode the FORENSICS + victim replay from that photo.
+
 ## Agent handoff / active work (2026-10-25 LATEST-43: USER WORKFLOW CONSTRAINT = ONE PHOTO PER BOOT (no filming); 0086 FORENSICS-REPLAY PATCH DRAFTED + VALIDATED (final screen re-prints readverify verdict + victims); awaiting push+CI approval; B-test (fastboot boot from power-off) remains the free A/B)
 
 - USER CONSTRAINT: filming multi-stage boots is not feasible for them
