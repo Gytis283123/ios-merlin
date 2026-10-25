@@ -52,6 +52,35 @@
   non-0xFF at 0x3fb0cac00 ≈ the HFS volume tail) — retry required;
   fallback = mtkclient payload write (bypasses LK sparse writer);
   ALWAYS readback-verify before booting.
+- ROOT CAUSE FOUND (65-block diff): ONLY block 47 (256MB @
+  12,541,393,920) diverges — IMAGE block 47 = ALL ZEROS (sha
+  a6d72ac7 = zeros hash) but DEVICE holds stale fd118c19 content
+  ⇒ THE SPARSE FLASH SKIPS ALL-ZERO REGIONS (host sparsifier turns
+  zeros into dontcare/fill chunks; fastbootd skips writing them),
+  leaving PREVIOUS-flash bytes in place.  THIS EXPLAINS THE WHOLE
+  NIGHT: past flashes' zero-holes landed on real file data (dyld
+  cache pages) → kernel read STALE flash-#1/#2-era bytes =
+  deterministic + stable + not-in-image garbage (0x4600b085).  THE
+  eMMC WAS NEVER BAD — the writes were never complete.  REPAIR:
+  on-device zero-fill block 47 (dd if=/dev/zero seek=3061782
+  count=65536 conv=fsync) → block re-hash → expect a6d72ac7 →
+  full hash → expect 64346ce1 → BOOT #23.
+  needed): MISMATCH — source 64346ce1… vs device b527a185… ⇒ even
+  the TWRP 47/47-OKAY flash left the partition ≠ image (or the
+  divergence is in don't-care bytes).  LOCALIZATION IN FLIGHT:
+  65-block (64x256MB + 44MB tail) hash compare, device side via
+  adb dd loop, image side in research/qtest-latest/image-block-
+  hashes.txt.  VERDICT BRANCHES: mismatches ONLY in the 64MiB 0xFF
+  decoy tail (sparse FILL-chunk handling) ⇒ real volume intact,
+  boot #23 immediately; mismatches at sparse chunk boundaries ⇒
+  fastbootd sparse bug; scattered ⇒ weak eMMC cells (media) ⇒
+  microSD-staged dd rewrite or mtkclient route.
+  (last, ~126 MB) FAILED "sparse image write failure" — LIVE proof of
+  the write-loss class (same family as flashes #1/#2/#3's silent
+  damage).  The failed region is REAL DATA (51.9% 0xFF, first
+  non-0xFF at 0x3fb0cac00 ≈ the HFS volume tail) — retry required;
+  fallback = mtkclient payload write (bypasses LK sparse writer);
+  ALWAYS readback-verify before booting.
 - QEMU TRACK (user asked; ran while flashing): tools/merlin-qemu-test
   harness works — the 0092 KERNEL BOOTED AND RAN 60s in QEMU virt
   (clean timer IRQs, no faults, no panic; research/qtest-latest/q0092*
