@@ -75,6 +75,34 @@
   3) user flash()es it (their normal flow), boots, ONE final-screen
   photo; 4) decode the FORENSICS + victim replay from that photo.
 
+### LATEST-44 ADDENDUM (same day, ~15 min later): CI DONE, 0086 IMAGE BUILT
+
+- CI run 40190497473 COMPLETED SUCCESS (~15 min); artifacts cross-checked
+  against run id + head sha: xnu-kernel id 12596829718 (60,016,579 B,
+  fresh; sibling id 12598525203 xnu-buildtree unused). Fetched into
+  research/art-0086/ (flat extract; kernel.development.sweet 17,207,472 B).
+- VERIFICATION: SHA256SUMS matches recomputed hash -
+  kernel.sha256 = a34a07084ca8953469ee8635f859d5694bfbae3f6dd4c0bbc0c5e8a8da724ced.
+  Binary.STRING probes all present: `MERLIN FORENSICS: msdc reads`,
+  `MERLIN FORENSICS: victim`, `MERLIN zone-log: element history` =>
+  0086 + 0084 both linked.
+- BOOT IMAGE BUILT + SELF-VERIFIED:
+  research/merlin-boot/shim-boot-merlin-msdc-0086-fv.img
+  (16,989,139 B, sha256 33daf13f351c58273ff4f6f7f26cfc6a73f41c7063fb846cfa502169bcda1792),
+  cmdline identical to the zlog5/zlog6 image + `-zc msdc_readverify=1`;
+  shim slot + dtb byte-identical to the E1-base image (verifier output).
+- USER ACTION (single loop, as always): flash the image (their normal
+  flow), power on, ONE final-screen photo whatever it shows.
+  DECODE GUIDE for the 0086 screens (each panic screen now re-prints
+  the whole forensics, so the LAST screen is self-sufficient):
+  - `MERLIN FORENSICS: msdc reads=N readverify mismatches=N last lba=N`
+    reads=0 => driver never ran (panic pre-mount); reads>0 => mounted
+    phase; mismatches>0 => the MSDC read path serves wrong bytes
+    (driver guilty); mismatches=0 with survivors => scribbler class.
+  - per-victim lines list up to the last 4 UAF elements with zone,
+    size, off, val, elem - compare off/val against boots 6/10/11.
+  - the 0084 zone-log block follows as before when the zone is traced.
+
 ## Agent handoff / active work (2026-10-25 LATEST-43: USER WORKFLOW CONSTRAINT = ONE PHOTO PER BOOT (no filming); 0086 FORENSICS-REPLAY PATCH DRAFTED + VALIDATED (final screen re-prints readverify verdict + victims); awaiting push+CI approval; B-test (fastboot boot from power-off) remains the free A/B)
 
 - USER CONSTRAINT: filming multi-stage boots is not feasible for them
