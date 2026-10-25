@@ -1,5 +1,26 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-61: BOOT #21 (same 0091 image) = SECOND pa= SAMPLE — victim kalloc.type.var2.4096@2688 ALL-0xFF **pa=0x9fa08000**; footprint now THREE points (0x9f98a000, 0x9f9ea000, 0x9fa08000 — all 16K-aligned, span 0x7e000, all inside [0x9f800000, 0x9fa80000)) ⇒ writer PA-anchored and stable across boots ✓.  0092 = THE FIX, COMMITTED + PUSHED (user: "go for the big bang"): pmap_next_page() skips the window (default 0x9f800000+0x280000; boot-arg merlin_excl_pa=START-LEN overrides); ios-merlin 395a298 / ios-sweet c12de27 pushed, CI run 40221667737 in progress.  Next: golden rule → boot #22 = first scribbler-immune boot → expect death point to MOVE (SpringBoard read-divergence wall becomes active).  Reality check recorded: 0092 fixes the SCRIBBLER class, not the SpringBoard bad-bytes wall — that one needs the eMMC-content-vs-image decision)
+
+- BOOT #21 DECODE: same image as #20 (751a2a88), victim zone
+  kalloc.type.var2.4096 size=4096 off=2688 val=0xffffffffffffffff
+  elem=0xffffffe29a77e4000 pa=0x9fa08000; apdma found=0 quiesced=0;
+  reads=546,152 mismatches=0 spill=0; lk dma ctrl 0x6108 cfg 0x4
+  sa=0x4c59fc30 (sa varies slightly per boot; ctrl/cfg/len stable).
+- 0092 DESIGN (this session, evidence-complete): hook =
+  osfmk/arm/pmap/pmap.c pmap_next_page (:2637, the single free-page
+  choke point the VM pulls every managed page through); skip block
+  jumps first_avail past the window end + decrements avail_page_count
+  consistently; merlin_hex/merlin_excl_init parse the override
+  boot-arg once; print "MERLIN: pmap excluding PA ..." when it fires.
+  Anchors: pmap_next_page_hi block + pmap_next_page head; generator
+  make-0092.py vs art-0091-buildtree/src/xnu; VALIDATED t7/t8;
+  probes "MERLIN: pmap excluding PA" + "merlin_excl_pa".
+- WINDOW MATH: observed min 0x9f98a000 / max 0x9fa08000; default
+  [0x9f800000, 0x9fa80000) = 2.5 MB covers both with ≥0x88000 /
+  ≥0x78000 margin; if a future victim lands outside, adjust via
+  merlin_excl_pa boot-arg (no rebuild needed).
+
 ## Agent handoff / active work (2026-10-25 LATEST-60: BOOT #20 (0091) = pa= DELIVERED — TWO victims, BOTH scribbler classes in ONE boot, PAs CAPTURED: scp-code victim kalloc.24576@8192 pa=0x9f98a000 (Thumb-2 "29 46 00 22 fe f7 b1 fe…"), panic victim kalloc.8192@0 = ALL-0xFF fill pa=0x9f9ea000 (Δ0x60000, same 0x9f9 neighborhood); APDMA REAL verdict found=0 quiesced=0 map=0 (scan ran at fixed PA — UART-DMA EXONERATED); readverify 0 mismatches @544,438 reads; lk dma state identical to #19 (deterministic LK).  MODEL: fixed-PA writer footprint ≈ [0x9f98a000, 0x9f9f0000) copying SCP-firmware dump blocks (code verbatim + 0xFF padding = a structured dump fill); BOTH boot-11/13/14's 0xFF class AND #15/19's code class = one mechanism.  NEXT: one more 0091 boot for a second pa= sample → 0092 = boot-arg physical exclusion of the region)
 
 - PHOTO DECODE (boot #20, image 751a2a88): frame = 0083-skip warning
