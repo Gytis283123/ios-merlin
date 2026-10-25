@@ -1,5 +1,34 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-45 ADDENDUM: 0087 CI DONE (run 40192191643, kernel a3c3d3c9..., +104 B = tail hook linked) and shim-boot-merlin-msdc-0087-fv.img BUILT + SELF-VERIFIED (b284a9ab...); user to flash THIS image, boots, ONE photo -> final screen must end with MERLIN FORENSICS verdict + victim ring before the URL footer)
+
+- 0087 BUILT: CI run **40192191643** (head 427eaa5, dispatch 12:13:48Z,
+  ~13 min) SUCCESS; fetch artifact xnu-kernel id **12598697010** into
+  research/art-0087/ (flat; SHA256SUMS MATCHES computed
+  a3c3c3...  = a3c3d3c96dfb8de098953f8214d5a34d0a1c1869c2e213cdc53fb740c6cf2597;
+  kernel 17,207,576 B = 0086 +104 bytes = un-static + tail hook ✓;
+  sibling buildtree id 12598721923 saved to research/art-0087-buildtree/).
+- BOOT IMAGE: research/merlin-boot/shim-boot-merlin-msdc-0087-fv.img
+  (16,989,139 B, sha256
+  b284a9abf80764c5627945b484905df0d96a3f8d067680e67721083aa9e270a3);
+  same cmdline (zlog1..6 + -zc msdc_readverify=1); shim slot + dtb
+  byte-identical to E1 base (self-verify ok).
+- USER ACTION: flash shim-boot-merlin-msdc-0087-fv.img (normal flow),
+  boot, ONE photo of the final screen.  EXPECTED TAIL ORDER (0087
+  guarantee): `... dumps ...` / `Original panic string:` + full text /
+  `handshake structure not initialized` / `MERLIN FORENSICS: msdc
+  reads=N readverify mismatches=N last lba=N` / `MERLIN FORENSICS:
+  victim <zone+heap> size= off= val=0x%016llx elem=%p` (up to 4) /
+  `Please go to https://panic.apple.com ...` (LAST line).  Verdicts:
+  mismatches>0 = MSDC read path guilty (0085 read-engine next);
+  reads>0 mismatches=0 = RAM scribbler (0085 = MSDC controller reset +
+  clear SA/CFG/CTRL/INT + DMA stop at attach, number reserved);
+  reads=0 = panic pre-mount.  If STILL no MERLIN FORENSICS lines on a
+  settled screen => the tail hook did not run => investigate (first
+  suspect: inline-function/section placement of the hook in debug.c).
+- poll script research/tmp-msdc-split/poll-0086-ci.py now takes the
+  head sha as argv[1].
+
 ## Agent handoff / active work (2026-10-25 LATEST-45: BOOT #12 SETTLED TAIL DECODED = xnu's FIXED panic TAIL (dumps -> "Original panic string:" -> "handshake structure not initialized" (harmless, no Apple hw debugger on merlin, out_shmem.c:499) -> panic.apple.com footer (debug.c:1454) -> spin forever, NOTHING prints after) => 0086 forensics scrolled off; 0087 TAIL-REPLAY PATCH WRITTEN + VALIDATED against the CI's own post-0086 build tree; awaits push approval)
 
 - BOOT #12 (photo 2026-10-25, after flashing
