@@ -1,0 +1,119 @@
+xnu: MERLIN 0086 forensics replay - every zalloc_uaf_panic re-emits the MSDC read/verify verdict + remembered victims so the FINAL panic screen carries the whole picture
+
+--- a/osfmk/kern/zalloc.c
++++ b/osfmk/kern/zalloc.c
+@@ -3064,10 +3064,65 @@
+ 	*counterp = zzc_rate - 1;
+ #endif /* !defined(__x86_64__) */
+ 	return false;
+ }
+ 
++/*
++ * MERLIN FORENSICS (0086): the panic storm scrolls the console, so every
++ * zalloc_uaf_panic() first re-emits the accumulated forensics (driver read
++ * count, readverify verdict, remembered victims).  All static storage; no
++ * allocation; single-CPU panicked use only.
++ */
++extern uint32_t msdc_rv_mismatches;
++extern uint64_t msdc_rv_last_lba;
++extern unsigned long msdc_strategy_reads;
++
++struct merlin_uaf_note {
++	uint64_t    elem;
++	uint64_t    val;
++	uint32_t    off, size;
++	char        zone[24];
++};
++static struct merlin_uaf_note merlin_uaf_notes[4];
++static unsigned int merlin_uaf_note_idx;
++
++static void
++merlin_uaf_note(zone_t z, uint64_t elem, uint32_t off, uint64_t val,
++    uint32_t size)
++{
++	struct merlin_uaf_note *n = &merlin_uaf_notes[
++	    merlin_uaf_note_idx++ % (sizeof(merlin_uaf_notes) /
++	    sizeof(merlin_uaf_notes[0]))];
++
++	n->elem = elem;
++	n->off = off;
++	n->val = val;
++	n->size = size;
++	scnprintf(n->zone, sizeof(n->zone), "%s%s", zone_heap_name(z),
++	    zone_name(z));
++}
++
++static void
++merlin_uaf_replay(void)
++{
++	printf("MERLIN FORENSICS: msdc reads=%lu readverify mismatches=%u "
++	    "last lba=%llu\n", msdc_strategy_reads, msdc_rv_mismatches,
++	    (unsigned long long)msdc_rv_last_lba);
++	for (unsigned int i = 0; i < sizeof(merlin_uaf_notes) /
++	    sizeof(merlin_uaf_notes[0]); i++) {
++		struct merlin_uaf_note *n = &merlin_uaf_notes[i];
++
++		if (n->size == 0) {
++			continue;
++		}
++		printf("MERLIN FORENSICS: victim %s size=%u off=%u "
++		    "val=0x%016llx elem=%p\n", n->zone, n->size, n->off,
++		    (unsigned long long)n->val, (void *)(uintptr_t)n->elem);
++	}
++}
++
++
+ __abortlike
+ static void
+ zalloc_uaf_panic(zone_t z, uintptr_t elem, size_t size)
+ {
+ 	uint32_t esize = (uint32_t)zone_elem_inner_size(z);
+@@ -3087,10 +3142,14 @@
+ 		if (first_offs > o) {
+ 			first_offs = o;
+ 			first_bits = v;
+ 		}
+ 	}
++
++	merlin_uaf_note(z, (uint64_t)(uintptr_t)elem, first_offs, first_bits,
++	    esize);
++	merlin_uaf_replay();
+ 
+ 	if (z->z_btlog != NULL) {
+ 		/* MERLIN: with "-zc zlog<n>=<zone>" this zone keeps an
+ 		 * alloc/free btlog; dump this element's history so the
+ 		 * corruption is attributable from the console alone. */
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -835,15 +835,18 @@
+ /* Optional double-read self-check (boot-arg msdc_readverify=1): every
+  * successfully read sector is read a second time and compared, to
+  * discriminate "the driver/DMA serves wrong bytes" (mismatches) from
+  * "the eMMC content differs from the flashed image" (stable reads). */
+ static bool msdc_readverify;
+-static uint32_t msdc_rv_mismatches;
++uint32_t msdc_rv_mismatches;
++uint64_t msdc_rv_last_lba;
++unsigned long msdc_strategy_reads;
+ 
+ static int
+ msdc_read_sector(uint64_t lba)
+ {
++	msdc_strategy_reads++;
+ 	int error = msdc_read_sector_once(lba);
+ 	if (error != 0 || !msdc_readverify) {
+ 		return error;
+ 	}
+ 
+@@ -856,10 +859,11 @@
+ 		return error;
+ 	}
+ 	const uint8_t *second = (const void *)mo.dma;
+ 	for (uint32_t i = 0; i < MSDC_SECTOR; i++) {
+ 		if (first[i] != second[i]) {
++			msdc_rv_last_lba = lba;
+ 			msdc_rv_mismatches++;
+ 			printf("MERLIN MSDC: READVERIFY MISMATCH lba %llu "
+ 			    "off %u: %02x vs %02x (total %u)\n",
+ 			    (unsigned long long)lba, i, first[i], second[i],
+ 			    msdc_rv_mismatches);
