@@ -1,5 +1,46 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-60: BOOT #20 (0091) = pa= DELIVERED — TWO victims, BOTH scribbler classes in ONE boot, PAs CAPTURED: scp-code victim kalloc.24576@8192 pa=0x9f98a000 (Thumb-2 "29 46 00 22 fe f7 b1 fe…"), panic victim kalloc.8192@0 = ALL-0xFF fill pa=0x9f9ea000 (Δ0x60000, same 0x9f9 neighborhood); APDMA REAL verdict found=0 quiesced=0 map=0 (scan ran at fixed PA — UART-DMA EXONERATED); readverify 0 mismatches @544,438 reads; lk dma state identical to #19 (deterministic LK).  MODEL: fixed-PA writer footprint ≈ [0x9f98a000, 0x9f9f0000) copying SCP-firmware dump blocks (code verbatim + 0xFF padding = a structured dump fill); BOTH boot-11/13/14's 0xFF class AND #15/19's code class = one mechanism.  NEXT: one more 0091 boot for a second pa= sample → 0092 = boot-arg physical exclusion of the region)
+
+- PHOTO DECODE (boot #20, image 751a2a88): frame = 0083-skip warning
+  + panic [data.kalloc.8192] off:0 val:0xffffffffffffffff
+  sz:8192 ptr:0xfffffe2ffff72000; notes ring shows TWO victims:
+  1) data.kalloc.24576 size=24576 off=8192 val=0xfeb1ff7fe22004629
+     elem=0xfffffe2ffff7e000 pa=0x9f98a000; b[8192..8207] =
+     "29 46 00 22 fe f7 b1 fe 00 2…" (mov r1,r5; movs r2,#0; bl …
+     = SCP code class, 64-B aligned at 0x2000 inside the elem).
+  2) data.kalloc.8192 (the panic one) off=0 ALL-0xFF pa=0x9f9ea000.
+  Replay counters: reads=544,438 mismatches=0 spill=0; lk dma
+  ctrl 0x00006108 cfg 0x4 sa 0x4c59fe88 ca 0x4c59f8a4 len 0x200;
+  apdma found=0 quiesced=0 map=0x00000000 (REAL — fallback scan ran;
+  no armed UART VFF channel existed at handoff).
+- SCP REGION EVIDENCE (stock kernel source, this session):
+  mt6768.dts reserved-memory: scp_share 3MB/16MB-aligned
+  alloc-ranges [0x40000000,0x50000000), no-map; sspm_share 5M+64K
+  [0x40000000,0x60000000).  scp_reservedmem_define.h: scp_share
+  subdivided at RUNTIME (sensor 1MB, audio_ipi 2MB, a-logger 1.5MB,
+  vow, mp3…) — no fixed PAs in source; observed victims 0x9f9xxxxx
+  are NOT in the stock alloc-ranges ⇒ the writer's target was set by
+  some earlier configurator (stock Android/recovery boot or firmware
+  default) and is FIXED across our boots (writer is PA-anchored,
+  blind to XNU; zone pages walk into its footprint by layout lottery
+  — explains zone/offset variety with deterministic content).
+- USER CONTEXT: "it just keeps going to a different error always,
+  not able to continue further" — answer: same root cause in
+  different masks (zone/offset/class vary per layout lottery) plus
+  the separate SpringBoard read-divergence wall behind it; each boot
+  this session peeled a layer (root mount → launchd → SpringBoard →
+  pa=).  The scribbler fix (0092) is what unlocks everything past it.
+- NEXT CONCRETE: (1) boot #21 = SAME 0091 image again (no rebuild) —
+  second pa= sample; if victims stay in 0x9f9xxxxx ⇒ footprint
+  confirmed stable → (2) 0092 = boot-arg `merlin_excl_pa=<start>-
+  <end>` honored in the arm64 free-page enumeration (skip PAs in
+  range; default the range from the observed footprint + margin);
+  validate, CI, boot #22 = first scribbler-immune boot → then the
+  SpringBoard read-divergence wall becomes the active blocker
+  (eMMC-content verify/reflash decision per LATEST-38 evidence
+  chain: runtime bytes ≠ image bytes with stable reads).
+
 ## Agent handoff / active work (2026-10-25 LATEST-59: BOOT #19 (0090+full cmdline) = DEEPEST BOOT EVER — launchd PID 1 RAN DEEP USERLAND (routined/passd/logd_helper exec'd, SpringBoard launched); SPRINGBOARD CRASHED (dyld "malformed load command #2" — the LATEST-38 read-divergence wall returns; readverify=0 mismatches @520k reads ⇒ reads STABLE); then the UAF RETURNED in kalloc.8192@3712 with THE SAME PAYLOAD as boot #15 — **BREAKTHROUGH: island = VERBATIM COPY of SCP coprocessor firmware bytes (scp1/scp2.bin@0xa4a60-0xa4aa0, 7/8 words photo-exact + word 4 matches the photo's own OCR)** ⇒ the scribbler copies from the SCP DRAM image into freed kalloc elements; deterministic content, 64-B bursts, load-correlated.  0091 COMMITTED both repos (victim pa= + APDMA fixed-PA fallback); "handshake structure not initialized" = panic core-dump channel, BENIGN.  BLOCKED: push approval for ios-sweet bccd91d → CI → boot #20)
 
 - PHOTO DECODE (boot #19, image c2b04671): the restored userspace args
