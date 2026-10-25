@@ -1,5 +1,71 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-39: 0084 CI BUILD DONE + VERIFIED; BOOT #9 IMAGE BUILT (msdc_readverify=1 + zlog x4 + -zc); READY FOR USER FASTBOOT BOOT + PHOTO)
+
+- 0084 PUSH + CI COMPLETE: fork/msdc-0079 IS AT 00ce338 ON THE REMOTE
+  (ls-remote-verified; LATEST-38's "NOT pushed, awaiting approval" was
+  stale - the push happened after that note). Workflow_dispatch run
+  40173186894 (run #17, head 00ce338, created 2026-10-25 07:33Z) completed
+  SUCCESS. Real artifact cross-checked per the LATEST-36 gotcha:
+  xnu-kernel id 12591790366 (60,018,920 B, workflow_run = 40173186894
+  @00ce338, created 07:41:15Z). Also xnu-buildtree id 12590759940 (not
+  needed).
+- ARTIFACT FETCHED + VERIFIED: research/art-0084/ (zip extracted flat,
+  NOT under an xnu-kernel/ subdir). kernel.development.sweet
+  17,207,384 B (0083 build was 17,207,192 -> +192 B = the 0084 additions),
+  SHA256 0fe6adc021c0346a2360c360949cad58b52640f7abf4dbb6a0a3c824c8239577
+  == the artifact's own SHA256SUMS. New 0084 strings verified IN THE
+  BINARY: "readverify enabled (double-read compare)", "READVERIFY
+  MISMATCH lba", zone-log element-history prints,
+  btlog_dump_element_history. kernel_end 0xfffffe00084cc000 (same as
+  boot #6's kernel).
+- BOOT #9 IMAGE BUILT + SELF-VERIFIED:
+  research/merlin-boot/shim-boot-merlin-msdc-0084-rv-zlog.img
+  (16,989,139 B; SHA256
+  6409431794c59ec8148847ef41f5a6d2b5f539e5ec0a85809e6935722e0e1c2b).
+  Payload 16,612,176 B = 0084 kernel + proven T/adt.bin + cmdline =
+  the EXACT boot-6 args
+  `debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress
+  rd=msdcroot0 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1`
+  PLUS `zlog1=kalloc.8192 zlog2=kalloc.4096 zlog3=kalloc.type.var.4096
+  zlog4=kalloc.type.4096 -zc msdc_readverify=1`.
+  unpack_bootv2 verify: cmdline OK; shim slot + dtb byte-identical to
+  the E1 image; built by research/tmp-msdc-split/build-msdcroot0.py
+  (sources shim/dtb from the E1 image, so the uncommitted shim work did
+  not affect it). NOTE: expect a SLOWER boot (4 zlog'd zones log every
+  alloc/free + readverify re-reads and compares every sector).
+- NEXT USER STEP (decisive discriminators, all print on the console):
+  cold power-off; then
+      fastboot boot research\merlin-boot\shim-boot-merlin-msdc-0084-rv-zlog.img
+  Photograph the settled/panic screen. Decode table:
+  (a) `MERLIN MSDC: READVERIFY MISMATCH lba ...` => the 0082 CMD17 read
+      path serves wrong bytes = boot-6 slide-overflow culprit -> fix the
+      read engine (0085).
+  (b) panic WITH `MERLIN zone-log: element history` + `zone-log #N: elem
+      %p op %u bt: ...` lines => the UAF victim's alloc/free backtraces
+      -> symbolicate against research/art-0084/
+      kernel.development.sweet.link.
+  (c) no READVERIFY MISMATCH + no kalloc panic + boot PROGRESSES past
+      boot #6's slide wall => the earlier divergence was read/eMMC state,
+      fixed side-effects; push on whatever the next wall is.
+  (d) no READVERIFY MISMATCH + slide constant overflow persists =>
+      eMMC content differs from the flashed image -> mtkclient read-back
+      + sha256 of the 44 cache-file LBA ranges (extent map from the HFS+
+      catalog; image-side digests already in research/tmp-msdc-split/img.sha).
+- UNCOMMITTED STREAMS IN ios-merlin (NOT touched this session - likely
+  another agent's in-flight work; keep out of commits until identified):
+  shim/ramfb.{c,h} + shim/{console.h,loader.c,loader.h,shim.c,start.S}
+  (+~490/-55 lines) = QEMU fw_cfg RAMFB support + loader changes;
+  tools/patch-earlyfb.py = retarget the SWEET early console
+  0x9c000000 -> merlin splash FB 0x7e605000 (3 movk sites + early_fb
+  data word, all verified in that file's docstring); rebuilt fbcon-1x
+  artifacts (tools/fbcon-1x.{S,ld,elf,o,init.bin,tx.bin},
+  patch-fbcon1x.py tweak) + tools/qemu-ramfb*.elf/o + shim/out-qemu*/
+  build dirs. No NOTES entry references this stream - ASK THE USER what
+  it is before basing anything on it or reverting it.
+- image.png at the repo root (untracked) is an UNRELATED Blockman GO
+  game screenshot (no boot/panic content) - do not commit; left as-is.
+
 ## Agent handoff / active work (2026-10-24 LATEST-38: BOOT #6 = AMFI WALL CLEARED + SPRINGBOARD LAUNCHED (FIRST EVER); NEW WALL = SHARED-CACHE SLIDE OVERFLOW WITH IMAGE BYTES PROVEN GOOD -> SUSPECT = DEVICE READ PATH (0082 CMD17 DRIVER OR eMMC CONTENT); Jnl 0x19 = MISSING DKIOCSYNCHRONIZE (BENIGN); TERMINAL PANIC = GENUINE kalloc.8192 UAF; NEXT = 0084 READ-VERIFY + IOCTL PATCH)
 
 - BOOT #6 (shim-boot-merlin-msdc-0083-simlaunch-unsec.img, boot-arg
