@@ -1,5 +1,60 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-48: 0085 MSDC DMA QUIESCE + SPILL CANARY DRAFTED + VALIDATED byte-exact on the CI post-0087 sources (ios-merlin 705037a + ios-sweet msdc-0079 ce8c0f3, NOT pushed — awaits approval); key driver-audit discovery: take_over never quiesced the DMA engine and the read/write paths used READ-MODIFY-WRITE on DMA_CTRL = stale bits survive every START, and readverify's 512B compare is blind to any overshoot BEHIND the bounce target — matching every victim fingerprint)
+
+- DRIVER AUDIT (research/art-0087-buildtree/src/xnu/bsd/dev/sweet_ufs.c,
+  the CI's own post-0087 file, full msdc region read):
+  - merlin_msdc_rootdev -> merlin_msdc_init (DT /merlin-msdc reg mmap,
+    boot-args msdcroot= + msdc_readverify, kmem_alloc_contig 64 KiB
+    KMA_PERMANENT bounce -> msdc_take_over -> GPT scan -> devsw).
+  - TAKE-OVER GAP: msdc_take_over prints cfg/ps/sts, fixes MODE/CKPDN/
+    PIO, INTEN=0 + W1C, waits SDC idle — but NEVER checks MSDC_DMA_CFG
+    _STS (engine running?) and NEVER stops/zeros the DMA.  LK loaded
+    our boot image through this same engine moments earlier.
+  - PER-TRANSFER GAP: read/write paths do READ-MODIFY-WRITE on
+    MSDC_DMA_CTRL clearing only START|STOP|MODE|BRUSTSZ|LASTBUF — any
+    other inherited bit (e.g. leftover XFERSZ anywhere) survives EVERY
+    START; DMA_SA_HIGH is only masked (bits 63:32 kept), never zeroed.
+  - BLIND SPOT: readverify double-read compares ONLY the first 512 B at
+    mo.dma — a DMA overshooting its requested length spills BEHIND the
+    target into other RAM forever undetected; deterministic victims
+    (same elem+off across boots), eMMC-stream-like victim contents,
+    clean readverify = ALL consistent with overshoot class.
+- 0085 DESIGN (validated, make-0085.py, patch 7,210 B):
+  1) take_over: print inherited dma ctrl/cfg/sa/sa_hi/ca/len/fifo, then
+     STOP a running DMA (bounded 2 s), then ZERO ctrl/sa/sa_high/ca/len
+     + SDC_BLK_NUM=1 BEFORE the existing flow.
+  2) read (CMD17) + write (CMD24) paths: DMA_CTRL written ABSOLUTELY
+     (LASTBUF | burst 6<<12 | START — no rmw, nothing inherited can
+     survive); DMA_SA_HIGH written 0 outright; `uint32_t ctrl` decl
+     kept for the post-transfer STOP.
+  3) SPILL CANARY: on init fill words 64..8191 (offsets 512..64 KiB-8)
+     of the bounce with magic 0x4d45524c494e2041 ("MERLIN A"); after
+     EVERY successful data phase check words 64/256/2048 (+512 B/+2 KiB/
+     +16 KiB); any mismatch -> full 64 KiB scan -> extent printed
+     ("MERLIN MSDC: DMA SPILL count %llu words bad %u first %u (off %u)
+     last %u", first + every 1000th) and msdc_spill_count++.
+  4) forensics replay line (zalloc.c 0086 block) extended:
+     `MERLIN FORENSICS: msdc reads=%lu readverify mismatches=%u last
+     lba=%llu dma spill=%llu` -> the canary verdict rides EVERY panic
+     screen photo.
+  INTERPRETATION GUIDE for the next boots: dma spill=0 + panic stops =
+  the inherited-state class is dead (0085 fixed); dma spill>0 (moments
+  BEFORE hardening could matter — first spill may fire on the very
+  first CMD17 runs pre-quiesce ONLY if it was ongoing at take-over;
+  later spills after full re-arm = live DEFECT in our own paths —
+  mind: our OWN transactions now use absolute ctrl so a spill seen
+  MID-BOOT = real overshoot bug worth deep-diving register map).
+- NEXT: user approval -> push msdc-0079 (ce8c0f3) -> workflow_dispatch
+  -> fetch/cross-check/SHA256SUMS (same pipeline) -> build
+  shim-boot-merlin-msdc-0085-fv.img (SAME cmdline incl.
+  msdc_readverify=1) -> flash -> ONE photo: settled screen shows
+  `MERLIN MSDC: cfg/dma-state lines` early + `DMA SPILL` prints + the
+  FORENSICS tail with dma spill=<N>.  Success criteria unchanged
+  (LATEST-47): no `element modified after free` + no
+  malformed-load/SIGBUS/slide crashes across a several-boot streak.
+- poll script: research/tmp-msdc-split/poll-0086-ci.py <head-sha>.
+
 ## Agent handoff / active work (2026-10-25 LATEST-47: BOOT #13 (0087) = FORENSICS TAIL HOOK WORKS — VERDICT DELIVERED: readverify reads ≈127k/527k, MISMATCHES=0 across the board, victims still corrupting => READ PATH BLOCK-CLEAN, SCRIBBLER CONFIRMED => 0085 MSDC INIT HARDENING is next per the pre-agreed tree)
 
 - 0087 CONFIRMED WORKING: the settled boot-13 screen shows two complete
