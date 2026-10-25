@@ -1,12 +1,16 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
-## Agent handoff / active work (2026-10-25 LATEST-57: 0090 (island run-map + cached APDMA verdict) DRAFTED, VALIDATED byte-exact, committed BOTH repos LOCAL — advances boot #15's two missing answers (full island structure; apdma armed/quiesced) to be readable in ONE photo at boot #16. BLOCKED: push approval for ios-sweet 59ced39 → CI)
+## Agent handoff / active work (2026-10-25 LATEST-57 (upd): 0090-v1 WAS pushed (ios-sweet 59ced39) and CI-RED — run 40208702420, build exit 2: v1 declared 'years' but used 'beyond' 3x (diff-verified in the committed patch; t7/t8 byte-compare cannot catch this class — both sides share the same edit). 0090-v2 (identifier fix + generator identifier-contract asserts) committed local BOTH repos (ios-merlin d3dc0b3 / ios-sweet 0adeac7, ahead 1), re-validated t7/t8 + regenerated==committed. BLOCKED: push approval for 0adeac7 → re-dispatch CI → boot #16)
 
 - 0090 = `xnu/patches/0090-merlin-island-map-apdma-verdict.patch`
-  (4,317 B) by make-0090.py from research/art-0089-buildtree/src/xnu;
-  git apply clean; both files byte-identical (t7/t8).  Commits:
-  ios-merlin 2be10a0, ios-sweet 59ced39 (msdc-0079 ahead 1, NOT
-  pushed).
+  (v2 4,318 B, sha 8b15a2a5…) by make-0090.py from
+  research/art-0089-buildtree/src/xnu; git apply clean; both files
+  byte-identical (t7/t8).  v2 commits: ios-merlin d3dc0b3, ios-sweet
+  0adeac7 (msdc-0079 ahead 1, NOT pushed).  SUPERSEDED: v1
+  ios-merlin 2be10a0 / ios-sweet 59ced39 — v1 was PUSHED (remote
+  == local at check time) and CI run 40208702420 went RED (build
+  exit 2, 7m29s on 59ced39; detailed log sign-in-only; cause per
+  make-0090.py lesson = 3x undeclared 'beyond').
 - CONTENT:
   1. zalloc_uaf_panic: bounded island run-map — nonzero 8-byte runs
      (≤8, "0x%x-0x%x " entries + "+%u more" overflow), one line
@@ -26,7 +30,43 @@
      APDMA story every boot.
 - GENERATOR ASSERTS: verdict vars non-static + decl-before-use;
   island map printed before the panic line; probes for both new
-  formats; mbuf[128] (8 runs × ≤13 chars + overflow marker).
+  formats; mbuf[128] (8 runs × ≤13 chars + overflow marker); v2 adds
+  the identifier contract (no 'years', exactly 4 'beyond' refs,
+  decl-before-use) — the class t7/t8 cannot catch.
+- SECOND-AGENT VERIFICATION + CORRECTIONS (same day):
+  1. RE-VALIDATION: make-0090.py re-run → VALIDATED; regenerated
+     v2 byte-identical to committed d3dc0b3.
+  2. BUF-CAPACITY CORRECTION (LATEST-56/0090 premise): dump line
+     format "\n%5d: 0x%016lx" = 26 chars; boot #15 = 39 nonzero
+     words (8+8+16+7) = 1014 + 10-byte partial "\n15928: 0" =
+     EXACTLY 1024 → the buf HELD the full island list incl.
+     15872–15920; the on-screen "15928: 0" fragment IS the buf's
+     truncated 40th line (OCR matches verbatim).  Copy B's
+     mid-"12856: 0x" cut = SCREEN edge (photo composition), not buf
+     truncation.  0090 stays justified: the boots-11/13/14 dense
+     all-0xFF class (2048 words) overflows the buf at word 39, and
+     the run-map line survives in-frame regardless.
+  3. OCR AUDIT (boot #15 trace blocks): "2856: 0x0008632a00031908"
+     = 12856 with a lost leading '1' (kills the "uncertain 2856"
+     island; value digit 08-vs-88 uncertain, copy A reads 88);
+     "12768: 0xkbd702800fdc3f7ff" has non-hex 'k' (strip →
+     0xbd702800fdc3f7ff); 12840 is 15-digit in BOTH copies (likely
+     0x07ff4070e8bd2302); raw caller 0xffffe0007ab8ec8 = 15 digits
+     → normalized 0xfffffe0007ab8e8c stands; ptr 0xffffe30000ac000
+     = 15 digits → true %p likely 0xffffe30000ac0000.  Thumb-2
+     decode of island words confirms code class (0x4615681b4b0bb538
+     = push {r3-r5,lr}; ldr r3,[pc,#44]; ldr r3,[r3]; mov r5,r2).
+     Island 3 = 16 words (12736–12856 incl.) = 128 B → spans
+     64/64/128/56 B ≈ 312 B, all four START 64-B aligned
+     (9920/11904/12736/15872) → 1–2-cache-line burst writer.
+  4. PHASE-A ANCHORS VERIFIED (art-0089-buildtree src/xnu):
+     zero-on-free contract zalloc.c:3029-3038 (check always-on on
+     embedded, x86 20%); zalloc_validate_element zalloc.c:3208-3228
+     (Z_NOZZC skip); zalloc_uaf_panic zalloc.c:3166-3205 (buf[1024],
+     first-nonzero off/val); zone naming = kalloc.c:170 ("data." /
+     KHEAP_ID_DATA_BUFFERS) + kalloc.c:188-190 (KHEAP_DATA_BUFFERS
+     "data.kalloc") + zalloc.c:8678 ("kalloc.%d") →
+     "data.kalloc.16384" ✓.
 - BOOT #16 DECODE TABLE: "victim islands" line = full corruption
   outline (compare island sizes/offsets across boots: 64-B-aligned
   bursts? ::  stride?); "apdma found=" line >0 = LK armed channels
@@ -34,13 +74,14 @@
   19/20/21/22; found>0 with quiesced==found = cleanup complete);
   "lk dma ctrl=" line = LK MSDC0 handoff state; victim b[] byte
   samples = fill class; reads/spill = MSDC canary health.
-- NEXT CONCRETE: push approval → dispatch (ref msdc-0079 @
-  59ced39) → poll → golden-rule verify (SHA + probes: "victim
-  islands", "apdma found=" + all earlier sets; log skip set =
-  known-good) → build-msdcroot0.py research\art-0090\
-  kernel.development.sweet (SAME cmdline as 0088/0089 boots,
-  msdc_readverify=1) → shim-boot-merlin-msdc-0090-fv.img → boot
-  #16 flash + ONE photo.
+- NEXT CONCRETE: push approval for ios-sweet 0adeac7 (v2 over the
+  red 59ced39) → dispatch (ref msdc-0079 @ 0adeac7) → poll →
+  golden-rule verify (SHA + probes: "victim islands", "apdma
+  found=" + all earlier sets; log skip set = known-good; v2 alters
+  only the declaration line, probe strings unchanged) →
+  build-msdcroot0.py research\art-0090\ kernel.development.sweet
+  (SAME cmdline as 0088/0089 boots, msdc_readverify=1) →
+  shim-boot-merlin-msdc-0090-fv.img → boot #16 flash + ONE photo.
 - Parked next (needs evidence first): 0091 HW-watchpoint prototype
   (freed-elem write watch under cpus=1 → CPU writer traps with PC;
   DMA silent) — the CPU-vs-DMA discriminator.
