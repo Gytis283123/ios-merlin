@@ -1,5 +1,65 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-42: BOOT #10 METHOD-A RESULT = PANIC STORM (user counted 3 panic screens); ORIGINAL PANIC = data.kalloc.8192 off:704 DECIMAL - EXACTLY BOOT #6's SIGNATURE; elem-dump format decoded (decimal offsets, 1 KB buffer cap); caller digits unreliable; zone-log lines presumed scrolled - VIDEO STILL OWED)
+
+- PHOTO (2026-10-25, user said "stage 3" = the 3rd panic screen of this
+  boot = a panic STORM, consistent with the double-panic machinery):
+  legible this time. Content: two element-dump blocks + `Original panic
+  string:` + `panic(cpu 0 caller 0xffff...'07ab8a50'): [data.kalloc.
+  8192]: element modified after free (off:704, val:0x070f37033a012300,
+  sz:8192, ptr:0xffffffe29a172000)` + hangShake/banner line.
+- FACTS decoded this session (from research/xnu-full zalloc.c:3069-3097):
+  (1) The elem-dump print format is `"%5d: 0x%016lx"` = DECIMAL byte
+      offset inside the element + hex word; the walk starts at offset 0
+      and prints ONLY NONZERO words; frees bzero elements => the FIRST
+      nonzero word off 704 = the scribbler's write START.
+      CAREFUL: the buffer is 1024 bytes (~40-45 entries) - the visible
+      dump EXHAUSTED the buffer at ~offset 1792; words beyond that are
+      truncated-unknown, NOT zero. The corruption spans >= ~1.1 KB
+      CONTIGUOUSLY (most words 704..1792 nonzero) = a multi-word stream,
+      not one stray pointer. Boot #6's panic had the same format but the
+      photos were unreadable; treat ANY earlier "0xff-heavy sparse" dump
+      readings as the same class.
+  (2) panic string owner = zalloc_uaf_panic ONLY (zalloc.c:3093, unique
+      occurrence of "element modified after free"); `off`/`sz` are
+      PRINTED DECIMAL (%d) — earlier NOTES' "off:704 hex?" ambiguity
+      resolved.
+  (3) val 0x070f37033a012300 (LE bytes 00 23 01 3a 03 37 0f 07) is
+      STRUCTURED, not the sparse 0xFF-heaps of boots 7/9 — reads like an
+      embedded constant/pointer fragment; no conclusion.
+  (4) THE SIGNATURE = boot #6's EXACTLY (data.kalloc.8192, first
+      nonzero at 704, sz 8192). Boot #10 (presumed = the zlog5 image,
+      6 tracked zones, readverify on) did NOT dodge the corrupter and
+      did NOT hop zones — it returned to the boot-6 victim. Boots 7/9
+      hitting other zones = the same scribbler's victim selection
+      varying with heap churn (fixed stale PA patch theory).
+- CALLER CAVEAT: photo caller digits symbolicate to _zone_nofail_panic
+  (0xfffffe0007ab8a50) — whose message is DIFFERENT ("Z_NOFAIL can't be
+  satisfied"); the UAF panic function lives 0x100 lower (_zalloc_uaf_
+  panic 0x...ab8950..0xab8a50, verified via python LC_SYMTAB parse of
+  research/art-0084/kernel.development.sweet, 70,887 defined symbols).
+  The recorded PC is untrustworthy (OCR low-digit fuzz AND panic-storm
+  stack reuse); the STRING attribution is authoritative. Future nascent
+  panic-caller digit reads: cross-check which candidate function's
+  message format matches the text.
+- zone-log trap status: NOT visible in the captured screen. The 0084
+  gate is z->z_btlog != NULL and prints BEFORE the (panic)(...) call, so
+  the FIRST panic's output (header + `zone-log #N ... bt:` lines, if
+  data.kalloc.8192 was tracked this boot) sits ABOVE `Original panic
+  string:` and scrolled off with the storm. ONLY the final screen was
+  captured (user confirmed). => THE VIDEO ASK STANDS: film a full boot
+  (method A flash-boot, phone standalone) from the first console lines
+  through the panic(s); the video carries READVERIFY MISMATCH lines, the
+  MERLIN MSDC init line, mount lines, ignition stages and the FIRST
+  panic's zone-log output in one artifact. Second run = method B
+  (fastboot boot directly from power-off) for the LK-handoff A/B.
+- NEXT AFTER VIDEO: if mismatches seen -> 0085 read-engine fix; if zero
+  mismatches + zone-log backtraces -> symbolicate the bt addrs vs the
+  0084 symtab (parser already working this session); if zero mismatches
+  + no zone-log -> write 0085 driver-init hardening (controller reset +
+  clear SA/CFG/CTRL/INT at attach) against the stale-LK-handoff theory
+  (LATEST-41) — patch text can be drafted while waiting.
+
 ## Agent handoff / active work (2026-10-25 LATEST-41: WORKFLOW FACT CORRECTED BY USER - ALL BOOTS 1-9 WERE `fastboot flash boot` (PERSISTENT), NOT `fastboot boot`; LK READS THE BOOT IMAGE FROM eMMC RIGHT BEFORE EVERY KERNEL BOOT; STALE-LK MSDC/DMA SCRIBBLER THEORY SHARPENS; NEW FREE A/B EXPERIMENT UNLOCKED)
 
 - USER FACT (2026-10-25): boots are done via `fastboot flash boot
