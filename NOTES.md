@@ -1,5 +1,83 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-40: BOOT #9 DECODED = SAME UAF CLASS IN data.kalloc.16384 (off:704, SAME OFF AS BOOT #6) - CORRUPTION ESCAPED THE 4 TRACKED ZONES; "handShake" LINE = BENIGN KDP PANIC-PRINTER NOISE (NOT A FIX TARGET); BOOT #10 BUILT WITH zlog5=kalloc.16384 + zlog6=kalloc.12288)
+
+- USER QUESTION ANSWERED: "fix the handshake for have support of it?" =
+  NOTHING TO FIX. `handShake structure not initialized` is XNU's panic
+  REPORTING printer (kdp out_shmem.c) telling us the debug-console
+  handshake stage is not configured; it appears in EVERY panic on these
+  boots (documented benign in boot #5, LATEST-35). It is panic-printer
+  noise printed WHILE dumping the real crisis, not a failure of the boot.
+
+- BOOT #9 VERDICT (user photo, single frame of the tail): the UAF
+  WRITE-AFTER-FREE CLASS PERSISTED ON THE 0084 KERNEL. Seen: two blocks
+  of 0xFF-heavy element-dump words, `handShake structure not initialized`
+  (+ the panic.apple.com banner), and `Original panic string:` +
+  `panic(cpu 0 ...): [<da ta.>kalloc.<...>16384] : element modified after
+  free (off:704, ..., sz:16384, ptr:0xffffffe2...e4d80)` (OCR-fuzzy;
+  exact zone name + caller digits best-effort).
+  FACTS: (1) third DIFFERENT zone family across boots - boot #6
+  data.kalloc.8192 off:704, boot #7 kalloc.type.var.4096 off:768, boot #9
+  ~data.kalloc.16384 off:704 (same off as #6!, whole sz-class grew) =
+  a generalized scribbler landing in (semi-)randomly chosen freed kalloc
+  elements; (2) NO zone-log history lines printed -> the victim zone was
+  NOT among zlog1..4 (they covered only .8192/.4096 families; 16384 was
+  not tracked) - the corrupter ESCAPED the instrumented set, trap not
+  failed; (3) `Original panic string:` = double-panic bookkeeping (also
+  seen boot #5); the two dump blocks = the primary + secondary panic
+  dumps (or one dump + OCR fuzz) - unresolved; (4) NO CRASH/Jnl/READVERIFY
+  lines visible = scrolled off; single frame cannot answer whether
+  READVERIFY MISMATCH printed at all (its init line + MISMATCH lines
+  would be far above the visible tail) - VIDEO during the next boot is
+  REQUIRED to read the pre-panic sequence.
+
+- zlog TOKEN SEMANTICS VERIFIED IN SOURCE (research/xnu-full
+  osfmk/kern/zalloc.c): zone_setup_logging (:3256) tries zlog1..zlogN
+  (MAX_ZONES_LOG_REQUESTS=10, :3236) with track_this_zone(zone_name,
+  token) + track_kalloc_zones(z, token). track_kalloc_zones (:2899-2945)
+  matches token `kalloc.<n>` against EVERY kheap kalloc zone whose
+  elem_inner_size == n == strtoul(token tail) - so `kalloc.16384` covers
+  BOTH data.kalloc.16384 and the default-heap kalloc.16384 (same
+  mechanism that made zlog1=kalloc.8192 cover the .8192 pair), and
+  `kalloc.type.<n>` / `kalloc.type.var.<n>` cover the KT zones by exact
+  size. The "zlog prefix" comment (:3282-3294) is about the BOOT-ARG name
+  (PE parsing quirk), NOT zone-name prefix match.track_this_zone is an
+  exact full-name match (chars until BOTH end simultaneously; space<->dot
+  equivalence). => to trap a new band, ADD ANOTHER zlogN=kalloc.<size>
+  token. More than 10 needs no CI anyway (cmdline).
+
+- BOOT #10 BUILT + SELF-VERIFIED (0084 kernel, NO CI needed):
+  research/merlin-boot/shim-boot-merlin-msdc-0084-rv-zlog5.img
+  (16,989,139 B; SHA256
+  86f932ec7962c298d4a6934923acae039ff85b35b8c511b5fd8ca9dff9b92864).
+  Cmdline = boot-9's (boot-6 args + zlog1..4 + -zc msdc_readverify=1)
+  PLUS `zlog5=kalloc.16384 zlog6=kalloc.12288` - the band boot #9's
+  victim came from plus the neighboring 12288 band (belt: if it hops
+  again, add zlog7=<next band>; each hop = one cmdline edit + rebuild).
+  unpack_bootv2 verify: cmdline OK; shim slot + dtb byte-identical to E1.
+  SIX logged zones => expect a NOTICEABLY slower boot than #9.
+- readverify SELF-CHECK: the 0084 re-read path (patch msdc_read_sector :
+  31-66) is a 512 B stack copy + bounce-buffer re-read + memcmp - no
+  allocations, no caller-buffer rewrites; it cannot be the UAF writer.
+- NEXT USER STEP: capture a VIDEO of the screen from an early boot phase
+  (before/at the MERLIN MSDC lines) and keep filming to the panic; then
+      cold power-off; fastboot boot research\merlin-boot\shim-boot-merlin-msdc-0084-rv-zlog5.img
+  VERDICTS: (a) `zone-log #N: elem %p op %u bt:` lines at the panic ->
+  symbolicate vs research/art-0084/kernel.development.sweet.link = the
+  victim's alloc/free owners; (b) READVERIFY MISMATCH lines/flood ->
+  the 0082 read path serves wrong bytes (fix the read engine, 0085);
+  (c) full-video study shows ZERO mismatches AND the UAF still panics
+  -> a rogue RAM writer: leading candidate = stale MSDC DMA state left
+  by LK that gets re-armed (next patch = 0085 driver-init hardening:
+  full controller reset + clear SA/CFG/CTRL before first use); (d) panic
+  zone outside the 6 tracked families AGAIN -> add zlog7=kalloc.<size>
+  (next band after reading the zone name) - cmdline-only, no CI.
+- REMINDER: image.png at repo root is STILL the unrelated Blockman GO
+  screenshot (untracked; do not commit). The boot #9 photo exists only in
+  the chat - saving phone photos into research/merlin-boot/photos/ would
+  help future decode sessions (research/ is gitignored; OCR-sourced facts
+  above are already transcribed).
+
 ## Agent handoff / active work (2026-10-25 LATEST-39: 0084 CI BUILD DONE + VERIFIED; BOOT #9 IMAGE BUILT (msdc_readverify=1 + zlog x4 + -zc); READY FOR USER FASTBOOT BOOT + PHOTO)
 
 - 0084 PUSH + CI COMPLETE: fork/msdc-0079 IS AT 00ce338 ON THE REMOTE
