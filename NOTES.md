@@ -1,5 +1,53 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-45: BOOT #12 SETTLED TAIL DECODED = xnu's FIXED panic TAIL (dumps -> "Original panic string:" -> "handshake structure not initialized" (harmless, no Apple hw debugger on merlin, out_shmem.c:499) -> panic.apple.com footer (debug.c:1454) -> spin forever, NOTHING prints after) => 0086 forensics scrolled off; 0087 TAIL-REPLAY PATCH WRITTEN + VALIDATED against the CI's own post-0086 build tree; awaits push approval)
+
+- BOOT #12 (photo 2026-10-25, after flashing
+  shim-boot-merlin-msdc-0086-fv.img - image identity not visible on the
+  screen, assumed): the console SETTLED at the standard xnu panic tail:
+  `[ UAF element dumps (XNU-native `%5d: 0x%016lx`, zalloc.c:3086, ff-
+  poison-heavy words, offsets ~384-448 / 1448-1720 / 3336-3394 per
+  blurry OCR) ] -> "handshake structure not initialized" -> "Please go
+  to https://panic.apple.com to report this panic"`.  DECODE: that is
+  NOT a new panic class - the tail = debug.c:1430 (Original panic
+  string: re-print) + 1440 panic_spin_shmcon() -> out_shmem.c:499
+  "handshake structure not initialized" (NORMAL on merlin: no Apple
+  hardware shared-memory debugger; when present it would instead print
+  the URL + WAIT forever) + debug.c:1454 URL footer + panic_spin_forever.
+  IMPORTANT IMPLICATION: NOTHING PRINTS AFTER THE URL - a settled screen
+  is a TAIL WINDOW; everything printed before the last dump block
+  (incl. 0086's FORENSICS + zone-log + the actual panic text) scrolled
+  off => this boot's readverify verdict = LOST (photo too blurry to
+  extract the dump word values reliably).
+- 0087 FIX (research/tmp-msdc-split/make-0087.py -> xnu/patches/
+  0087-merlin-forensics-tail-replay.patch): (a) zalloc.c un-statics
+  merlin_uaf_replay (0086's replay printer), (b) debug.c calls it right
+  BEFORE the URL footer on the panic tail => the settled screen ends
+  with: `...dumps`/`Original panic string: <full text>`/`handshake
+  structure not initialized`/`MERLIN FORENSICS: msdc reads=... lines
+  (verdict + up to 4 victims)`/`Please go to ...` = complete one-photo
+  decode, immune to scroll.  Validated BYTE-EXACT against THE CI'S OWN
+  post-0086 files (from xnu-kernel's sibling artifact xnu-buildtree id
+  12598525203 -> nested buildtree.tgz extracted under research/
+  art-0086-buildtree/src/xnu; this is the superior patch-generation
+  base vs synthetic trees - REUSE for all future patches).  GOTCHA
+  recorded while validating: build the t5 scratch from ONLY the files
+  being patched (pruning a copied buildtree deleted needed dirs).
+  Local commits: ios-merlin + ios-sweet msdc-0079 (patch file) - NOT
+  pushed yet; NEEDS USER PUSH+CI APPROVAL (the "start the 0086 CI
+  build" approval was for 0086 specifically).
+- AFTER 0087 approval: push msdc-0079, workflow_dispatch, fetch
+  (cross-check run id + head sha), verify SHA256SUMS, build
+  shim-boot-merlin-msdc-0087-fv.img with the SAME cmdline (zlog1..6 +
+  msdc_readverify=1).  User flashes THAT image (no point re-flashing
+  0086) and sends ONE photo.
+- Decoding the 0087 final screen: forensics lines sit between the
+  "handshake structure not initialized" line and the URL footer;
+  mismatches>0 => driver read path guilty; reads>0 mismatches=0 =>
+  scribbler (0085 next: MSDC controller reset + clear
+  SA/CFG/CTRL/INT + DMA stop at attach; number still reserved);
+  reads=0 => panic pre-mount.
+
 ## Agent handoff / active work (2026-10-25 LATEST-44: BOOT #11 DECODED = DEEPEST BOOT EVER, corruption CONFIRMED striking FILE CONTENT (dyld malformed load command #3 of 35 on a just-read SpringBoard[271]) + kalloc.16384 victim full of file-like ASCII; msdc-0079 1a6efd8 PUSHED (user-approved) + CI run 40190497473 DISPATCHED for the 0086 forensics-replay kernel)
 
 - PUSH + CI (user-approved): ios-sweet fork msdc-0079 `00ce338..1a6efd8`

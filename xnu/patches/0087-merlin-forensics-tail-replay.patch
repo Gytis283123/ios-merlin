@@ -1,0 +1,38 @@
+xnu: MERLIN 0087 forensics tail replay - hook the UAF forensics replay at the END of the panic tail (debug.c, before the panic.apple.com footer) so the msdc read/verify verdict + victim list are always the last lines of a settled panic screen; unhides 0086 on scrolled/stormed boots
+
+--- a/osfmk/kern/zalloc.c
++++ b/osfmk/kern/zalloc.c
+@@ -3099,11 +3099,11 @@
+ 	n->size = size;
+ 	scnprintf(n->zone, sizeof(n->zone), "%s%s", zone_heap_name(z),
+ 	    zone_name(z));
+ }
+ 
+-static void
++void
+ merlin_uaf_replay(void)
+ {
+ 	printf("MERLIN FORENSICS: msdc reads=%lu readverify mismatches=%u "
+ 	    "last lba=%llu\n", msdc_strategy_reads, msdc_rv_mismatches,
+ 	    (unsigned long long)msdc_rv_last_lba);
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -1457,10 +1457,18 @@
+ 
+ 	if (!panicDebugging) {
+ 		kdp_machine_reboot_type(kPEPanicRestartCPU, debugger_panic_options);
+ 	}
+ 
++
++	/* MERLIN (0087): replay the accumulated UAF forensics at the very
++	 * end of the panic tail, right before the URL footer, so that on
++	 * every settled panic screen the msdc read/verify verdict and the
++	 * victim list are the LAST visible content (nothing prints after
++	 * this point). */
++	extern void merlin_uaf_replay(void);
++	merlin_uaf_replay();
+ 	paniclog_append_noflush("\nPlease go to https://panic.apple.com to report this panic\n");
+ 	panic_spin_forever();
+ }
+ 
+ #if SCHED_HYGIENE_DEBUG
