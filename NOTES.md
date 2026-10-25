@@ -1,5 +1,26 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-62: BOOT #22 (0092) = **THE SCRIBBLER IS FIXED** — no element-modified-after-free panic, first boot since #10 without one; boot died at the PREDICTED next wall: SpringBoard launch, dyld reads garbage load-command bytes ("size (0x4600b085) not multiple of 4" — the SAME value as boot #19 = DETERMINISTIC).  DECISIVE 17.2 GB IMAGE SEARCH: pattern 85 b0 00 46 (LE of 0x4600b085) has ZERO occurrences anywhere in iosroot-v2.img (282s full scan) ⇒ runtime bytes are NOT any image bytes; with readverify stable (0 mismatches) the only remaining source = THE eMMC CONTENT ITSELF IS WRONG at scattered blocks ⇒ flash #3 ("47/47 OKAY, unverified") also silently failed to write at spots — same failure class as flashes #1/#2.  FIX = VERIFIED REFLASH of userdata from research\ipsw-x\iosroot-v2.img + mtkclient readback hash-compare + boot #23 (same 0092 image, no rebuild).  BLOCKED: user confirmation + hands (fastboot/BROM); flashing = destructive, confirmed per project rules)
+
+- BOOT #22 DECODE (image c5385b80): early "MERLIN: pmap excluding
+  PA 0x9f800000-0x9fa80000 (640 pages…)" seen = fix fired ✓; NO
+  zalloc panic; deepest failure = SpringBoard/dyld garbage-load-
+  command wall (identical garbage to #19 ⇒ deterministic).
+- VERDICT CHAIN (all three facts source-pinned): (1) image-side
+  bytes good (LATEST-38: 44 cache files sha-matched to IPSW);
+  (2) reads stable (readverify 0 mismatches across boots);
+  (3) runtime garbage exists NOWHERE in the image (this session's
+  full scan) ⇒ eMMC ≠ image at those blocks; reflash+verify is the
+  only fix class left for this wall.
+- REFLASH PLAN (awaiting user GO): fastboot flash userdata
+  research\ipsw-x\iosroot-v2.img (17,226,006,528 B; NOT iosroot.img
+  v1, NOT rootfs.img) → mtkclient readback of userdata → hash
+  compare vs image → boot #23 = same shim-boot-merlin-msdc-0092-
+  full-fv.img → expect SpringBoard past load commands (mockfs-era
+  ceiling territory).  If garbage persists AFTER verified-identical
+  bytes on media → the divergence is in the read path after all
+  (driver/HFS-extent bug hunt reopens with LBA-level evidence).
+
 ## Agent handoff / active work (2026-10-25 LATEST-61: BOOT #21 (same 0091 image) = SECOND pa= SAMPLE — victim kalloc.type.var2.4096@2688 ALL-0xFF **pa=0x9fa08000**; footprint now THREE points (0x9f98a000, 0x9f9ea000, 0x9fa08000 — all 16K-aligned, span 0x7e000, all inside [0x9f800000, 0x9fa80000)) ⇒ writer PA-anchored and stable across boots ✓.  0092 = THE FIX, COMMITTED + PUSHED (user: "go for the big bang"): pmap_next_page() skips the window (default 0x9f800000+0x280000; boot-arg merlin_excl_pa=START-LEN overrides); ios-merlin 395a298 / ios-sweet c12de27 pushed, CI run 40221667737 in progress.  Next: golden rule → boot #22 = first scribbler-immune boot → expect death point to MOVE (SpringBoard read-divergence wall becomes active).  Reality check recorded: 0092 fixes the SCRIBBLER class, not the SpringBoard bad-bytes wall — that one needs the eMMC-content-vs-image decision)
 
 - BOOT #21 DECODE: same image as #20 (751a2a88), victim zone
