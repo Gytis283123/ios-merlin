@@ -1,5 +1,68 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-47: BOOT #13 (0087) = FORENSICS TAIL HOOK WORKS — VERDICT DELIVERED: readverify reads ≈127k/527k, MISMATCHES=0 across the board, victims still corrupting => READ PATH BLOCK-CLEAN, SCRIBBLER CONFIRMED => 0085 MSDC INIT HARDENING is next per the pre-agreed tree)
+
+- 0087 CONFIRMED WORKING: the settled boot-13 screen shows two complete
+  panic tails (looks like the phone panicked, rebooted, and panicked
+  again before the photo — two boots share the console ring; counters
+  reset per boot), each ending: dumps -> `Original panic string:`
+  -> `handshake structure not initialized` -> **`MERLIN FORENSICS:`
+  lines** -> `Please go to https://panic.apple.com...`.  The one-photo
+  workflow is now fully effective (milestone: boot 12's photo story
+  resolved).
+- **THE VERDICT NUMBERS** (both tails): `MERLIN FORENSICS: msdc reads=
+  127255(? OCR ~127k) readverify mismatches=0 last lba=0` and
+  `reads=527255(? OCR ~527k) readverify mismatches=0 last lba=0` —
+  every sector read through the readverify path was double-read and
+  compared with **ZERO mismatches** across both boots.  `last lba=0`
+  is consistent (never set because nothing mismatched).  => THE MSDC
+  READ ENGINE READS CLEAN AT BLOCK LEVEL.
+- Victims despite clean reads: `MERLIN FORENSICS: victim data.kalloc.
+  8192 size=8192 off=2112 val=0x8ffff9fe9e02be00…(ff-poison + few
+  deltas) elem=0xfffffe29a02be000` and boot-B tail additionally
+  `panic(cpu 0 caller 0xfffffe007ab8a8c?): [data.kalloc.8192]: element
+  modified after free (off:2112, val:0x…, sz:8192, ptr:0xfffffe29a02be000)`
+  + zone-log header + native dump clumps (2112..2140 ff-heavy; boot-A
+  clumps ~3664-3956).  NOTE: the SAME elem address 0xfffffe29a02be000
+  and SAME off 2112 appear in BOTH tails (OCR ±) = the hit looks
+  DETERMINISTIC (same allocation, same offset every boot) — scribbler
+  with a fixed target/stride signature.
+- Boot B story (deeper than A): exec nabd?/contextoresentored/healthd/
+  mediaremoted/softwareupdated/peakpowermanagerd -> cs_invalid_page
+  (0x2247f0c8??): p=27[SpringBoard] (remove VKILL) -> **vm_shared_
+  region_slide_page() offset overflow: pageIndex=184, start?_offset=0,
+  slide_amount=1188811152** (insane slide parameters = corrupted VM/
+  dyld-side metadata) -> CRASH SpringBoard[271] sig 10 (SIGBUS) code
+  0x10000000a sub 0x25866e0e0 slide 0x46d14000, pc 0x1beb32ccdb…, bt
+  repeated 0x1beb37cc78…, map (far inside) … prot 1/1 tag 32, reason
+  ns 2 code 0xa (none) = SpringBoard killed in the shared-cache slide
+  machinery — same file/VM corruption class as boots 11/12.
+- DECISION (pre-agreed tree): reads>0 + mismatches=0 + victims =>
+  scribbler CONFIRMED at the level we can test; the read path is not
+  (provably) serving wrong bytes.  NEXT = **0085 MSDC init hardening**
+  (number reserved): at driver attach — controller reset + clear
+  SA/CFG/CTRL/INT + quiesce/stop any active DMA so whatever the
+  bootloader (LK) left armed gets neutralized.  Leading candidate
+  (observation vs guess distinction): an ongoing small-burst writer,
+  plausibly a wrong-target DMA tied to the driver's OWN WRITE path
+  (journal/remount metadata writes spraying eMMC-bound file bytes into
+  RAM — reads stay clean by construction); stale-LK post-handoff DMA
+  would rather strike once/early, and hits keep recurring minutes into
+  boot across boots — record as working hypothesis, not fact.
+- HOW 0085 GETS BUILT: generate from the CI PATCH TREE like 0087
+  (research/art-0087-buildtree/src/xnu = full post-0087 sources —
+  artifact xnu-buildtree id 12598721923, fetched but NOT yet extracted;
+  bsd/dev/sweet_ufs.c contains the 0084-hardened driver; validate
+  byte-exact t-scratch apply).  After 0085 validates: user push+CI
+  approval, same pipeline, same cmdline image (msdc_readverify=1
+  STAYS — mismatches=0 is still evidence we need to keep collecting
+  until the panic storm stops happening altogether = success signal).
+  SUCCESS CRITERION for 0085: boots reach userspace WITHOUT any
+  `element modified after free` alarm for a several-boot streak (and
+  SpringBoard stops dying with malformed-load/SIGBUS/slide stories).
+- poll script research/tmp-msdc-split/poll-0086-ci.py now takes the
+  head sha as argv[1].
+
 ## Agent handoff / active work (2026-10-25 LATEST-45 ADDENDUM: 0087 CI DONE (run 40192191643, kernel a3c3d3c9..., +104 B = tail hook linked) and shim-boot-merlin-msdc-0087-fv.img BUILT + SELF-VERIFIED (b284a9ab...); user to flash THIS image, boots, ONE photo -> final screen must end with MERLIN FORENSICS verdict + victim ring before the URL footer)
 
 - 0087 BUILT: CI run **40192191643** (head 427eaa5, dispatch 12:13:48Z,
