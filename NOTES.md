@@ -1,5 +1,57 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-49: ROOT CAUSE — the CI SILENTLY SKIPPED the 0085 patch (patch-fail ≠ build-fail!) → renumbered 0085 → 0088 in both repos, re-pushing; GOLDEN RULE: every CI build must be verified by SHA + BINARY STRING PROBES + CI-log grep "Skipping patch" — a "success" artifact is not proof a patch applied)
+
+- ROOT CAUSE (run 40199390379 build log, excerpt saved to
+  research/tmp-msdc-split/log-patch-lines.txt line 2):
+  `Skipping patch .../dxb/patches/0085-merlin-msdc-dma-quiesce-spill-canary.patch
+  (already upstream, previously applied, or malformed): error: patch failed:
+  bsd/dev/sweet_ufs.c:1125` — then 0086 + 0087 applied, build "succeeded",
+  kernel shipped WITHOUT 0085.  The dxb tool applies dxb/patches/*.patch in
+  NUMERIC-SORT order and a patch that fails `git apply` is skipped with a
+  warning; the build still exits green.
+- WHY 0085 failed: it applied BEFORE 0086/0087 in that order, but its hunks
+  were generated against the POST-0087 tree (0086 rewrote the readverify var
+  block at sweet_ufs.c:1125-1129 that 0085 anchors on, and 0085's zalloc
+  hunks anchor on the post-0086 forensics block) → context mismatch → whole
+  patch rejected (git apply is atomic, all-or-nothing).
+- RESOLVED MYSTERY: art-0085 kernel string-probe failure (no "MERLIN MSDC:
+  dma ctrl" / "DMA SPILL count" / "dma spill=%llu") = patch skipped, NOT a
+  generator bug.  make-0085.py validation was byte-exact — TRUSTED.
+- FIX (this commit): renumber the patch to 0088-merlin-msdc-dma-quiesce-
+  spill-canary.patch in BOTH repos (ios-merlin rename + ios-sweet d1d4071);
+  content UNCHANGED (contexts already correct for post-0087).  NUMBERING
+  RULE now explicit: a merlin patch that builds on content from patch N
+  must sort AFTER N (dxb order is a global numeric sort including blacktop's
+  own dxb/patches); 0085 = RESERVED GAP, never reused.  Next patches 0089+.
+- VERIFICATION GOLDEN RULE for EVERY future CI kernel: (1) SHA256SUMS ok,
+  (2) grep the kernel for the NEW patch's print strings BEFORE flashing,
+  (3) grep the CI build log for "Skipping patch" — must be ZERO for
+  merlin-*.patch.  Steps 2+3 are what this skipped build evaded.
+- REPRO HYG: same-ref kernels are NOT byte-reproducible — vs art-0087, the
+  skipped-build kernel differs in ~70 x 64 KiB chunks AND carries an exact
+  +16,384 B tail of extra link-table strings ("switch__flow_expire" etc.),
+  with 0085 never applied.  CONCLUSION: kernel SIZE deltas are NOT proof of
+  patch application; only STRING PROBES + logs count.  (+16,384 anomaly
+  closed as build reproducibility noise — not msdc_gpt-related.)
+- research/art-0085 renamed → research/art-0085-skipped (60,023,182 B,
+  sha 6e0e13bd…, kernel = 0084+0086+0087 build; do NOT use or image from it).
+- WORKSPACE HYGIENE: ios-merlin has unrelated in-progress uncommitted work
+  (shim/ ramfb+fbcon-1x QEMU banking, tools/fbcon-* files, image.png) — NOT
+  part of the msdc work, NOT committed by this handoff, leave alone.
+- NEXT: push msdc-0079 (d1d4071) + workflow_dispatch ref msdc-0079 →
+  background poll via `python research\tmp-msdc-split\poll-0086-ci.py
+  <head-sha>` → VERIFY (golden rule; "MERLIN MSDC: dma ctrl",
+  "DMA SPILL count", "dma spill=%llu" must ALL be present in the binary)
+  → build shim-boot-merlin-msdc-0088-fv.img (SAME cmdline incl.
+  msdc_readverify=1, verbatim from previous boots) → flash + ONE photo →
+  decode per LATEST-48 guide: dma state line at take-over (inherited LK
+  forensics), early "DMA SPILL" prints if overshoot fires, settled tail
+  `MERLIN FORENSICS: msdc reads=N readverify mismatches=N last lba=N dma
+  spill=N`.  dma spill=0 + no UAF/slide deaths = inherited-state class
+  DEAD (start success streak); spill mid-boot = live overshoot bug (deep
+  register-map dive next).
+
 ## Agent handoff / active work (2026-10-25 LATEST-48: 0085 MSDC DMA QUIESCE + SPILL CANARY DRAFTED + VALIDATED byte-exact on the CI post-0087 sources (ios-merlin 705037a + ios-sweet msdc-0079 ce8c0f3, NOT pushed — awaits approval); key driver-audit discovery: take_over never quiesced the DMA engine and the read/write paths used READ-MODIFY-WRITE on DMA_CTRL = stale bits survive every START, and readverify's 512B compare is blind to any overshoot BEHIND the bounce target — matching every victim fingerprint)
 
 - DRIVER AUDIT (research/art-0087-buildtree/src/xnu/bsd/dev/sweet_ufs.c,
