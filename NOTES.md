@@ -1,5 +1,39 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-51: 0088 attempt 2 failed at LINK (not compile!): "_msdc_spill_count undefined for arm64" — my counter decl was `static` (file-local) while zalloc.o's replay externs it → v3 makes it non-static (0086-style visibility), re-validated, pushing attempt 3)
+
+- ATTEMPT 2 = run 40201604920 (head d3aea9a) → compile PASSED clean (all
+  .o built; no compile errors, only style warnings), final kernel LINK
+  failed: `Undefined symbols for architecture arm64: "_msdc_spill_count",
+  referenced from: _merlin_uaf_replay in zalloc.o`.  Attempt-1 lesson
+  (decl BELOW first use) had been fixed, but the moved decl was `static`
+  = file-local; zalloc.c's `extern uint64_t msdc_spill_count;` never
+  resolves against a static.  Each TU compiles alone; only the linker
+  sees the mismatch.  (Per-TU compile vs whole-program-link lesson.)
+- FIX (v3, this commit): counter declared NON-STATIC after the msdc_gpt
+  static — exact visibility pattern the 0086 patch already established
+  for msdc_rv_mismatches/msdc_rv_last_lba/msdc_strategy_reads (all
+  non-static BECAUSE zalloc.o externs them).  Generator now also asserts
+  the decl is NOT `static`, plus decl-before-first-use (attempt-1 assert).
+  make-0085.py re-generated + byte-exact validated → 0088 v3 (7,229 B).
+- FAILURE LADDER STATUS: skip (0085) → renumber ok → compile error (v1)
+  → link error (v2) → v3 = both fixed in one place, one identifier.
+  Every new symbol that crosses TU boundaries MUST be non-static; every
+  generator change gets a matching assertion so the failure class can't
+  repeat silently.
+- LOG SANITY THIS RUN: 0088/0086/0087 all APPLIED (no skip lines);
+  skips = known dxb set (TrustCache/iobuffermemd_monterey/skywalk_sonoma/
+  syntax_checker_sonoma) + corrupt-0083 (deferred, see LATEST-50).
+- NEXT: push v3 → dispatch → poll → on GREEN: SHA + string probes
+  ("MERLIN MSDC: dma ctrl", "DMA SPILL count", "dma spill=%llu") +
+  log-grep, then shim-boot-merlin-msdc-0088-fv.img (cmdline unchanged,
+  msdc_readverify=1 kept) → flash + ONE photo → decode: the settled tail
+  `MERLIN FORENSICS: msdc reads=N readverify mismatches=N last lba=N dma
+  spill=N` + early inherited-DMA state line at take-over.  dma spill=0 +
+  no UAF/alarm = inherited-state class dead (start streak); spill>0 =
+  live overshoot bug (register-map deep dive next).  v1 shell commands:
+  `python research\tmp-msdc-split\poll-0086-ci.py <head-sha>`.
+
 ## Agent handoff / active work (2026-10-25 LATEST-50: 0088 build attempt 1 FAILED at COMPILE (not apply!) — undedclared msdc_spill_count: my declaration sat BELOW its first use; FIXED + re-validated + re-pushing; SIDE-DISCOVERY: 0083-launchd-platform patch is malformed and has likely NEVER applied — deferred, do not touch exec behavior mid-scribbler-hunt)
 
 - ATTEMPT 1 = run 40200698093 (head d1d4071) → FAILURE, first time a merlin

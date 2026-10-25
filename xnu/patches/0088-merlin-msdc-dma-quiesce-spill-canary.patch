@@ -8,7 +8,7 @@ xnu: MERLIN 0085 MSDC DMA quiesce + spill canary - at take_over print and fully 
  
  static uint8_t msdc_gpt[128 * 128];             /* one GPT entry table */
  
-+static uint64_t msdc_spill_count;               /* 0088: DMA overshoot detections */
++uint64_t msdc_spill_count;               /* 0088: DMA overshoot detections (non-static: zalloc replay reads it) */
 +
  static LCK_GRP_DECLARE(merlin_msdc_grp, "merlin_msdc");
  static LCK_MTX_DECLARE(merlin_msdc_lock, &merlin_msdc_grp);
