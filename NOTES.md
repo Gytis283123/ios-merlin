@@ -1,5 +1,69 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-59: BOOT #19 (0090+full cmdline) = DEEPEST BOOT EVER — launchd PID 1 RAN DEEP USERLAND (routined/passd/logd_helper exec'd, SpringBoard launched); SPRINGBOARD CRASHED (dyld "malformed load command #2" — the LATEST-38 read-divergence wall returns; readverify=0 mismatches @520k reads ⇒ reads STABLE); then the UAF RETURNED in kalloc.8192@3712 with THE SAME PAYLOAD as boot #15 — **BREAKTHROUGH: island = VERBATIM COPY of SCP coprocessor firmware bytes (scp1/scp2.bin@0xa4a60-0xa4aa0, 7/8 words photo-exact + word 4 matches the photo's own OCR)** ⇒ the scribbler copies from the SCP DRAM image into freed kalloc elements; deterministic content, 64-B bursts, load-correlated.  0091 COMMITTED both repos (victim pa= + APDMA fixed-PA fallback); "handshake structure not initialized" = panic core-dump channel, BENIGN.  BLOCKED: push approval for ios-sweet bccd91d → CI → boot #20)
+
+- PHOTO DECODE (boot #19, image c2b04671): the restored userspace args
+  WORKED — "launchd_unsecure_cache" path accepted; exec routined /
+  passd / logd_helper; SpringBoard start; dyld errors ("malformed
+  load command #2 of 39", "size (0x4600b085) not multiple of 4",
+  cs_invalid_page "allowing (remove VALID)"); CRASH SpringBoard[27]
+  sig 6 (pc/lr/sp/fp/far + bt) — the LATEST-38 shared-cache/read-
+  divergence wall class; readverify says reads are STABLE (0
+  mismatches, 520,059 reads) so if runtime bytes ≠ image bytes the
+  eMMC content or the mapping is the diverging side.  THEN:
+  panic [data.kalloc.8192] off:3712 val:0xbf00bd38606b308c
+  sz:8192 ptr:0xfffffe30008e5a000; island 3712..3768 = 8 words.
+  0090 FORENSICS FIRST REAL RUN ✓: "victim islands" line (cut above
+  frame), replay tail (reads/mismatches/spill, lk dma ctrl 0x6108
+  cfg 0x4 sa 0x4c59fe88 len 0x200, apdma found=0 quiesced=0
+  map=0x00000000 [scan still DT-blind this boot], victim note +
+  b[0..15]=all zeros + b[3712..3727] hex).  Caller 0xfffffe0007ab9058
+  unnormalized (= zalloc_uaf_panic path as before).
+- SCP IDENTIFICATION (offline this session): byte-searched the raw
+  partition dumps (research: D:\things\Merlin\Dumped\) — the six
+  stable island byte-patterns hit CONTIGUOUSLY in scp1.bin AND
+  scp2.bin at 0xa4a68-0xa4a98; full 64-B block at 0xa4a60-0xa4aa0
+  matches the victim island word-for-word (word 4 = 0xf003d509
+  4604071a per the photo OCR; my earlier 84-read was the error).
+  Context: 0xa4a40-0xa4ab0 = repeated Thumb-2 record structure
+  {ptr-pair 0x00031908/0x00085f38 + 0x000861b4/0x000874ed, code,
+  38 bd / 00 bf epilogues} — SCP firmware internal tables/code.
+  Writer model: SCP (or an engine it drives) copying 64-B-aligned
+  blocks of its DRAM image into a fixed/stale PA that XNU zone
+  memory now occupies; deterministic source, load-correlated
+  timing (thermal/sensor reporting during heavy userspace), varies
+  victim by layout lottery.  Boots 11/13/14's 0xFF fill = a
+  different report phase or channel (unresolved detail).
+  NEXT OFFLINE: mine D:\things\Merlin\android_kernel_xiaomi_mt6768
+  SCP driver (drivers/misc/mediatek/scp/) for the AP-side shared
+  buffer PA / IPI config — the PA 0091's pa= print will confirm.
+- "handshake structure not initialized" = kdp panic core-dump
+  channel (osfmk/kdp/output_stages/out_shmem.c:492-505
+  panic_spin_shmcon): no firmware XHSDCI shared-memory debug
+  handshake exists on this port → informational print during panic
+  shutdown, right before the panic.apple.com footer.  NOT an error
+  to fix.
+- IOCTL GAP ALREADY CLOSED: the 0082 driver's merlin_msdc_ioctl
+  now implements DKIOCSYNCHRONIZE→0, DKIOCGETFEATURES, sane
+  MAXBLOCKCOUNTs (sweet_ufs.c:1618-1625 post-0090 tree) — the
+  LATEST-38 gap was fixed in a later 008x rev; nothing to do.
+- 0091 = xnu/patches/0091-merlin-victim-pa-apdma-fixedpa.patch
+  (2,536 B; make-0091.py vs art-0090-buildtree/src/xnu; VALIDATED
+  t7/t8 + regenerated==committed; kvtophys already used 3x in
+  zalloc.c so the decl is visible): H1 replay victim line prints
+  pa=kvtophys(elem) (0092 will reserve that PA); H2 apdma quiesce
+  DT-fail → "using fixed PA 0x11000000+0x1000" fallback (scan
+  finally runs; found/quiesced/map become real).  Commits:
+  ios-merlin 05972e0, ios-sweet bccd91d (NOT pushed).
+- NEXT CONCRETE: push approval for bccd91d → CI (golden rule +
+  probes "pa=0x%llx" + "using fixed PA") → boot #20 (same full
+  cmdline) → its panic names the victim PA (expect the SAME PA as
+  any earlier SCP-write if the buffer is fixed) + REAL apdma
+  verdict → 0092 = reserve that PA range from the physical
+  allocator (or quiesce the caught channel); separately the
+  SpringBoard read-divergence wall (eMMC verify/reflash decision)
+  waits behind the scribbler fix.
+
 ## Agent handoff / active work (2026-10-25 LATEST-58: BOOT #16 (0090) = NO PANIC IN FRAME — DEEPEST BOOT EVER: root FS mounted from userdata (read-only, journal replayed, SWEET unsealed), serial keyboard started, swap ON; the kalloc.16384 UAF that killed boots 11/13/14/15 did NOT fire in frame.  APDMA VERDICT = SCAN SKIPPED EVERY BOOT: runtime DT lacks /ap_dma@11000000 (slot dtb HAS it w/ reg, but runtime tree ≠ slot tree — sweet-ufs/merlin-msdc = 0 hits in slot dtb yet resolve at runtime) ⇒ 0089's DT-based quiesce was structurally dead code.  WHAT HAPPENED AFTER THE FRAME = UNKNOWN → user report / next photo decides)
 
 - PHOTO DECODE (rotated 90°, left edge blurred; no MERLIN FORENSICS
