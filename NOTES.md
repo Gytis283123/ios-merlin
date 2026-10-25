@@ -1,5 +1,49 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-25 LATEST-58: BOOT #16 (0090) = NO PANIC IN FRAME — DEEPEST BOOT EVER: root FS mounted from userdata (read-only, journal replayed, SWEET unsealed), serial keyboard started, swap ON; the kalloc.16384 UAF that killed boots 11/13/14/15 did NOT fire in frame.  APDMA VERDICT = SCAN SKIPPED EVERY BOOT: runtime DT lacks /ap_dma@11000000 (slot dtb HAS it w/ reg, but runtime tree ≠ slot tree — sweet-ufs/merlin-msdc = 0 hits in slot dtb yet resolve at runtime) ⇒ 0089's DT-based quiesce was structurally dead code.  WHAT HAPPENED AFTER THE FRAME = UNKNOWN → user report / next photo decides)
+
+- PHOTO DECODE (rotated 90°, left edge blurred; no MERLIN FORENSICS
+  or panic lines in frame — consistent, those print only ON panic):
+  skywalk self-tests pass → bsd_auto_conf kminit → ifnet lo0/gif0/
+  stf0 → "MERLIN MSDC: readverify enabled (double-read compare)" →
+  "apdma: no /ap_dma@11000000 reg (skip)" [OCR "110100000" =
+  garble] → "cfg 0x02200159 ps 0x01f00002 sts 0x00000000 sa
+  0x4c59f080" → "dma ctrl 0x0006f100 cfg 0x00000004 sa 0x4c59f080
+  ca 0x4c59f8a4 len 0x00000200" → ""userdata" first sector
+  0x1364000, 22840 MiB, read-only" → "BSD root: msdcroot0 major 1
+  minor 0" → jnl: replay done → hfs: mounted (volname OCR-uncertain)
+  → "SWEET: root volume is not authenticated (error 25); continuing
+  unsealed" → "Serial keyboard started" → "v_swap Subsystem is ON".
+- DT PROOF (offline this session): boot16 dtb slot (img offset
+  16807936, 181,203 B) HAS /ap_dma@11000000 AT ROOT with
+  compatible="mediatek,ap_dma" + reg={0,0x11000000,0,0x1000}
+  (custom FDT walker; an earlier "node has no props" readout was a
+  print-filter bug, corrected).  BUT sweet-ufs / merlin-msdc = 0
+  hits in the slot dtb while the kernel resolves both at runtime ⇒
+  the runtime tree is a CURATED MINIMAL TREE built somewhere in the
+  shim/payload chain (construction point not yet located; shim/
+  fdt.c is diagnostics-only parsing) ⇒ the 0089 DT lookup could
+  never succeed; skip fired every boot (explains why no photo ever
+  showed apdma win lines).
+- LK MSDC0 DMA SNAPSHOT (first-ever read): ctrl 0x0006f100,
+  cfg 0x4 (bit2 set), sa 0x4c59f080, ca 0x4c59f8a4, len 0x200 —
+  LK left a 512-B transfer window configured at handoff;
+  interpretation pending.
+- WHY NO UAF — UNKNOWN, 3 candidates: (a) race/timing variability
+  (but boots 11/13/14/15 = 4/4 hits), (b) layout lottery if the
+  writer targets fixed PAs (0089 kernel 17,224,136 B vs 0090
+  17,207,856 B, payload +96 B — addresses moved), (c) different LK
+  boot-path state this boot.  0090 is inert by design (panic-path
+  prints only) — NO CREDIT claimed; the UART-APDMA theory is NOT
+  disproven either (the scan never ran even once).
+- NEXT CONCRETE: (1) USER reports what the screen showed AFTER the
+  photographed frame (still alive? SpringBoard slide line? froze?
+  eventual panic?) — if it panicked later, that screen now carries
+  the 0090 payoff (victim islands run-map + apdma found= verdict),
+  one photo decodes it.  (2) 0091 design updates regardless:
+  APDMA scan via HARDCODED PA 0x11000000/0x1000 (kill the DT
+  dependency); HW-watchpoint discriminator unchanged (parked).
+
 ## Agent handoff / active work (2026-10-25 LATEST-57 (upd): 0090-v1 WAS pushed (ios-sweet 59ced39) and CI-RED — run 40208702420, build exit 2: v1 declared 'years' but used 'beyond' 3x (diff-verified in the committed patch; t7/t8 byte-compare cannot catch this class — both sides share the same edit). 0090-v2 (identifier fix + generator identifier-contract asserts) committed local BOTH repos (ios-merlin d3dc0b3 / ios-sweet 0adeac7, ahead 1), re-validated t7/t8 + regenerated==committed. PUSHED 0adeac7 (user-approved) → CI run 40212507739 GREEN, GOLDEN RULE FULLY VERIFIED (sha 20e6fd54…; 17/17 probes incl. "victim islands"+"apdma found="; skip set = known-good five ×2; merlin chain 0082→0090 applied) → shim-boot-merlin-msdc-0090-fv.img BUILT (16,989,139 B, sha 1d76f240…, payload 16,612,640 B, cmdline = 0088/0089 + msdc_readverify=1, shim+dtb byte-identical to E1) → READY FOR BOOT #16: user fastboot boot + ONE photo)
 
 - 0090 = `xnu/patches/0090-merlin-island-map-apdma-verdict.patch`
