@@ -17,6 +17,27 @@ NEXT: Build kernel with 0092+0093+0094 → boot (fastboot boot, never flash) →
 
 UNFINISHED: Kernel build not done; next boot not run; no photo; CI not run; push not done (LOCAL ONLY).
 
+- 0094 SHIPPED (user-directed build, this session): re-verified against
+  the REAL CI base first (git apply --check CLEAN on art-0093-buildtree
+  post-0093 xnu, incl. 0092's pmap.c anchors) → committed ios-sweet
+  5964344, pushed (user approved) → CI run 40400128627 GREEN.
+  GOLDEN RULE: SHA256SUMS ok; kernel 17,208,152 B (research/art-0094,
+  +88 B vs 0093); 10/10 probes (0093 tripwire strings + full 0086→0092
+  chain); CI log: 0092+0093+0094 ALL APPLIED, skips = known-good five
+  only.  BOOT IMAGE: research/merlin-boot/
+  shim-boot-merlin-msdc-0094-fv.img (16,989,139 B, sha
+  9ff05aa5117208759fc2d018d9b36877718057efdf8b95a815ec7841d9ae0b30,
+  payload 16,612,944 B, shim+dtb byte-identical to E1, cmdline
+  verbatim #19-#22 incl. msdc_readverify=1).  NOTE: 0094 adds no new
+  print strings — its fingerprint is behavioral (pmap_startup gets
+  past where it previously tripped; the exclusion line still prints).
+  READY: user `fastboot boot` + ONE photo.  Decode = the LATEST-64
+  0093 table unchanged (PATTERN hit LBA decides content-vs-eMMC-vs-
+  HFS-extent; hits=0 + wall fires = above-driver hunt).  A boot past
+  the exclusion line also retro-validates 0094's premise.  Buildtree
+  artifact 12688807096 → research/art-0094-buildtree/buildtree.tgz
+  (unpack to src/ before drafting 0095).
+
 ## Agent handoff / active work (2026-10-26 LATEST-64: USER REDIRECT — GPT resize ON HOLD ("nvm"), nothing was written to the device (no push, no dd — procedure remains prepared in LATEST-63); phone left in fastboot. NEW ACTIVE TRACK per user: THE XNU KERNEL — "the reflash WONT HELP", the 0x4600b085 wall is expected to be a KERNEL-side issue. 0093 = THE DISCRIMINATOR, BUILT + VALIDATED + COMMITTED BOTH REPOS (ios-merlin fc156de, ios-sweet 23b39fb NOT pushed): every CMD17 sector is scanned for the garbage bytes 85 b0 00 46; a hit prints the asked LBA (partition-relative AND absolute) + in-sector offset + 16 B context; counters land on the forensics replay tail too. NEXT: user push approval → CI → golden rule → boot #23 (0092+0093, same full cmdline) + ONE photo → the printed LBA picks the verdict branch below)
 
 - OFFLINE EVIDENCE GATHERED THIS SESSION (no boot needed):
