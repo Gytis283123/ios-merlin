@@ -1,6 +1,57 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
-## Agent handoff / active work (2026-10-26 LATEST-64: USER REDIRECT — GPT resize ON HOLD ("nvm"), nothing was written to the device (no push, no dd — procedure remains prepared in LATEST-63); phone was left in fastboot (a `fastboot boot TWRP-3.7.0.img` was sent, status-read FAILED with a USB quirk — boot state unknown/irrelevant, no flash touched). NEW ACTIVE TRACK per user: THE XNU KERNEL — user's model: the SpringBoard garbage (0x4600b085) is a KERNEL READ-PATH bug, not eMMC content; "the image we flashing WONT HELP". This is consistent with all evidence if the block-number math is wrong: readverify proves STABLE reads, not CORRECT LBAs — a wrong LBA returns stale eMMC bytes (old ext4 userdata / NTFS win image / ESP = NOT in iosroot-v2.img) ⇒ explains "garbage nowhere in the 17.2 GB image". PLAN: (1) search every on-PC image of actual flash content for the LE pattern 85 b0 00 46 (userdata.bin if it exists in D:\things\Merlin\Dumped, win_part/VHD/ESP artifacts in Mu-Silicium + MT6768-StorageDriver trees); (2) audit sweet_ufs.c LBA math (strategy, GPT offset, DMA SA) in research/art-0091-buildtree; (3) 0093 = LBA-forensics patch: on read completion scan buffer for the pattern, print full context (blkno asked, LBA read, count, first 64 B around hit) — one boot then names the divergence point exactly)
+## Agent handoff / active work (2026-10-26 LATEST-64: USER REDIRECT — GPT resize ON HOLD ("nvm"), nothing was written to the device (no push, no dd — procedure remains prepared in LATEST-63); phone left in fastboot. NEW ACTIVE TRACK per user: THE XNU KERNEL — "the reflash WONT HELP", the 0x4600b085 wall is expected to be a KERNEL-side issue. 0093 = THE DISCRIMINATOR, BUILT + VALIDATED + COMMITTED BOTH REPOS (ios-merlin fc156de, ios-sweet 23b39fb NOT pushed): every CMD17 sector is scanned for the garbage bytes 85 b0 00 46; a hit prints the asked LBA (partition-relative AND absolute) + in-sector offset + 16 B context; counters land on the forensics replay tail too. NEXT: user push approval → CI → golden rule → boot #23 (0092+0093, same full cmdline) + ONE photo → the printed LBA picks the verdict branch below)
+
+- OFFLINE EVIDENCE GATHERED THIS SESSION (no boot needed):
+  1. DRIVER AUDIT (art-0091-buildtree sweet_ufs.c, the live read path):
+     all-u64 math, bounds-checked (beyond-partition blkno → EINVAL ⇒
+     esp/win stale regions UNREACHABLE), CMD17 per 512-B sector,
+     readverify double-read + compare, DMA spill canaries clean.
+     NO block-number bug found statically.
+  2. PATTERN SCANS (85 b0 00 46 = LE 0x4600b085): iosroot-v2.img ZERO
+     (earlier session); ALL 44 small partition dumps ZERO; win.bin
+     (23.8 GB full win-partition read, Oct 3) = exactly 1 hit @
+     3,997,072,412 (= abs LBA 83,304,254, ~8 GB past userdata end —
+     unreachable through the driver; expected random count for 23.8 GB
+     ≈ 5.5) ⇒ the garbage is NOT any dumped flash content.
+  3. LOGIC: readverify was ON in #19/#22 with 0 mismatches ⇒ the card
+     served the garbage TWICE, CRC-clean, at the LBA the kernel asked.
+     With the pattern absent from the image AND from reachable dumped
+     regions, the candidates are: (a) the in-partition sparse zero-hole
+     (block 47 stale bytes) asked CORRECTLY = content class; (b) the
+     card serving wrong-but-stable bytes = eMMC-internal class;
+     (c) bytes manufactured above the driver (bounce/buf/VM) that
+     readverify cannot see (it compares bounce-to-bounce) = XNU class —
+     the user's bet. THE PRINTED LBA + CONTEXT DECIDES:
+     - LBA in the hole (abs 24,494,910..24,995,871) + plausible file
+       mapping (offline HFS catalog parse maps partition offset →
+       owning file extent) ⇒ content class (reflash WOULD fix);
+     - LBA in image-backed territory ⇒ bytes below-CMD17 diverge from
+       image there ⇒ eMMC-internal (readback-verify at LBA level next);
+     - LBA absurd for a Mach-O header read ⇒ HFS extent/blkno bug
+       (XNU) — fix the extent math;
+     - NO HITS but the wall still fires ⇒ corruption is above the
+       driver entirely ⇒ VM/zalloc/UGC hunt with 0094 (instrument the
+       buf/mapped-file layer instead).
+- 0093 CONTENT (xnu/patches/0093-merlin-msdc-garbage-tripwire.patch,
+  3,874 B, make-0093.py vs art-0091-buildtree; git apply clean; t7/t8
+  byte-identical): H1 sweet_ufs.c msdc_read_sector tripwire scan (after
+  readverify, before return; first 8 + every 256th hit prints
+  "MERLIN MSDC: PATTERN 4600b085 hit #%u lba %llu abs %llu off %u:" +
+  16 B hex); H2 non-static counters msdc_pt_hits/msdc_pt_first_lba/
+  msdc_pt_last_lba (0088 link lesson; generator asserts decl-before-use
+  + placement + identifier contract); H3 zalloc.c replay externs +
+  "MERLIN FORENSICS: pattern hits=%u first lba=%llu last lba=%llu".
+- BOOT #23 RUNBOOK (when pushed + CI green): build 0093 image with the
+  SAME full cmdline as #19-#22 (msdc_readverify=1 kept — its 2× read is
+  the on-media proof the tripwire relies on), fastboot boot + ONE photo
+  of the settled tail.  Decode: PATTERN hit lines + replay pattern line
+  (+ the usual reads/mismatch/spill/apdma lines).  Compare hit LBA vs
+  the hole range above; map partition byte offset via the offline HFS
+  catalog walk (research/ipsw-x/iosroot-v2.img is a raw HFS volume —
+  parseable in Python) to name the file dyld was reading.
+- GPT RESIZE: PAUSED per user (LATEST-63 procedure + blobs remain valid
+  and unchanged in research/gpt-restore/).
 
 ## Agent handoff / active work (2026-10-26 LATEST-63: USER CANCELLED the block-47 zero-fill repair ("wont help") and DIRECTED: restore userdata partition to ORIGINAL size (phone = 64GB). DONE OFFLINE: stock GPT geometry established from a PRE-SURGERY capture, restore blobs BUILT + VALIDATED — userdata will go 22,840 MiB → 49,652 MiB (48.489 GiB, stock [20,332,544..122,021,823] contiguous to otp), esp+win entries deleted, stock zero disk GUID restored. BLOCKED ON USER HANDS: TWRP + adb (pre-check hashes → dd 2 blobs → post-write hashes). The resize is METADATA-ONLY: no data bytes move; block-47 stale bytes and the dyld-garbage wall are NOT touched by this)
 
