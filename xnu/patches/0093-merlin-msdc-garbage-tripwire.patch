@@ -1,0 +1,102 @@
+xnu: MERLIN 0093 msdc garbage tripwire - the SpringBoard garbage (dyld "size (0x4600b085) not multiple of 4", identical in boots #19/#22) is nowhere in iosroot-v2.img and nowhere in any dumped partition except one random occurrence 8 GB past userdata end (unreachable: the strategy EINVALs beyond-partition blkno), while readverify proved the card serves it twice CRC-clean at the asked LBA; scan every sector read for the bytes 85 b0 00 46 and print the lba (partition-relative AND absolute), in-sector offset and 16 bytes of context (first 8 + every 256th), cache hit counters non-static and re-print them in the forensics replay tail; one boot then decides content-vs-read-path by where the LBA lands; diagnostics only
+
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1319,10 +1319,16 @@
+ static bool msdc_readverify;
+ uint32_t msdc_rv_mismatches;
+ uint64_t msdc_rv_last_lba;
+ unsigned long msdc_strategy_reads;
+ 
++/* 0093: SpringBoard garbage tripwire counters (see msdc_read_sector).
++ * NON-STATIC: zalloc.o's forensics replay externs them (0088 lesson). */
++uint32_t msdc_pt_hits;
++uint64_t msdc_pt_first_lba;
++uint64_t msdc_pt_last_lba;
++
+ static int
+ msdc_read_sector(uint64_t lba)
+ {
+ 	msdc_strategy_reads++;
+ 	int error = msdc_read_sector_once(lba);
+@@ -1346,10 +1352,49 @@
+ 			printf("MERLIN MSDC: READVERIFY MISMATCH lba %llu "
+ 			    "off %u: %02x vs %02x (total %u)\n",
+ 			    (unsigned long long)lba, i, first[i], second[i],
+ 			    msdc_rv_mismatches);
+ 			break;
++		}
++	}
++	/* 0093: tripwire for the deterministic SpringBoard garbage
++	 * (dyld "size (0x4600b085) not multiple of 4", boots #19/#22).
++	 * The bounce buffer holds exactly what the card served for THIS
++	 * lba; the hit line names it, so one boot answers
++	 * content-vs-read-path (see the patch header for the verdict
++	 * table). */
++	{
++		const uint8_t *s = (const void *)mo.dma;
++		uint32_t o;
++
++		for (o = 0; o + 4 <= MSDC_SECTOR; o++) {
++			if (s[o] != 0x85 || s[o + 1] != 0xb0 ||
++			    s[o + 2] != 0x00 || s[o + 3] != 0x46) {
++				continue;
++			}
++			uint32_t base = o >= 8 ? o - 8 : 0;
++			uint32_t n = 16;
++
++			if (base + n > MSDC_SECTOR) {
++				n = MSDC_SECTOR - base;
++			}
++			msdc_pt_hits++;
++			msdc_pt_last_lba = lba;
++			if (msdc_pt_hits == 1) {
++				msdc_pt_first_lba = lba;
++			}
++			if (msdc_pt_hits <= 8 || (msdc_pt_hits % 256) == 0) {
++				printf("MERLIN MSDC: PATTERN 4600b085 hit "
++				    "#%u lba %llu abs %llu off %u:",
++				    msdc_pt_hits, (unsigned long long)lba,
++				    (unsigned long long)(mo.first_block + lba),
++				    o);
++				for (uint32_t k = 0; k < n; k++) {
++					printf(" %02x", s[base + k]);
++				}
++				printf("\n");
++			}
+ 		}
+ 	}
+ 	return error;
+ }
+ 
+--- a/osfmk/kern/zalloc.c
++++ b/osfmk/kern/zalloc.c
+@@ -3078,10 +3078,13 @@
+ extern uint64_t msdc_spill_count;
+ extern uint32_t msdc_lk_ctrl, msdc_lk_cfg, msdc_lk_sa, msdc_lk_ca,
+     msdc_lk_len;
+ extern uint32_t msdc_apdma_map;
+ extern uint8_t msdc_apdma_count, msdc_apdma_stopped;
++extern uint32_t msdc_pt_hits;
++extern uint64_t msdc_pt_first_lba;
++extern uint64_t msdc_pt_last_lba;
+ 
+ struct merlin_uaf_note {
+ 	uint64_t    elem;
+ 	uint64_t    val;
+ 	uint32_t    off, size;
+@@ -3116,10 +3119,14 @@
+ 	printf("MERLIN FORENSICS: lk dma ctrl 0x%08x cfg 0x%08x sa 0x%08x "
+ 	    "ca 0x%08x len 0x%08x\n", msdc_lk_ctrl, msdc_lk_cfg, msdc_lk_sa,
+ 	    msdc_lk_ca, msdc_lk_len);
+ 	printf("MERLIN FORENSICS: apdma found=%u quiesced=%u map=0x%08x\n",
+ 	    msdc_apdma_count, msdc_apdma_stopped, msdc_apdma_map);
++	printf("MERLIN FORENSICS: pattern hits=%u first lba=%llu last "
++	    "lba=%llu\n", msdc_pt_hits,
++	    (unsigned long long)msdc_pt_first_lba,
++	    (unsigned long long)msdc_pt_last_lba);
+ 	unsigned int dumped = 0;
+ 
+ 	for (unsigned int i = 0; i < sizeof(merlin_uaf_notes) /
+ 	    sizeof(merlin_uaf_notes[0]); i++) {
+ 		struct merlin_uaf_note *n = &merlin_uaf_notes[i];
