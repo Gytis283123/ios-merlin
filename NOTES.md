@@ -1,5 +1,59 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-10-26 LATEST-63: USER CANCELLED the block-47 zero-fill repair ("wont help") and DIRECTED: restore userdata partition to ORIGINAL size (phone = 64GB). DONE OFFLINE: stock GPT geometry established from a PRE-SURGERY capture, restore blobs BUILT + VALIDATED — userdata will go 22,840 MiB → 49,652 MiB (48.489 GiB, stock [20,332,544..122,021,823] contiguous to otp), esp+win entries deleted, stock zero disk GUID restored. BLOCKED ON USER HANDS: TWRP + adb (pre-check hashes → dd 2 blobs → post-write hashes). The resize is METADATA-ONLY: no data bytes move; block-47 stale bytes and the dyld-garbage wall are NOT touched by this)
+
+- GPT FACTS (all source-pinned this session):
+  - Device NOW (Oct-3 mtkclient dumps D:\things\Merlin\Dumped\gpt.bin +
+    gpt_backup.bin; CRCs verified; primary==backup): userdata
+    [20,332,544..67,108,863] = 22,840 MiB (matches boot console print),
+    esp [67,108,864..75,497,471] 4 GiB, win [75,497,472..122,019,775]
+    22.18 GiB, disk GUID 12345678-1234-5678-1234-123456781234.
+  - STOCK ground truth: D:\things\Merlin\UEFI\Mu-Silicium\Build\
+    gpt-head-34.img = raw LBA0-33 pulled 2026-09-04 21:48 BEFORE the WOA
+    sgdisk repartition (Mu-Silicium memory/2026-09-04.md documents the
+    surgery verbatim: userdata 48.5 GiB → 22.3 GiB, esp 2→4 GiB, win
+    22.2 GiB; --disk-guid/--partition-guid set 2026-09-27 for BCD).
+    STOCK userdata = [20,332,544..122,021,823] = 101,689,280 sectors =
+    49,652 MiB = 48.489 GiB, CONTIGUOUS to otp @122,021,824 (the 1-MiB
+    gap before otp = WOA artifact); stock disk GUID = all zeros; no
+    esp/win. Cross-checked vs MIUI stock scatter (extracted from
+    D:\things\Merlin\merlin_global_images_V12.5.1.0.RJOMIXM_*.tgz →
+    research/gpt-restore/stock/): every partition matches (scatter
+    userdata size 0xC0000000 = build-time placeholder; otp/flashinfo
+    sizes match GPT exactly).
+  - eMMC = 122,142,720 LBAs (58.24 GiB); LastUsableLBA 122,142,686;
+    backup table @122,142,687, backup header @122,142,719.
+- PREPARED (research/gpt-restore/): make-gpt-restore.py (generator +
+  full validator: CRC checks on both captures, stock-vs-current diff =
+  ONLY userdata-end/esp/win/GUIDs, round-trip parse of blobs) →
+  gpt-primary-stock.img (17,408 B = stock LBA0-33 VERBATIM incl. real
+  stock LBA33) + gpt-backup-stock.img (16,896 B = stock 32-sector table
+  + RECONSTRUCTED backup header, spec-correct pent=122,142,687, fresh
+  CRCs — the stock backup header bytes were never dumped).
+- PROCEDURE (user hands, TWRP booted; adb binary reads MUST use
+  exec-out — adb shell corrupts binary via PTY):
+  1. push both blobs to /tmp.
+  2. PRE-CHECK (expect 50df2a1c4f3e3b26… and 19f85c839110e8a3…):
+     adb exec-out "dd if=/dev/block/mmcblk0 bs=512 skip=0 count=34" | sha256sum
+     adb exec-out "dd if=/dev/block/mmcblk0 bs=512 skip=122142687 count=33" | sha256sum
+     MISMATCH ⇒ STOP, pull both regions to files and send for decode
+     (device GPT changed since Oct 3 somewhere).
+  3. WRITE (destructive to GPT only; userdata start unchanged):
+     adb shell "dd if=/tmp/gpt-primary-stock.img of=/dev/block/mmcblk0 bs=512 seek=0 count=34 conv=fsync"
+     adb shell "dd if=/tmp/gpt-backup-stock.img of=/dev/block/mmcblk0 bs=512 seek=122142687 count=33 conv=fsync"
+  4. POST-WRITE (expect ccff6dca1a5df468… and e536f4d892419ab3…):
+     same two exec-out sha256 reads as step 2.
+- CONSEQUENCES / NOTES: userdata start (0x1364000) unchanged → HFS +
+  msdcroot0 boot flow identical; kernel will print ~49652 MiB. esp/win
+  DATA bytes stay on flash until overwritten (unallocated, harmless).
+  Block-47 stale bytes (fd118c19 region) live INSIDE the old [0..22,840
+  MiB) range and are NOT cleaned by this resize — the SpringBoard
+  dyld-garbage wall stands until those LBAs are rewritten (user plans
+  the fix path; mtkclient raw write would bypass the sparse zero-skip
+  class entirely). Disk GUID reverts to stock zeros — fine, the WOA
+  BCD is dead with esp/win gone. Current tree also carries parked
+  QEMU ramfb/fbcon-1x work (uncommitted, leave alone).
+
 ## Agent handoff / active work (2026-10-25 LATEST-62: BOOT #22 (0092) = **THE SCRIBBLER IS FIXED** — no element-modified-after-free panic, first boot since #10 without one; boot died at the PREDICTED next wall: SpringBoard launch, dyld reads garbage load-command bytes ("size (0x4600b085) not multiple of 4" — the SAME value as boot #19 = DETERMINISTIC).  DECISIVE 17.2 GB IMAGE SEARCH: pattern 85 b0 00 46 (LE of 0x4600b085) has ZERO occurrences anywhere in iosroot-v2.img (282s full scan) ⇒ runtime bytes are NOT any image bytes; with readverify stable (0 mismatches) the only remaining source = THE eMMC CONTENT ITSELF IS WRONG at scattered blocks ⇒ flash #3 ("47/47 OKAY, unverified") also silently failed to write at spots — same failure class as flashes #1/#2.  FIX = VERIFIED REFLASH of userdata from research\ipsw-x\iosroot-v2.img + mtkclient readback hash-compare + boot #23 (same 0092 image, no rebuild).  BLOCKED: user confirmation + hands (fastboot/BROM); flashing = destructive, confirmed per project rules)
 
 - BOOT #22 DECODE (image c5385b80): early "MERLIN: pmap excluding
