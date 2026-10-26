@@ -42,6 +42,37 @@
   msdc_pt_last_lba (0088 link lesson; generator asserts decl-before-use
   + placement + identifier contract); H3 zalloc.c replay externs +
   "MERLIN FORENSICS: pattern hits=%u first lba=%llu last lba=%llu".
+- 0093 CI (user approved push): ios-sweet 23b39fb PUSHED → dispatch 1
+  (run 40377227252) = runner LOST mid-build (job "cancelled", log blob
+  never uploaded, no steps recorded — infra flake, not the patch);
+  re-dispatch → run 40380050874 GREEN.  GOLDEN RULE FULLY VERIFIED:
+  SHA256SUMS ok; kernel 17,208,064 B (research/art-0093, +112 B vs
+  0092); 12/12 probes incl. "PATTERN 4600b085 hit" +
+  "pattern hits=%u first lba=%llu last" + full 0086→0092 chain; CI log
+  skips = known-good five ONLY (corrupt-0083 + dxb×4), 0092+0093
+  applied.  Buildtree artifact → research/art-0093-buildtree/buildtree.
+  tgz (not yet unpacked to src/ — do that before drafting 0094).
+- BOOT #23 IMAGE BUILT: research/merlin-boot/
+  shim-boot-merlin-msdc-0093-fv.img (16,989,139 B, sha
+  83a44425f26117d84ccf7349da2b8c60c92b1d392052808cc388cc08bcfc33d3,
+  payload 16,612,848 B, shim+dtb byte-identical to E1, cmdline
+  verbatim = #19-#22 incl. msdc_readverify=1).  READY: user
+  `fastboot boot` + ONE photo of the settled screen.
+- BOOT #23 DECODE TABLE: NEW "MERLIN MSDC: PATTERN 4600b085 hit #N
+  lba R abs A off O:" lines = the tripwire (R = partition-relative,
+  A = absolute LBA); tail "MERLIN FORENSICS: pattern hits=N first
+  lba=A last lba=B" = cached verdict even if early lines scrolled.
+  VERDICT BRANCHES: (a) hits>0 and A in [24,494,910..24,995,871]
+  (block-47 stale hole) → kernel asked there → map A's partition
+  offset to the owning HFS extent offline → content class (repair =
+  rewrite those LBAs); (b) hits>0 and A in image-backed territory →
+  card serves non-image bytes CRC-clean → eMMC-internal class →
+  LBA-level readback verify vs image; (c) hits>0 and A absurd for a
+  Mach-O header page → HFS extent/blkno bug (XNU fix); (d) hits=0 AND
+  the 0x4600b085 wall still fires → corruption is ABOVE the driver
+  (buf/VM/UGC) → 0094 instruments that layer (user's XNU-model branch).
+  No hit + boot goes deeper = the tripwire region wasn't touched —
+  read the tail for the usual reads/mismatch/spill lines.
 - BOOT #23 RUNBOOK (when pushed + CI green): build 0093 image with the
   SAME full cmdline as #19-#22 (msdc_readverify=1 kept — its 2× read is
   the on-media proof the tripwire relies on), fastboot boot + ONE photo
