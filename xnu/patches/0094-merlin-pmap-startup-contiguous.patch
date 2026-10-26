@@ -1,0 +1,97 @@
+xnu: MERLIN 0094 pmap_startup contiguous pages - pmap_next_page() exclusion
+
+(0092) skipped pages in the scribbler window during pmap_startup(), producing
+non-contiguous phys_page values that trip the vm_page_init() assertion
+phys_page == VM_PAGE_GET_PHYS_PAGE(mem) (vm_resident.c:2627) and panic the
+kernel immediately after the "MERLIN: pmap excluding PA ..." message.
+
+Fix: suspend the exclusion window during pmap_startup() so the vm_page_array is
+built with contiguous physical pages; re-enable it afterwards; and never
+release excluded pages to the free pool so the scribbler territory stays
+off-limits for normal allocation after boot.
+
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -2642,6 +2642,12 @@
+ static uint64_t merlin_excl_start = 0x9f800000ull;
+ static uint64_t merlin_excl_len = 0x280000ull;
+
++/* MERLIN (0094): when FALSE, pmap_next_page() skips the exclusion check so
++ * pmap_startup() can iterate physical pages contiguously for the vm_page_array.
++ * Re-enabled after pmap_startup() completes. */
++boolean_t merlin_excl_enabled = TRUE;
++
++
+ static uint64_t
+ merlin_hex(const char *s, const char **end)
+ {
+@@ -2704,7 +2710,7 @@
+ 	}
+
+ 	merlin_excl_init();
+-	if (first_avail != avail_end &&
++	if (merlin_excl_enabled && first_avail != avail_end &&
+ 	    (uint64_t)first_avail >= merlin_excl_start &&
+ 	    (uint64_t)first_avail < merlin_excl_start + merlin_excl_len) {
+ 		uint64_t excl_end = merlin_excl_start + merlin_excl_len;
+@@ -2732,6 +2738,15 @@
+ 	return FALSE;
+ }
+
++/* MERLIN (0094): return TRUE if ppnum falls inside the scribbler exclusion
++ * window. Used by pmap_startup() to keep excluded pages out of the free pool. */
++boolean_t
++merlin_excluded_ppnum_p(ppnum_t ppnum)
++{
++	uint64_t pa = (uint64_t)ppnum << PAGE_SHIFT;
++	return (pa >= merlin_excl_start && pa < merlin_excl_start + merlin_excl_len);
++}
++
+
+ /*
+  *	Initialize the pmap module.
+--- a/osfmk/vm/vm_resident.c
++++ b/osfmk/vm/vm_resident.c
+@@ -1535,6 +1535,13 @@
+
+ 	absolutetime_to_nanoseconds(mach_absolute_time(), &start_ns);
+ 	vm_pages_count = 0;
++
++/* MERLIN (0094): suspend the pmap exclusion window so pmap_next_page() yields
++ * contiguous physical pages during vm_page_array initialization. */
++extern boolean_t merlin_excl_enabled;
++extern boolean_t merlin_excluded_ppnum_p(ppnum_t);
++merlin_excl_enabled = FALSE;
++
+ 	for (i = 0; i < npages; i++) {
+ 		/* Did we run out of pages? */
+ 		if (!pmap_next_page(&phys_page)) {
+@@ -1571,7 +1578,8 @@
+ 			fillPage(phys_page, fillval);
+ 		}
+ 		if (vm_himemory_mode) {
+-			vm_page_release_startup(&vm_pages[i]);
++			if (!merlin_excluded_ppnum_p(phys_page))
++				vm_page_release_startup(&vm_pages[i]);
+ 		}
+ 	}
+ 	vm_page_pages = vm_pages_count; /* used to report to user space */
+@@ -1579,11 +1587,18 @@
+ 	if (!vm_himemory_mode) {
+ 		do {
+ 			if (!VMP_ERROR_GET(&vm_pages[--i])) {               /* skip retired pages */
++				if (merlin_excluded_ppnum_p(VM_PAGE_GET_PHYS_PAGE(&vm_pages[i])))
++					continue;
+ 				vm_page_release_startup(&vm_pages[i]);
+ 			}
+ 		} while (i != 0);
+ 	}
+
++
++	/* MERLIN (0094): re-enable the exclusion window now that the page array
++	 * is built with contiguous pages. */
++	merlin_excl_enabled = TRUE;
++
+ 	absolutetime_to_nanoseconds(mach_absolute_time(), &now_ns);
+ 	printf("pmap_startup() init/release time: %lld microsec\n", (now_ns - start_ns) / NSEC_PER_USEC);
+ 	printf("pmap_startup() delayed init/release of %d pages\n", vm_delayed_count);

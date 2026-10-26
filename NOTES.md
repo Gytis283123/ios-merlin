@@ -1,5 +1,22 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+
+
+## Agent handoff / active work (2026-10-26 LATEST-65: XNU KERNEL PANIC FIX 0094 DRAFTED — pmap_startup() contiguous pages)
+
+ROOT CAUSE (confirmed): patch 0092's pmap_next_page() exclusion skips pages in the scribbler window during pmap_startup(), producing non-contiguous phys_page values that trip VM_PAGE_SET_PHYS_PAGE assertion at vm_resident.c:2627 → immediate kernel panic after "MERLIN: pmap excluding PA ..." message.
+
+FIX (0094, written to xnu/patches/0094-merlin-pmap-startup-contiguous.patch):
+- pmap.c: add non-static boolean_t merlin_excl_enabled = TRUE; gate exclusion check with `if (merlin_excl_enabled && ...)`; add merlin_excluded_ppnum_p() helper
+- vm_resident.c: suspend exclusion (merlin_excl_enabled = FALSE) before vm_page_array init loop; skip excluded pages in both himemory and non-himemory release paths; re-enable (merlin_excl_enabled = TRUE) after release loop
+- Excluded pages are NEVER released to free pool → scribbler territory stays off-limits after boot
+
+STATUS: Patch drafted and verified against /tmp/xnu_test copy (0092+0094 applied). NOT YET built or boot-tested. Kernel compilation needs macOS; until repo is pushed, kernels come from ios-sweet's CI. Project is LOCAL ONLY — no push without user approval.
+
+NEXT: Build kernel with 0092+0093+0094 → boot (fastboot boot, never flash) → decode MSDC tripwire output from 0093 → if hits=0 and wall still fires, corruption is above driver (VM/zalloc/UGC)
+
+UNFINISHED: Kernel build not done; next boot not run; no photo; CI not run; push not done (LOCAL ONLY).
+
 ## Agent handoff / active work (2026-10-26 LATEST-64: USER REDIRECT — GPT resize ON HOLD ("nvm"), nothing was written to the device (no push, no dd — procedure remains prepared in LATEST-63); phone left in fastboot. NEW ACTIVE TRACK per user: THE XNU KERNEL — "the reflash WONT HELP", the 0x4600b085 wall is expected to be a KERNEL-side issue. 0093 = THE DISCRIMINATOR, BUILT + VALIDATED + COMMITTED BOTH REPOS (ios-merlin fc156de, ios-sweet 23b39fb NOT pushed): every CMD17 sector is scanned for the garbage bytes 85 b0 00 46; a hit prints the asked LBA (partition-relative AND absolute) + in-sector offset + 16 B context; counters land on the forensics replay tail too. NEXT: user push approval → CI → golden rule → boot #23 (0092+0093, same full cmdline) + ONE photo → the printed LBA picks the verdict branch below)
 
 - OFFLINE EVIDENCE GATHERED THIS SESSION (no boot needed):
