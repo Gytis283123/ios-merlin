@@ -1,0 +1,48 @@
+xnu: MERLIN 0095 scribbler window early-jump - the window is never part of the VM
+
+(0094) made pmap_startup() enumerate contiguously THROUGH the scribbler
+window and withhold those pages at release time.  That kernel boots to
+userspace in QEMU even with the window inside managed RAM, yet the phone
+dies before its first console line with byte-identical boot-image
+geometry to the working 0093 - the only phone-only factor left is the
+live SCP writer plus the window pages being part of the VM at all.
+0095 removes that class entirely: pmap_next_page() jumps first_avail
+past the window on the FIRST call, before anything depends on
+slot/ppnum alignment, so the packed vm_page array enumerates one
+contiguous run ABOVE the window; the mid-loop skip (and with it the
+vm_resident.c:2627 assert) can never fire, and the scribbler band is
+never touched, enumerated, or handed to the VM.  Cost: pages below the
+window (~30 MB of 1.17 GB) are never enumerated and stay unusable.
+merlin_excl_pa=START-LEN still overrides the window.
+
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -2710,7 +2710,28 @@
+ 	}
+
+ 	merlin_excl_init();
++	/* MERLIN (0095): jump first_avail past the scribbler window on the
++	 * first call, before the vm_page array depends on slot/ppnum
++	 * alignment: the packed array then enumerates one contiguous run
++	 * above the window, the mid-loop skip (and with it the
++	 * vm_resident.c:2627 assert) can never fire, and the scribbler
++	 * band is never part of the VM.  Pages below the window are
++	 * sacrificed (~30 MB). */
++	if ((uint64_t)first_avail < merlin_excl_start + merlin_excl_len) {
++		uint64_t skip = merlin_excl_start + merlin_excl_len -
++		    (uint64_t)first_avail;
++		uint64_t pages = skip >> PAGE_SHIFT;
++
++		printf("MERLIN: pmap early-jump past scribbler window to "
++		    "0x%llx (%llu pages never enumerated)\n",
++		    merlin_excl_start + merlin_excl_len, pages);
++		first_avail = merlin_excl_start + merlin_excl_len;
++		if (pages > (uint64_t)avail_page_count) {
++			pages = avail_page_count;
++		}
++		avail_page_count -= (unsigned int)pages;
++	}
+ 	if (merlin_excl_enabled && first_avail != avail_end &&
+ 	    (uint64_t)first_avail >= merlin_excl_start &&
+ 	    (uint64_t)first_avail < merlin_excl_start + merlin_excl_len) {
+ 		uint64_t excl_end = merlin_excl_start + merlin_excl_len;
