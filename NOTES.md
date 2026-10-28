@@ -55,12 +55,32 @@
   window / source base checked (the 270 px fix only adjusted
   `Video.v_baseAddr` by 270 px within the row).
 
+### 0098 image assembly is rehearsed and ready
+
+- `research/tmp-msdc-split/watch-run.py 40759087869 research\art-0098`
+  is running in the background (DNS/HTTP retry, 90 s poll, downloads
+  every live artifact).
+- `build-msdcroot0.py` gained `--src` (source shim+dtb image, default
+  unchanged).
+- Rehearsal: rebuilding the 0094 kernel with
+  `--src shim-boot-merlin-msdc-0094-window-be-fb270.img` and the flashed
+  cmdline gives **byte-identical** output, sha256
+  `902E5C023E207E189D2BD6EF036C7F981D95ED953774DB5B1EE4FB474489FCE8`
+  == the flashed image.  So only the XNU payload changes in the 0098
+  image; shim, ADT, fb270 and dtb are reused verbatim.
+- One command once the artifact lands:
+  `python research/tmp-msdc-split/make-0098-image.py
+  research/art-0098/kernel.development.sweet`
+  -> `research/merlin-boot/shim-boot-merlin-msdc-0098-window-be-fb270.img`
+  (same 17-arg cmdline incl. `merlin_excl_pa=0x9f900000-0x1e700000`).
+
 ### Next
 
-1. Let the retry loop run; `research/art-0098/` gets the kernel when a
-   run finally acquires a runner.
-2. Then build the `shim-boot-...-0098` image (same ADT + fb270) and
-   `fastboot flash boot` + `fastboot reboot` (never `fastboot boot`).
+1. Let the watcher run; `research/art-0098/` gets the kernel when the
+   run finally finishes.
+2. Then build the `shim-boot-...-0098-window-be-fb270` image with the
+   command above and `fastboot flash boot` + `fastboot reboot` (never
+   `fastboot boot`) once the phone is connected.
 3. Long-axis offset after 0098 boots; HFS+ stays 16 GiB (user decision).
 
 
