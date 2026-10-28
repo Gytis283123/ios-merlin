@@ -67,18 +67,24 @@
   paren balance and one definition per helper checked on the patched
   file.  NOT compiled (needs the macOS XNU build); first boot will be the
   real test.
-- Not yet done: commit/push 0098 to the `Gytis283123/ios-sweet` fork,
-  workflow_dispatch, fetch the artifact, build a `shim-boot-...-0098`
-  image (ADT/fb270 changes stay as in 0094), flash `boot` + reboot.
-  Remember: `fastboot flash boot` + `fastboot reboot` only, never
-  `fastboot boot`.
+- Push + dispatch: DONE at 2026-10-28 19:31Z - `177ec29` pushed to
+  `fork/msdc-0079`, `workflow_dispatch` accepted (HTTP 204), run
+  40755000295 queued (job 123051449834, sha 177ec29a).  This is the first
+  xnu run since 40722066010 that is not immediately cancelled; watch it
+  with `python tools/gh-ci.py runs Gytis283123/ios-sweet 3`.
+- Next after a green build: `python tools/fetch-kernel-artifact.py latest
+  Gytis283123/ios-sweet research\art-0098` (or `get` with the artifact
+  id), rebuild the `shim-boot-...-0098` image with the 0094 ADT/fb270
+  bits, `fastboot flash boot`, `fastboot reboot` (never
+  `fastboot boot`).  Expected attach line: `MERLIN MSDC: 128 sector(s)
+  per data command (CMD18/CMD25), bounce 64 KiB`.
 
-### Decisions waiting on the user
+### User decisions (2026-10-28, this session)
 
-1. Push 0098 to the ios-sweet fork now (build when CI returns), or hold?
-2. Grow the HFS+ volume from 16 GiB to fill the restored 48.489 GiB
-   userdata partition (host-side resize + multi-hour reflash)?
-3. Investigate the ~19% long-axis display offset, or leave it?
+1. Push 0098 now: yes (done, see above).
+2. HFS+ stays 16 GiB for now; grow it after the multi-block driver is
+   proven.
+3. The ~19% long-axis display offset: investigate after 0098 boots.
 
 
 ## Agent handoff / active work (2026-10-28 LATEST-71: USERDATA RESTORED TO THE STOCK 48.489 GiB LAYOUT VIA ADB/TWRP; DISPLAY-FIX IMAGE FLASHED, VISUAL CHECK PENDING)
