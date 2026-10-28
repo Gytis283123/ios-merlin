@@ -1,6 +1,38 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-28 LATEST-70: FIX CONFIRMED - THE kalloc.16384 PANIC IS GONE; BOOT REACHES THE APPLE LOGO WITH launchd/XPC DAEMONS RUNNING)
+
+### Observation (user report, this session; no photo yet)
+
+- After flashing `shim-boot-merlin-msdc-0094-window-be.img`
+  (sha256 `b51fcced...`, cmdline `merlin_excl_pa=0x9f900000-0x1e700000`)
+  the boot NO LONGER panics in `data.kalloc.16384`.
+- The console showed userspace daemons being spawned: the user read
+  `symptomsd` and `xpcproxy` names near `logd_helper`.
+- The console text then stopped scrolling because the display switched to
+  the APPLE LOGO - i.e. the kernel, launchd and the early userspace
+  bootstrap all ran on the 0094 kernel with the 487 MiB window withheld.
+- Conclusion (inference, supported by the above): the "element modified
+  after free" panics were the EMI-MPU false-UAF (SCP 0x9f900000-0x9fefffff
+  + modem 0xae000000-0xbdffffff); excluding both spans is the correct fix,
+  and ~708 MiB usable RAM is enough to get launchd up.
+- Still unknown: whether the logo is a stable destination or a hang, and
+  whether a progress bar appears.  Needs a photo/video + a wait of a few
+  minutes.
+
+### Next diagnostics if the logo is a hang
+
+- The text console is lost once userspace owns the framebuffer, so the next
+  step is behavioural first (does the progress bar advance / does the screen
+  change at all, do USB or backlight/DPM state change?).
+- If it is a hard hang: re-check what launchd waits on (data volume mount,
+  `/dev/console`, mach bootstrap), and consider a build that keeps kprintf
+  on the 0094 console path while still letting userspace draw (e.g. debug
+  print to the same framebuffer with a late handover), which needs CI.
+- 0097 (window default = the value proven here, plus the two window prints)
+  is still waiting for a CI runner; nothing needs to change in it.
+
 ## Agent handoff / active work (2026-10-28 LATEST-69: ROOT CAUSE = EMI-MPU-PROTECTED SCP+MODEM SPANS INSIDE XNU's RANGE; WINDOW WIDENED TO 0x9f900000-0xbe000000 AND FLASHED ON THE 0094 KERNEL)
 
 ### Root cause of the kalloc.16384 "modified after free" panics (observation + inference)
