@@ -1,6 +1,86 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-28 LATEST-72: 0098 MULTI-BLOCK MSDC PATCH WRITTEN AND VALIDATED (UNBUILT: CI RUNNER STILL DEAD); 270 PX DISPLAY FIX CONFIRMED, ~19% LONG-AXIS OFFSET PRE-DATES IT)
+
+### Display verdict (photo 2026-10-28 20:51, flashed `...-0094-window-be-fb270.img`)
+
+- Horizontal (phone short axis) centering is FIXED: the Apple logo sits at
+  ~48-51% across the screen's short axis (pre-fix: ~25%).  The 270 px
+  scanout offset (`0x7e605438` vs `0x7e605000`) was the whole cause of the
+  left-shifted/wrapped strip.
+- A remaining ~19% (~440 panel px) offset along the phone's LONG axis is
+  present in BOTH the pre-fix 20:04 photo and the post-fix 20:51 photo, so
+  it is not caused by fb270 and is still unexplained (content sits at
+  ~69% of the body length; logo bbox x 2509-2923, y 1399-1729 in the
+  90-degree-CW photo).  Not yet investigated; separate from the scanout
+  fix.
+
+### CI status (this is the current blocker)
+
+- `python tools/gh-ci.py runs Gytis283123/ios-sweet 10` (new helper, token
+  via `git credential fill`): the last three xnu runs 40722066010,
+  40583707775, 40579028774 are `completed/failure` with the single `build`
+  job `completed/cancelled` and no steps started - the macOS runner is
+  still unavailable.  Last success: 40400128627 (0094, 2026-10-26).
+- Consequence: 0095, 0096, 0097 and now 0098 are committed/written but
+  UNBUILT.  The flashed image is still the 0094 kernel + boot-arg window.
+
+### 0098 multi-block MSDC driver: written, tested, patch generated
+
+- Root cause of the slow boot: one CMD17 per 512-byte sector, ~521,735
+  sector reads (~267 MB) at ~0.7 MB/s = ~7 min of "iOS is preparing".
+- New driver: `msdc_transfer(lba, nblk, is_write)` issues CMD18 (read) /
+  CMD25 (write) for nblk > 1 with auto CMD12, `SDC_BLK_NUM = nblk`,
+  `MSDC_DMA_LEN = nblk*512`, up to 128 sectors (64 KiB bounce buffer);
+  nblk == 1 keeps CMD17/CMD24.  Strategy moves whole sectors in bulk and
+  keeps single-sector head/tail handling (RMW on writes);
+  `msdc_read()` also goes through the bulk path.  Boot arg
+  `msdc_blocks=N` (1..128, default 128) caps the chunk, printed at attach;
+  `msdc_blocks=1` is the old single-sector path, so A/B runs stay possible
+  with the 0093 `msdc_readverify` double-read and pattern tripwire intact.
+- Auto CMD12 handling: ACMD ready/timeout/CRC join the data wait, but the
+  wait only ends on XFER_COMPL or an error bit - ACMDRDY alone does not
+  (it can arrive before the data engine completes; an ACMD error
+  suppresses XFER_COMPL, see sd.c "Autocmd12 issued but error, data
+  transfer done INT won't set").  The 0085 DMA-canary scan starts at the
+  requested length (a full 64 KiB CMD18 legitimately fills the bounce
+  buffer).
+- Artifacts (local only until pushed):
+  - `D:\things\Merlin\ios-sweet\xnu\patches\0098-merlin-msdc-multiblock.patch`
+    - committed on branch `msdc-0079` as `177ec29` (NOT pushed);
+    - 20,366 B, 568 LF lines, 9 hunks, +240/-146,
+      sha256 `B22C846C08742376B0A02489A9C387684759C008722D44693E464D48703F868C`;
+    - `git apply --check` exit 0 on the post-0096 tree; applied result is
+      byte-identical to the script output after LF normalisation (local
+      git has core.autocrlf=true, so git apply rewrites to CRLF here; CI
+      is LF).
+  - Canonical driver `research/tmp-0096/xnu/bsd/dev/sweet_ufs.c`:
+    59,333 B, sha256 `3BA165E8231CF0B60E2CD2B62EDD8854A6DA590D0DBE679788A2C19A602BD6B2`.
+  - `research/tmp-msdc-split/apply-0098.py` (deterministic applier,
+    `--restore`/`--check`, base copy `sweet_ufs-0097base.c`),
+    `make-0098-patch.py` (regenerates the patch), `test-0098-plan.py`.
+- Validation: `test-0098-plan.py` models the old and new strategy loops:
+  270,500 plans (all alignments, lengths, block caps, reads and writes)
+  cover identical byte ranges, the new loop never issues more commands,
+  and an aligned 256 KiB read drops from 512 commands to 4.  Brace /
+  paren balance and one definition per helper checked on the patched
+  file.  NOT compiled (needs the macOS XNU build); first boot will be the
+  real test.
+- Not yet done: commit/push 0098 to the `Gytis283123/ios-sweet` fork,
+  workflow_dispatch, fetch the artifact, build a `shim-boot-...-0098`
+  image (ADT/fb270 changes stay as in 0094), flash `boot` + reboot.
+  Remember: `fastboot flash boot` + `fastboot reboot` only, never
+  `fastboot boot`.
+
+### Decisions waiting on the user
+
+1. Push 0098 to the ios-sweet fork now (build when CI returns), or hold?
+2. Grow the HFS+ volume from 16 GiB to fill the restored 48.489 GiB
+   userdata partition (host-side resize + multi-hour reflash)?
+3. Investigate the ~19% long-axis display offset, or leave it?
+
+
 ## Agent handoff / active work (2026-10-28 LATEST-71: USERDATA RESTORED TO THE STOCK 48.489 GiB LAYOUT VIA ADB/TWRP; DISPLAY-FIX IMAGE FLASHED, VISUAL CHECK PENDING)
 
 ### Request
