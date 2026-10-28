@@ -1,6 +1,69 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-28 LATEST-73: 0098 BUILD NEVER GOT A macOS RUNNER (GITHUB CAPACITY), AUTO-RETRY LOOP RUNNING; 21:53 VIDEO MEASURES THE LONG-AXIS DISPLAY SHIFT)
+
+### Build status: GitHub capacity, not the patch
+
+- Pushed `177ec29` and dispatched; run 40755000295 ended
+  `completed/failure` after exactly 15 min (`started_at` 19:31:05,
+  `completed_at` 19:46:06) with `runner_name` empty, 0 steps.
+- Job annotations fetched from the check-run API:
+  - "The job was not acquired by Runner of type hosted even after
+    multiple attempts"
+  - "Due to capacity constraints, jobs targeting macOS arm64 runners may
+    experience longer queue times."
+- The repo is public/not disabled, Actions is operational on
+  githubstatus.com -> hosted macOS arm64 (macos-14) capacity, not
+  billing and not the 0098 patch.  macos-14 is required because its
+  Xcode 15 iig matches xnu-8796 (see the workflow comment), so switching
+  labels is not free.
+- Auto-retry: `research/tmp-msdc-split/retry-build-0098.py` (background,
+  16 attempts / 6 h cap).  It waits for each dispatched run to finish
+  before dispatching again (the workflow's `cancel-in-progress`
+  concurrency group would otherwise kill a queued run), then downloads
+  every live artifact into `research/art-0098/`.  First retry:
+  run 40759087869 dispatched 21:58:38Z.  The single-run watcher
+  `watch-0098.py` is superseded.
+
+### Video 2026-10-28 21:53 (22.4 s, 720x480, 30 fps, current image)
+
+- The phone lies landscape in the frame (portrait top edge = frame right,
+  punch-hole top-right).  The boot UI is portrait-correct: the Apple logo
+  is upright relative to the phone and the progress bar is below it.
+- Measurements from frame 12 (screen long axis 633 px, short axis
+  335 px):
+  - logo centre 446 px from the phone's top = **70.5%** of the long axis
+    (an iPhone boot logo sits at ~45-50%);
+  - bar centre **80%** of the long axis (bar length ~60% of the width);
+  - logo centre **47.8%** across the short axis (centred).
+  -> confirms the still-photo finding: the 270 px fix fixed only the
+  short axis; the whole boot UI sits ~20-25% too far along the long
+  axis, and it does not move in the 22 s clip.
+- Bar static for the whole clip: still the old single-sector kernel
+  (0098 unbuilt), so this is the expected slow boot, not a new hang.
+- A small glyph sits near the top edge at ~43% across (rounded rectangle
+  with a circle, status-bar area).  Unidentified; not blocking.
+
+### Long-axis shift: hypothesis only (user asked to defer until 0098 boots)
+
+- The size (~20% of 2340 = ~470 rows) and the fact that the top of the
+  panel is black match the same class of bug as the 270 px column
+  offset: the panel/DSI window appears to start ~470 rows before the
+  framebuffer, so fb row 0 lands ~470 rows down the panel and the last
+  ~470 fb rows are cut off.  This is a hypothesis; it needs the DSI
+  window / source base checked (the 270 px fix only adjusted
+  `Video.v_baseAddr` by 270 px within the row).
+
+### Next
+
+1. Let the retry loop run; `research/art-0098/` gets the kernel when a
+   run finally acquires a runner.
+2. Then build the `shim-boot-...-0098` image (same ADT + fb270) and
+   `fastboot flash boot` + `fastboot reboot` (never `fastboot boot`).
+3. Long-axis offset after 0098 boots; HFS+ stays 16 GiB (user decision).
+
+
 ## Agent handoff / active work (2026-10-28 LATEST-72: 0098 MULTI-BLOCK MSDC PATCH WRITTEN AND VALIDATED (UNBUILT: CI RUNNER STILL DEAD); 270 PX DISPLAY FIX CONFIRMED, ~19% LONG-AXIS OFFSET PRE-DATES IT)
 
 ### Display verdict (photo 2026-10-28 20:51, flashed `...-0094-window-be-fb270.img`)
