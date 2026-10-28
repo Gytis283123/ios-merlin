@@ -1,6 +1,96 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-28 LATEST-69: ROOT CAUSE = EMI-MPU-PROTECTED SCP+MODEM SPANS INSIDE XNU's RANGE; WINDOW WIDENED TO 0x9f900000-0xbe000000 AND FLASHED ON THE 0094 KERNEL)
+
+### Root cause of the kalloc.16384 "modified after free" panics (observation + inference)
+
+- The LK log in `D:\things\Merlin\Dumped\expdb.bin` shows the EMI MPU
+  protecting, INSIDE the range XNU is given (`0x80000000-0xcd000000`,
+  `memSize 0x4d000000`):
+  - `emi_mpu_set_protection start:9f900000 end=9fefffff region=27`
+    (SCP; also `mblock_reserve ... 0x9f900000 size 0x600000 SCP-reserved`,
+    `[SCP] load_scp: dram_addr=0x9f900000`).
+  - `emi_mpu_set_protection start:ae000000 end=bdffffff region=30`
+    (modem; `mblock_reserve 0xae000000 size 0x10000000 md_mem_usage`)
+    plus subranges 0xae000000-0xaf6fffff, 0xafc00000-0xafc9ffff,
+    0xb0000000-0xb1a2ffff, 0xb1a30000-0xb24cffff, 0xb24e0000-0xb250ffff,
+    0xb2600000-0xb267ffff, 0xb5000000-0xb56fffff, 0xb5700000-0xb5dfffff.
+  - No MPU range lies in `0x80000000-0x9f900000` or `0xbe000000-0xcd000000`.
+- `zfree()` bzeroes the element (`zalloc.c:6244`) and
+  `zalloc_validate_element()` later demands it still be zero.  A page in a
+  protected span drops the AP's writes, so the zero check reads stale
+  bytes and fires "element modified after free".  That is a FALSE
+  use-after-free, not a live scribbler.
+- Decisive evidence (observation): boot 28's victim bytes
+  `06 d2 04 6c 00 6d 17 4e 0a b7 40 19 b3 51 00 65` occur VERBATIM in
+  `D:\things\Merlin\Dumped\md1img.bin` at offset `0x76cc0` (modem
+  firmware).  The AP could never have written that.  The earlier victims
+  (0x9f98a000/0x9f9ea000 boot 20, 0x9fa08000 boot 21, 0x9fae0000 boot 27)
+  are all inside the SCP span 0x9f900000-0x9fefffff.
+- Therefore the 8 MB window was too small on BOTH counts: it started at
+  0x9f800000 (below the span, harmless) and ended at 0xa0000000, while the
+  allocation frontier then ran into the modem span starting at 0xae000000.
+- Correction to LATEST-68: boot 28's `val` is `0x4e176d006c04d206` and the
+  ptr is `0xffffffe30002c000` (photo misreads in the previous entry).
+
+### What is flashed now
+
+- DEVICE NOW: `research/merlin-boot/shim-boot-merlin-msdc-0094-window-be.img`
+  - 16,989,139 B, sha256 `b51fcced86ffa8dcc8a4a3575b580c1fdca71179ad3e708b3e3a3ec4160cc169`.
+  - Built from the UNCHANGED 0094 kernel
+    (`research/art-0094/kernel.development.sweet`) with
+    `build-msdcroot0.py --cmdline "<0094 cmdline>
+    merlin_excl_pa=0x9f900000-0x1e700000"` (318 chars, BOOT_LINE_LENGTH
+    is 608 in both the shim and XNU arm64).
+  - DELTA vs `0094-w8.img` is exactly 6 bytes in `0x2f975-0x2f985`
+    (the start/len digits).  Kernel payload, shim slot and DTB are
+    byte-identical, so this boot isolates the window.
+- Flash: `fastboot flash boot ...` OKAY (16590 KB, 0.386 s) +
+  `fastboot reboot` OKAY.  No `fastboot boot` used.
+- Boot-arg parsing re-verified before flashing: `PE_parse_boot_argn()`
+  returns the full `START-LEN` string (no truncation at 608 or at the
+  318-char cmdline length).
+- Window semantics: withhold `0x9f900000-0xbe000000` = `0x1e700000` B =
+  487 MiB = 31,168 16 KiB pages.  Managed RAM becomes
+  `0x80000000-0x9f900000` (505 MiB) + `0xbe000000-0xcd000000` (240 MiB)
+  = 745 MiB, ~708 MiB after the kernel image.
+- 0094 has no window print of its own (that arrives with 0097), so the
+  verdict is behavioural: does the kalloc.16384 panic disappear.
+
+### Patch 0097 (rewritten in place, committed + pushed, still NOT built)
+
+- `D:\things\Merlin\ios-sweet\xnu\patches\0097-merlin-window-8m-drop-early-jump.patch`
+  default window is now `merlin_excl_start = 0x9f900000`,
+  `merlin_excl_len = 0x1e700000`; comment names both MPU spans, the
+  `md1img@0x76cc0` proof and the 708 MiB arithmetic; prints renamed to
+  "exclusion window" / "withheld N exclusion-window pages".
+- ios-sweet `msdc-0079`: commit `529c476` (new window/comments/prints) and
+  `82d71ba` (comment arithmetic fix), pushed to `fork`.
+- `git apply --check -p1` clean against the post-0096 tree; applied
+  result byte-identical to the edited tree.
+- CI still dead: last success 0094 (run 40400128627); later dispatches
+  failed with no runner.  Do not dispatch 0097 until a runner exists.
+
+### NEXT
+
+1. Photograph/video the current boot.  Success = boot gets past the
+   kalloc.16384 panic (the HFS signature wall or deeper is fine).
+2. If kalloc.16384 still panics, the `pa=` line is above the visible
+   screen area: take a short VIDEO of the boot so a frame showing the
+   first panic's `MERLIN FORENSICS: victim ... pa=0x...` can be extracted.
+   A victim inside `0xbe000000-0xcd000000` would mean a second garbage
+   source (that span contains LK's `atf-log 0xbfe00000`, `atf-ramdump
+   0xbff80000`, `tee-log 0xbfc00000` mblocks - not MPU-protected, but
+   ATF could still be writing its log there).
+3. If boot reaches HFS and 708 MiB turns out to be too little, revisit the
+   window (the modem span alone is 256 MiB of the 487 MiB withheld).
+4. When CI recovers: dispatch 0097 and pack with
+   `build-msdcroot0.py`; the build should print
+   `MERLIN: exclusion window PA 0x9f900000-0xbe000000 (31168 pages kept
+   out of the VM)` and `MERLIN: withheld 31168 exclusion-window pages from
+   the free pool`.
+
 ## Agent handoff / active work (2026-10-28 LATEST-68: SCRIBBLER WINDOW WIDENED TO 8 MB AND DEPLOYED ON THE EXISTING 0094 KERNEL VIA BOOT-ARG; 0097 PATCH COMMITTED + PUSHED)
 
 ### What was flashed (this session, no CI needed)
