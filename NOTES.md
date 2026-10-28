@@ -1,6 +1,274 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-28 LATEST-68: SCRIBBLER WINDOW WIDENED TO 8 MB AND DEPLOYED ON THE EXISTING 0094 KERNEL VIA BOOT-ARG; 0097 PATCH COMMITTED + PUSHED)
+
+### What was flashed (this session, no CI needed)
+
+- DEVICE NOW: `research/merlin-boot/shim-boot-merlin-msdc-0094-w8.img`
+  (sha256 `f4ded48b51c1c46aa586aa3e8877a1961a3dbfe712224e171becfd3bb8f53d29`,
+  16,989,139 B, same size as 0094-fv).  Built with
+  `python research/tmp-msdc-split/build-msdcroot0.py
+  research/art-0094/kernel.development.sweet --cmdline "<0094-fv cmdline>
+  merlin_excl_pa=0x9f800000-0x800000" --out research/merlin-boot/shim-boot-merlin-msdc-0094-w8.img`.
+- DELTA VERIFIED (observation): the new image differs from the flashed
+  0094-fv image in exactly 35 bytes, file range 0x2f961-0x2f983, and the
+  difference is the appended boot-arg string
+  ` merlin_excl_pa=0x9f800000-0x800000`.  The kernel payload, shim slot and
+  DTB are byte-identical to 0094-fv.  So this boot tests ONLY the window.
+- Flash: `fastboot flash boot ...` OKAY (16590 KB, 0.230 s) +
+  `fastboot reboot` OKAY.  No `fastboot boot` was used.
+- Boot-arg path recap: 0092 parses `merlin_excl_pa=START-LEN` into
+  `merlin_excl_start/len`; 0094 withholds matching pages at release
+  (`merlin_excluded_ppnum_p`).  No kernel rebuild was required.
+
+### Boot 27 panic (the photo this entry answers)
+
+- `panic(cpu 0 caller ...): [data.kalloc.16384]: element modified after
+  free (off:11904, val:0xeedffd7f3eefaae9, sz:16384, ptr:...)`.
+  Forensics: `victim data.kalloc.16384 size=16384 off=11904
+  elem=0xffffffe29b06d400 pa=0x9fae0000`, 2 islands
+  `[11904,11968)` and `[15424,15488)` (0x2e80 and 0x3c40), bytes
+  `e9 aa ef 3e 7f fd df ee ff 2f cd cf 3d fe fe fc` /
+  `cb dd 3e cf df 77 e8 92 ...`.
+  `msdc reads=521735/521561 readverify mismatches=0`, `apdma found=0
+  quiesced=0`, `pattern hits=0`.
+- `pa=0x9fae0000` is 0x600000 PAST the 0092 default window end
+  (0x9f800000+0x280000 = 0x9fa80000) - that is why 0094 still panicked.
+  All four victims ever photographed (0x9f98a000, 0x9f9ea000,
+  0x9fa08000, 0x9fae0000) sit inside 0x9f800000-0xa0000000.
+- The island byte patterns do NOT occur in scp1/scp2/scp.img,
+  sspm_1/2, spmfwr (5 patterns searched, zero hits): this boot's
+  corruption is not verbatim SCP firmware content.
+- `elem=0xffffffe29b06d400` is not a physmap address (physmap base +
+  offset would be ~11 GB) and its low bits are not 16 KB aligned, so it
+  lives in the kernel's dynamic VA; the printed `pa=` comes from
+  `kvtophys()` (page-table walk) and is the trustworthy field.  Do not
+  derive the PA from the elem digits.
+
+### Patch 0097 (committed, pushed, NOT built - CI runner still dead)
+
+- `D:\things\Merlin\ios-sweet\xnu\patches\0097-merlin-window-8m-drop-early-jump.patch`
+  (ios-sweet `msdc-0079` commit `e502844`, pushed to `fork`).
+  1. `merlin_excl_len` default `0x280000` -> `0x800000` (window
+     `0x9f800000-0xa0000000`, fallback reset updated too).
+  2. DROPS 0095's early jump.  `pmap_next_page()` jumped `first_avail`
+     to the window end on its first call, but `first_avail` is
+     `topOfKernelData` (~0x824e4000, from the shim's ADT/boot_args
+     placement), i.e. far BELOW the window: 0095 therefore discarded
+     ~476 MB (0x824e4000-0xa0000000), not the ~30 MB its comment claims.
+     A packed vm_page array is indexed by physical page, so a hole can
+     only be skipped by sacrificing everything below it; 0094's
+     suspend-during-enumeration + withhold-at-release is the only
+     affordable scheme.  0095's "window pages never enumerated" premise
+     also had no mechanism (withheld pages never enter a free queue).
+  3. Adds unconditional boot prints (photo-verifiable):
+     `MERLIN: scribbler window PA 0x9f800000-0xa0000000 (512 pages kept
+     out of the VM)` and `MERLIN: withheld N scribbler-window pages from
+     the free pool` (N counted in vm_resident.c during release).
+- Verified with `git apply --check -p1` against the post-0096 tree
+  (research/tmp-0096/xnu) - applies clean.
+- CI state re-checked this session: latest success is still 0094
+  (run 40400128627, 2026-10-26); runs 40579028774 / 40583707775 /
+  40722066010 all failed/cancelled with no runner steps.  Do NOT
+  dispatch 0097 until a runner appears.
+
+### NEXT
+
+1. Photograph/video the current boot.  Success = the boot gets past
+   boot 27's kalloc.16384 panic (HFS signature wall or deeper is fine);
+   with no rebuild there is no new "MERLIN: scribbler window" line, so
+   the verdict is behavioural.
+2. If the victim appears at/above 0xa0000000, the writer band is larger
+   than 8 MB: widen (e.g. `0x9c000000-0x4000000`) or switch to
+   top-of-RAM exclusion before spending a rebuild.
+3. When CI recovers: dispatch 0097, then `finish-0095.py`-style pack
+   (build-msdcroot0.py with the #19-#22 cmdline + the new prints).
+
+## Agent handoff / active work (2026-10-28 LATEST-67: NEW WALL = HFS REJECTS THE VOLUME HEADER ON THE FLASHED 0094 IMAGE; 0096 DIAGNOSTIC PUSHED BUT CI RUNNER STILL DEAD; BROM READ OF userdata+1024 IN FLIGHT)
+
+- DEVICE NOW: `boot` = `research/merlin-boot/shim-boot-merlin-msdc-0094-fv.img`
+  (sha256 9ff05aa5117208759fc2d018d9b36877718057efdf8b95a815ec7841d9ae0b30,
+  16,989,139 B).  Flashed twice this session with `fastboot flash boot`
+  (both writes OKAY) + `fastboot reboot`.  No `fastboot boot` was used.
+  Serial 204719200409, product merlin, unlocked, no A/B slot,
+  partition-size:boot 0x4000000, type raw.  Stock restore point:
+  `D:\things\Merlin\Dumped\boot.bin` (64 MiB, `ANDROID!` magic verified).
+- PHOTO DECODE (full text, rotated 90 deg), repeating every ~5 s:
+  `alias vnode 0xffffffe250770000 is in state of change (start)` /
+  `(end)` -> `hfs_ValidateHFSPlusVolumeHeader: unknown Volume Signature : 60`
+  -> `hfs_mount: hfs_mountfs returned error=22 for device unknown-dev`
+  -> `mount(17|18|19|20|21) failed` -> `BSD root: msdcroot0, major 1,
+  minor 0` -> `cannot mount root, errno = 19`.
+  `mount(N)` = IOKitBSDInit.cpp:695 IOFindBSDRoot retry counter (5 s
+  sleep each); `cannot mount root` = bsd_init.c:887 infinite loop;
+  errno 19 = ENODEV because HFS mountroot returns EINVAL (22).
+  The `hfs: mounted msdcroot0` line at the very top of the photo is a
+  leftover of an earlier boot (LK splash does not clear that area).
+- EXPECTED MEDIA BYTES: `research/ipsw-x/iosroot-v2.img`
+  (17,226,006,528 B, HFS+ volume 16.0 GiB, allocation block 4096) has
+  `48 58 00 05 80 00 21 00 48 2b 4c 78` at byte offset 1024.
+  Signature printed as %x = BE16 of the first 2 bytes, so "60" means
+  the kernel's buffer held `00 60`.  No 512-aligned `00 60` exists in
+  the image's first 256 MiB (first hit 0x51b1a00), so this is not a
+  shifted read inside the first 85 MB.
+- **NEW SOURCE FACT (observation): our kernel is NOT writing userdata.**
+  The baked cmdline in the flashed image (verified byte-exact at
+  file offset 0x2f88e) is `... rd=msdcroot0 ... -zc msdc_readverify=1`
+  with NO `rootrw=1`.  `bsd/vfs/vfs_subr.c:1260-1271` (SWEET-only hunk)
+  only clears MNT_RDONLY when `rootrw=1`, so the root mount is
+  read-only and HFS takes the `ronly` path: its journal replay blocks
+  (`hfs_vfsops.c` `if (!ronly)` around 1608/1707) never run and
+  `hfs_flushvolumeheader` is skipped.  Note `sweet_ufs.c:1674
+  DKIOCISWRITABLE` still returns 1 unconditionally (cosmetic here,
+  `ronly` comes from the mount flags), which is worth tightening later.
+- CONSEQUENCE: the wrong volume header is either (a) on the media, or
+  (b) produced between `merlin_msdc_strategy` and HFS.  NOTES LATEST-62
+  already proved the eMMC content differed from the image at scattered
+  blocks (deterministic `0x4600b085` dyld bytes with zero occurrences in
+  the image, readverify 0 mismatches), so (a) is the prime suspect.
+- 0096 DIAGNOSTIC (written this session, ready):
+  `D:\things\Merlin\ios-sweet\xnu\patches\0096-merlin-hfs-read-dump.patch`
+  (commit 5bd09f8 on branch msdc-0079, pushed to fork).  Three prints:
+  1. `bsd/dev/sweet_ufs.c` `merlin_msdc_init()` right after
+     `msdc_find_partition()` (lock held): `msdc_read(first_block+2,1,vh)`
+     -> `MERLIN MSDC: attach LBA2 raw .. | bounce ..`.
+  2. `merlin_msdc_strategy()` for `off == 1024`:
+     `MERLIN MSDC: strategy off 1024 bounce .. | vaddr ..`.
+  3. `bsd/sweet_hfs/core/hfs_vfsops.c` after `buf_meta_bread` and after
+     the bcopy into mdbp: `MERLIN HFS: mdb_offset/log_blksize/
+     phys_blksize/pri/count | raw .. | pri ..` then `MERLIN HFS: mdbp ..`.
+  Generated by `research/tmp-msdc-split/make-0096.py`; verified to apply
+  with `patch -p1` to pristine post-0093 files and to reproduce the
+  scratch tree byte-exactly (scratch tree `research/tmp-0096/xnu` =
+  art-0093 + 0094 + 0095 + 0096).
+- CI: run 40722066010 (branch msdc-0079, head 5bd09f8) dispatched
+  2026-10-28T16:02:51Z, still `queued` with zero steps after 20+ min -
+  same lost-macOS-runner infra flake as 40579028774 / 40583707775
+  (both cancelled with an empty log zip).  0095 AND 0096 are therefore
+  still unbuilt.  Helpers: `research/tmp-msdc-split/ci-status.py`,
+  `ci-inspect.py`, `watch-run.py`, `dispatch-0096.py`.
+- BROM READ (DONE, decisive): `mtkclient` DA read of `brom/gpt_now.bin`
+  (current GPT) and `brom/userdata_start.bin` (1 MiB at `0x26c800000`).
+  RESULT: **userdata holds a fresh Android ext4 `/data`, the HFS image is
+  not on the partition at all.**  Evidence:
+  - byte 0x400 = `00 60 16 00` = ext4 `s_inodes_count` 1,466,368
+    (printed as HFS signature "60" = `00 60`),
+  - ext4 magic `0xEF53` at 0x438,
+  - `s_volume_name` = "data", `s_last_mounted` = "/data",
+    `s_lastcheck` = 2026-10-27T19:56:37Z, `s_wtime` = 2026-10-27T21:19:29Z,
+    `s_mnt_count` = 5, `s_state` = 0x1 (clean), blocksize 4096,
+    5,847,040 blocks = 22.31 GiB, inode size 256,
+    uuid `caf317e263a64884bcd4bb957ff5936f`.
+  - `48 58` occurs ZERO times in the whole 1 MiB dump.
+  GPT readback confirms `userdata first=0x1364000` (0x26c800000) size
+  22.30 GiB - the GPT did not move; the partition content changed.
+  So an Android boot on **2026-10-27 ~21:19 UTC** created a new ext4
+  /data and wiped the iOS root image (the phone must have booted Android
+  or an Android recovery then; the earlier sparse-flash "scattered bad
+  blocks" theory is superseded - see LATEST-62 note for the 0x4600b085
+  history, which is still real but not today's wall).
+  Parse helper: `research/tmp-msdc-split/ext4peek.py`.
+- FIX IN PROGRESS (user chose mtkclient over fastboot): raw DA write of
+  `research/ipsw-x/iosroot-v2.img` (17,226,006,528 B = 0x402c00000) to
+  flash offset 0x26c800000 via
+  `python mtk.py wo 26c800000 402c00000 <image>`.
+  mtkclient `writeflash` streams every byte sequentially with a per-
+  packet checksum and a DA status check - no sparse/don't-care skipping,
+  so it cannot reproduce the LK sparse-writer failure mode.  Observed
+  speed ~4.5 MB/s -> ~55 min.  Post-write verify is staged:
+  `research/tmp-msdc-split/verify-write.py gen|check` reads back the
+  first 1 MiB, sixteen 64 KiB windows (one per GiB) and the alternate
+  HFS+ header at image offset 0x3FFFFF000 via
+  `brom/verify.txt` + `brom/verify/*.bin`, then diffs each against the
+  image.
+  ATTEMPT 1 FAILED at 0x1600000 (~22 MiB written) with
+  `DeviceClass - USBError(5, 'Input/Output Error')`.  The first run had
+  a concurrent 17 GB sha256 read of the same image, but ATTEMPT 2 with
+  a completely quiet disk failed at the **identical offset** and the
+  identical error -> deterministic DA/USB-endpoint failure on this host,
+  not disk contention, not the image.  (The DA length field is fine:
+  0x402c00000 < 2^32, and `writeflash` streams with per-packet
+  checksums + a final DA status.)  A drop mid-write only affects
+  userdata (raw sequential write, GPT untouched) so retries are safe.
+  mtkclient `wo` cannot resume from a file offset (da_wo never passes
+  `offset` to writeflash), and chunking would need 17 GB of sliced
+  temp files, so the mtkclient route was abandoned after attempt 2.
+  FALLBACK NOW RUNNING: `fastboot flash userdata
+  research\ipsw-x\iosroot-v2.img` (historically 12-19 MB/s, ~20 min,
+  flash #3 reported 47/47 OKAY), followed by the same BROM sample
+  verify.  Notes: the phone must be put back into fastboot with
+  Vol-Down + Power; the `boot` partition still holds 0094 so a normal
+  power-on boots the iOS kernel and a BROM read-back needs another
+  power-cycle.
+- **CRITICAL ENVIRONMENT RULE discovered:** Android must never boot on
+  this phone while the iOS image lives in userdata - Android formats
+  /data as ext4 and destroys it (that is what happened on Oct 27).  Any
+  Android/MIUI/TWRP boot that mounts or formats /data wipes the iOS
+  root.  This also explains why an old image can look "silently
+  corrupted" between sessions.
+- CI: run 40722066010 (branch msdc-0079, head 5bd09f8) dispatched
+  2026-10-28T16:02:51Z, still `queued` with zero steps after 20+ min -
+  same lost-macOS-runner infra flake as 40579028774 / 40583707775
+  (both cancelled with an empty log zip).  0095 AND 0096 are therefore
+  still unbuilt.  Helpers: `research/tmp-msdc-split/ci-status.py`,
+  `ci-inspect.py`, `watch-run.py`, `dispatch-0096.py`.  0096 is no
+  longer needed for this wall (the media answer is in) but stays queued
+  as the read-path discriminator if the verified write still fails to
+  mount.
+
+- STILL OPEN: whether the phone actually started the freshly flashed
+  image (it was back in fastboot afterwards - user-driven power+vol
+  down is the likely explanation, but a bootloader fall-back to
+  fastboot is not excluded; the earlier photo proves 0094 does boot).
+- Do NOT touch the uncommitted QEMU ramfb/fbcon-1x work (`shim/*`,
+  `tools/fbcon-1x*`).
+
+
+## Agent handoff / active work (2026-10-27 LATEST-66: VBMETA WAS THE SILENT-BOOTLOOP ROOT CAUSE — user discovery ("IT WAS THE FREAKING VBMETA"); image track UNPAUSED; 0095 pushed + CI in flight; 0094-kernel-bytes trigger theory VOID, re-test pending)
+
+- THE DISCOVERY (user, 2026-10-27): the silent bootloops were **vbmeta
+  (Android verified boot), not the kernel**.  This confirms the
+  BOOT-#24-ROUND-3 deduction "the device state changed, not the images"
+  (all sha-frozen images incl. last-known-good 0093 started bootlooping
+  silently) — the device change was vbmeta verification state turning
+  hostile to the downloaded-image path.  Silent death (no panic screen,
+  splash repaint each cycle) is exactly a below-kernel verified-boot
+  rejection, matching the observation.
+- CONSEQUENCES:
+  1. BOOT #24 verdicts "0094 kernel bytes are the trigger" (round 2)
+     and the whole geometry line are VOID — 0094's silent bootloop was
+     very likely vbmeta too (its text boot never happened in a
+     vbmeta-clean window).  0094's QEMU logic validation stands; the
+     phone verdict is simply unknown.
+  2. 0093's Oct-26 text+2627 panic decode REMAINS VALID (pre-vbmeta
+     trouble window) — the 2627 root cause and the 0093 tripwire are
+     still untested on device.
+  3. Photo boot #24 decode table (LATEST-65) stays usable once images
+     boot again.
+- 0095 STATUS (this session): ios-sweet 048d42f PUSHED to fork branch
+  msdc-0079 (CI runs via workflow_dispatch on that branch — fork/main
+  is stale at 0082-era, origin = upstream dipa-studio, do not touch).
+  CI run 40579028774 = FAILURE with an EMPTY log zip (22-byte PK stub,
+  zero steps) = the known lost-runner infra flake (0093 dispatch-1
+  precedent); re-dispatched → run 40581438531 (poller
+  research/tmp-msdc-split/poll-ci.sh with 25-min stuck-queued
+  re-dispatch guard).  POST-CI PIPELINE READY:
+  research/tmp-msdc-split/finish-0095.py (download xnu-kernel artifact
+  → research/art-0095/, SHA256SUMS check, 15-probe binary chain
+  0086→0095 incl. "MERLIN: pmap early-jump past scribbler window to",
+  pack via build-msdcroot0.py with the #19-#22 cmdline verbatim
+  [extracted byte-exact from the 0094-fv payload] →
+  research/merlin-boot/shim-boot-merlin-msdc-0095-fv.img).
+- NEXT: CI green → finish-0095.py → CI-log patch-apply audit (skips =
+  known-good five ONLY) → user `fastboot boot` the 0095 image + ONE
+  photo/video.  EXPECT (0095 fingerprint): "MERLIN: pmap early-jump
+  past scribbler window to 0x… (N pages never enumerated)", NO
+  "MERLIN: pmap excluding PA" line, passes vm_resident.c:2627 →
+  deeper boot than #22.  Optional A/B while at it: re-boot the frozen
+  0094-fv image under the fixed vbmeta to close the "0094 bytes" file.
+- Parked uncommitted QEMU ramfb/fbcon-1x work stays untouched
+  (LATEST-63 note unchanged).
 
 ## Agent handoff / active work (2026-10-26 LATEST-65: XNU KERNEL PANIC FIX 0094 DRAFTED — pmap_startup() contiguous pages)
 
@@ -31,6 +299,128 @@ UNFINISHED: Kernel build not done; next boot not run; no photo; CI not run; push
   verbatim #19-#22 incl. msdc_readverify=1).  NOTE: 0094 adds no new
   print strings — its fingerprint is behavioral (pmap_startup gets
   past where it previously tripped; the exclusion line still prints).
+  PHOTO DECODE CONFIRMED (Image/2026-10-26-21-02-03-472.jpg = the
+  0093-image boot, taken 21:02 — between the 0093 image build 20:58
+  and the 0094 image build 23:08): exclusion line fired, then panic
+  vm_resident.c:2627 caller 0xfffffe0007aa6d78 immediately after;
+  forensics ALL ZERO (msdc reads=0, lk dma zeros, apdma zeros,
+  pattern hits=0) = died before any storage init, 0093 tripwire never
+  ran — the 2627/exclusion root cause is photo-confirmed; re-decoded
+  2026-10-27 session (workflow dwfrun-6e5b9bc2).  Boot image re-checked
+  sha 9ff05aa511720875… == recorded; 0094 patch re-verified git apply
+  --check CLEAN on research/art-0093-buildtree/xnu.
+- BOOT #24 (0094 image, user report 2026-10-27): BOOTLOOPS — no photo
+  yet.  OFFLINE CODE FACTS (art-0093-buildtree, this session):
+  (a) arm64 has NO delayed-init path — the delay_above_pnum block is
+  x86_64-only (vm_resident.c:1494-1519), stays PPNUM_MAX on arm64 ⇒
+  vm_get_delayed_page never runs ⇒ 0094's two release-path guards
+  cover everything on this device.
+  (b) FINGERPRINT CORRECTION: in a 0094 boot the "MERLIN: pmap
+  excluding PA" line must NOT print at all — its only printer is
+  0092's skip inside pmap_next_page, gated OFF while the main
+  vm_page_array loop crosses the window; after the loop first_avail
+  is past the window so the skip can never fire again (LATEST-65's
+  "the exclusion line still prints" was wrong).
+  BOOT #24 DECODE TABLE (one mid-cycle photo, or short video, + cycle
+  duration): exclusion line + 2627 panic = 0094 NOT in effect; deep
+  console (root mount, launchd, SpringBoard, dyld 0x4600b085
+  "malformed load command") then panic = 0094 SUCCESS and the loop is
+  the KNOWN wall recurring each cycle (boot #14 precedent: panic →
+  auto-reboot → re-enters the RAM image); kalloc/zalloc UAF panic =
+  scribbler back (unlikely — release paths guarded); little/no text +
+  fast cycle = early crash above the console (0094 regression).
+  ESCAPE: hold Power ~15 s through one reset, then Power+Vol- →
+  fastboot.
+- BOOT #24 OFFLINE ELIMINATION (2026-10-27, this session): user reports
+  NO TEXT, only the Redmi splash, cycling.  RULED OUT so far:
+  (1) KERNEL BINARY SOUND — art-0094 kernel ran the full QEMU harness
+  45 s clean (AMFI/sandbox/HFS/DLIL + init PID 1 alive, no panic);
+  (2) PACK BYTE-PERFECT — embedded payload in
+  shim-boot-merlin-msdc-0094-fv.img == regenerated mkpayload output
+  byte-for-byte (0093 image likewise), dtb+shim+cmdline identical,
+  header differs only in the 2-byte size field;
+  (3) LAYOUT BENIGN — payload headers diffed: entry_va, kernel_end,
+  phys_base 0x80000000, mem_size, all seg addresses IDENTICAL; only
+  __LINKEDIT +88 B (new symbol names) and adt_off +96 B; shim places
+  ADT at kernel_end (unchanged) and is size-parametric (boots 0088→0093
+  payloads all differed in size);
+  (4) FILL THEORY DEAD — pmap_startup's fillPage is `fill`-gated,
+  always-on fill is `#if DEBUG` only, this is a DEVELOPMENT kernel and
+  no fill= boot-arg ⇒ 0094 never WRITES the scribbler window pages
+  (vm_page_init 3rd arg is lopage, not zerofill); arm64 delayed-init
+  path nonexistent (x86-only).  Shim choose_base probes identical
+  addresses for both payloads (entry/kernel_end offsets unchanged).
+  ⇒ 0093/0094 are execution-identical until the 0094 patch's own
+  post-console code ⇒ either the crash IS post-console with a brief
+  text flash the user missed (LK repaints the splash each cycle), or a
+  one-off bad USB download (the bootloop re-runs the SAME RAM copy —
+  no re-download).  NEXT (user, ~3 min): (a) re-run fastboot boot 0094
+  (fresh download); (b) if still splash-only, FILM one full cycle
+  (video into Image\) + note cycle length; (c) optionally confirm 0093
+  still shows text.  Frame decode decides: text flash → targeted 0095;
+  truly nothing → shim/LK-level hunt.
+- BOOT #24 FIX CANDIDATE (2026-10-27, this session): QEMU device-payload
+  runs (qemu-merlin.py --fb-base) showed BOTH 0093/0094 device payloads
+  die early in QEMU on a QEMU-env MMIO external abort (FAR 0xb3c8008,
+  ESR 0x96000010 = sync external abort — environment artifact, kills
+  both before console; NOT the phone's death).  QEMU-ADT runs boot the
+  0094 KERNEL fully to userspace (twice — incl. once with the fix
+  below applied), so the kernel bytes are sound; the phone trigger was
+  narrowed to the ONLY untested delta = the +96 B payload geometry
+  shift (adt_off 0xfd5750, seg9 +0x58).  FIX CANDIDATE BUILT:
+  research/merlin-boot/shim-boot-merlin-msdc-0094-geo.img
+  (16,989,139 B, sha a31d8faef842ebdcaf37d0ca0028e53621d996d149b907a5
+  82d0e7aa4d8866c6) = 0093 image layout EXACTLY (payload size,
+  adt_off, kernel_end, seg table, ADT bytes all == 0093) with 0094's
+  kernel bytes; __LINKEDIT truncated 0x58 B (symbol-string tail, never
+  read at runtime — QEMU full-boot verified with the same truncation,
+  run qgeo2).  Boot 0094-geo EXPECT: console text returns; NO
+  "MERLIN: pmap excluding PA" line (0094 fingerprint: gate suspends
+  the skip during the vm_page_array loop); passes 2627; deeper than
+  boot #22.  If it STILL bootloops silently: geometry exonerated ⇒
+  0095 = CI bisect of the 0094 patch (gate-only vs release-guards-only).
+- BOOT #24 ROUND 2 (2026-10-27, this session): 0094-geo image (0093
+  layout, 0094 kernel, __LINKEDIT -0x58) ALSO bootloops silently per
+  user ⇒ GEOMETRY EXONERATED; the trigger is the 0094 kernel's own
+  bytes.  NEW QEMU CAPABILITY: mkadt.py --phone --qemu-gic --phys-base
+  0x80000000 gives a device-band ADT (window INSIDE managed DRAM) —
+  with it, the 0094 window path (gate suspension + contiguous
+  enumeration + withheld pages) RUNS IN QEMU AND BOOTS TO USERSPACE
+  CLEAN (run qdevwin) ⇒ the 0094 LOGIC is innocent; the phone-only
+  factor = the live SCP writer + the window pages being part of the VM
+  at all.  (Device-payload QEMU runs are a dead end: QEMU's missing
+  MSDC/GIC MMIO external-aborts kill BOTH kernels pre-console — FAR
+  0xb3c8008, ESR 0x96000010, identical for 0093/0094 = env artifact.)
+  FIX = 0095 (ios-merlin 98c6c8a, ios-sweet 048d42f, NOT pushed):
+  pmap_next_page() jumps first_avail past the window on the FIRST call
+  (pre-console steal phase, before slot/ppnum alignment matters) ⇒ the
+  packed vm_page array enumerates ONE CONTIGUOUS RUN ABOVE the window;
+  the mid-loop skip cannot fire (2627 assert impossible); the window is
+  never enumerated/touched/handed out; ~30 MB below the window
+  sacrificed; merlin_excl_pa override kept.  Patch = ONE pmap.c hunk,
+  applies clean on a post-0094 scratch tree (art-0093 + 0094 + 0095
+  verified); probe string "MERLIN: pmap early-jump past scribbler
+- BOOT #24 ROUND 3 (2026-10-27, user report): USER TESTED EVERY BOOT
+  IMAGE — ALL NOW BOOTLOOP SILENTLY, including 0093 (last known-good,
+  text+2627 panic on Oct 26).  Images are byte-frozen + sha-verified ⇒
+  THE DEVICE STATE CHANGED, NOT THE IMAGES — user's call: firmware/
+  hardware issue at the phone level.  IMAGE TRACK (incl. 0095 push/CI)
+  PAUSED until the phone boots again.  SILENT DEATH (no panic screen)
+  is itself consistent with a below-kernel reset (watchdog/SCP/power),
+  not a kernel panic — every earlier kernel death left a visible
+  halted panic screen.  RECOVERY LADDER (user hands): (1) full cold
+  power-off (hold Power 20-30 s), wait/cool 5 min, wall-charge 30 min
+  (battery-low is a classic loop cause after hours of bootlooping);
+  (2) re-enter fastboot, boot the 0093 image (last known-good);
+  (3) if still looping: FASTBOOT-IDLE STABILITY TEST — stay in
+  fastboot mode 10 min untouched: resets even there = preloader/LK/HW
+  level (user's theory in the strong form; next = mtkclient BROM
+  session, bypassing LK entirely); fastboot stable = the SoC/DRAM/LK
+  are fine and only the downloaded-image execution path dies (TZ/XBL
+  handoff or watchdog — re-test image boots cold);
+  (4) try the oldest proven image (E1-era) to separate "any image"
+  from "these images".  0095 stays committed both repos (98c6c8a /
+  048d42f, not pushed) — resume CI when the phone boots again.
   READY: user `fastboot boot` + ONE photo.  Decode = the LATEST-64
   0093 table unchanged (PATTERN hit LBA decides content-vs-eMMC-vs-
   HFS-extent; hits=0 + wall fires = above-driver hunt).  A boot past
