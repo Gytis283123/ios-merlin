@@ -1,6 +1,94 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-28 LATEST-71: USERDATA RESTORED TO THE STOCK 48.489 GiB LAYOUT VIA ADB/TWRP; DISPLAY-FIX IMAGE FLASHED, VISUAL CHECK PENDING)
+
+### Request
+
+- User: "modify the partition parameters for userdata to have 64gb not 32"
+  and, when asked, "Do the Storage parameters NOW with adb (its booted to
+  recovery.)"  The phone was in TWRP with adb (`204719200409 recovery
+  product:twrp_merlin`).
+
+### Observation: what the device GPT actually held
+
+- Read via `adb exec-out dd` (`research/gpt-restore/adb-gpt-restore.py
+  dump`): EXACTLY the 2026-09-04 WOA surgery layout, 50 entries:
+  - userdata [20,332,544..67,108,863] = 46,776,320 sec = 22.305 GiB;
+  - esp [67,108,864..75,497,471] 4.000 GiB - starts at exactly 32 GiB
+    (LBA 67,108,864 x 512 = 34,359,738,368 B); this is the only "32 GB"
+    figure in the layout;
+  - win [75,497,472..122,019,775] 22.184 GiB.
+- Primary-region hash matched the LATEST-63 expectation exactly
+  (`50df2a1c4f3e3b26...`, dd skip=0 count=34).
+- NOTE: eMMC user area is 122,142,720 LBAs = 58.24 GiB, so a literal
+  64 GiB userdata is impossible; stock (max) is 48.489 GiB = 52.06 GB,
+  i.e. the advertised "64 GB" phone layout.
+- The recorded PRE-check hash for the backup region (19f85c83...) is
+  WRONG and was never the device state: the Oct-3 `gpt_backup.bin` dump
+  carries a COPY OF THE PRIMARY HEADER (my_lba=1, alt=122142719,
+  entries_lba=2).  The real on-device backup header is spec-correct
+  (my_lba=122142719, alt=1, entries_lba=122142687) and its table is
+  byte-identical to the primary table.  Replaced that hash check with
+  the real invariant (backup table == primary table).
+
+### Artifact fix before writing
+
+- `research/gpt-restore/make-gpt-restore.py`: the rebuilt backup header
+  now patches my_lba=122142719 and alternate_lba=1 (previously inherited
+  the primary's values) and the round-trip validation checks both.
+- Regenerated blobs:
+  - `gpt-primary-stock.img` 17,408 B sha256
+    `ccff6dca1a5df468791511d12c192728e8240eea2e632794c23e65348963b2be`
+    (unchanged);
+  - `gpt-backup-stock.img` 16,896 B sha256
+    `f0d4eec8f759cc9d92066715ca3c7915eef149a2207d3747bd9e558ba30d8e82`
+    (NEW; the old e536f4d8... header was spec-invalid).
+
+### Write + verification (observation)
+
+- Tool: `research/gpt-restore/adb-gpt-restore.py write` (pushes both
+  blobs to /tmp, dd, read-back, hash + structural verify).
+- First attempt wrote the primary region, then the backup dd failed:
+  toybox `dd` ftruncates the output device (`dd: ftruncate: Invalid
+  argument`).  Read-back showed primary = stock, backup = still old;
+  no other change.  Re-ran the backup dd with `conv=notrunc,fsync`
+  -> 33+0 records out, rc=0.
+- POST-WRITE VERIFY (device read-back, both hashes match the blobs):
+  - dd skip=0 count=34          `ccff6dca1a5df468...` OK;
+  - dd skip=122142687 count=33  `f0d4eec8f759cc9d...` OK.
+- New geometry (both primary and backup headers, CRCs ok, disk GUID
+  zeros, 48 entries): userdata [20,332,544..122,021,823] =
+  101,689,280 sec = 49,652 MiB = 48.489 GiB, contiguous to otp;
+  esp/win entries gone; otp/flashinfo untouched.
+- Data bytes untouched (metadata-only).  userdata still starts with a
+  valid HFSX volume header at LBA 20,332,544+1024 ("HX" + "HFSJ",
+  journaled; no ext4 magic at offset 1080) -> the iOS image is intact.
+  TWRP's mount table labels `mmcblk0p45` as ext4 /cache; that label is
+  bogus for an HFSX volume.
+- `sync; reboot` issued (adb gone from the bus after reboot).
+
+### Display fix (this session, earlier)
+
+- Flashed `research/merlin-boot/shim-boot-merlin-msdc-0094-window-be-fb270.img`
+  (16,989,139 B, sha256 `902e5c023e207e189d2bd6ef036c7f981d95ed953774db5b1ee4fb474489fce8`);
+  `fastboot flash boot` OKAY, `fastboot reboot` OKAY.  Visual verdict
+  (logo/bar centered, wrapped strip gone) still PENDING - the user
+  booted TWRP before reporting.  Rollback image:
+  `...-window-be.img` sha256 `b51fcced...`.
+
+### NEXT
+
+1. Confirm the Apple logo + progress bar are centered on the new boot;
+   if not, roll back to the `-window-be.img`.
+2. The HFS+ root volume itself is still 16 GiB inside the now-48.489
+   GiB partition, so iOS will still report ~16 GB capacity.  Growing it
+   needs a host-side HFS+ resize of `research/ipsw-x/iosroot-v2.img`
+   plus a full ~48 GiB userdata reflash (hours, previous flashes had
+   silent holes) - decide with the user before starting.
+3. The old esp/win DATA now sits inside userdata past the 16 GiB
+   volume end; it is unallocated from iOS's point of view and harmless.
+
 ## Agent handoff / active work (2026-10-28 LATEST-70: FIX CONFIRMED - THE kalloc.16384 PANIC IS GONE; BOOT REACHES THE APPLE LOGO WITH launchd/XPC DAEMONS RUNNING)
 
 ### Observation (user report, this session; no photo yet)
