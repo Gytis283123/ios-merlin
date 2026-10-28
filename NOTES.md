@@ -1,6 +1,64 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-28 LATEST-74: 0098 KERNEL BUILT BY CI AND PACKED INTO A FLASHABLE IMAGE; FLASH PENDING THE PHONE ON USB)
+
+### Run 40759087869: success
+
+- Dispatched 21:58:38 local (retry loop), queued, runner acquired
+  22:08:42, **build finished ~22:16** - the whole job took ~7.5 min once
+  a runner existed (the earlier "~2 h" estimate was wrong).
+- Artifacts: `xnu-buildtree` 12848407479 (23,212,175 B) and
+  `xnu-kernel` 12847289165 (60,050,508 B), both uploaded 20:16Z.
+- `xnu-kernel` downloaded with
+  `tools/fetch-kernel-artifact.py get Gytis283123/ios-sweet 12847289165 research\art-0098`
+  -> `research/art-0098/kernel.development.sweet`, 17,224,536 B,
+  sha256 `18fcdc739ed03805d33272ba7ac82460ae01a0e033e519bb2734b2757adbdf5d`,
+  matches the artifact's `SHA256SUMS`.
+- Content check (strings in the kernel): `MERLIN MSDC: %u sector(s) per
+  data command (CMD18/CMD25), bounce %u KiB`, `msdc_blocks`,
+  `merlin-msdc`, `readverify` -> this really is the 0098 driver.
+  No `ACMDRDY` literal (register bit name, not a string) - expected.
+
+### Flashable image built (NOT flashed yet)
+
+- `research/merlin-boot/shim-boot-merlin-msdc-0098-window-be-fb270.img`
+  - 17,005,523 B, sha256
+    `1D776751F72B646FB8700C0E5C4E623CA1CCE8348EA9E3A8D23455819BE975C6`.
+  - Built by `research/tmp-msdc-split/make-0098-image.py
+    research/art-0098/kernel.development.sweet`; payload 16,629,328 B,
+    kernel slot 190,674 B and dtb byte-identical to the flashed 0094
+    image, cmdline unchanged (incl. `merlin_excl_pa`), self-verified.
+- Rollback: `shim-boot-merlin-msdc-0094-window-be-fb270.img`
+  (sha256 `902e5c02...`) is unchanged on disk.
+
+### Blocked: phone is not on USB
+
+- `fastboot devices` and `adb devices` are both empty right now (the
+  stray `RZCWA1RND8T offline` device is gone too).  Flash waits for
+  merlin (`204719200409`) in fastboot.
+- Plan once connected: `fastboot flash boot
+  research/merlin-boot/shim-boot-merlin-msdc-0098-window-be-fb270.img`
+  then `fastboot reboot` - never `fastboot boot`.
+
+### What to look for after the flash
+
+- Console line `MERLIN MSDC: 128 sector(s) per data command (CMD18/CMD25),
+  bounce 64 KiB` (default cap) - proves the multi-block path is active.
+- Boot should be much faster than ~7 min; the progress bar should move.
+- A/B knob: boot arg `msdc_blocks=1` falls back to the old single-sector
+  plan without reflashing (still same image).
+- If multi-block misbehaves (timeouts, wrong data, panics in
+  `data.kalloc.*`): capture the console, then `msdc_blocks=1` to isolate.
+
+### Next
+
+1. Flash when the phone appears in fastboot; take one boot photo/video.
+2. Record the attach line + total boot time vs the ~7 min baseline.
+3. Long-axis (~20%) display offset still parked until 0098 boots;
+   HFS+ stays 16 GiB (user decision).
+
+
 ## Agent handoff / active work (2026-10-28 LATEST-73: 0098 BUILD NEVER GOT A macOS RUNNER (GITHUB CAPACITY), AUTO-RETRY LOOP RUNNING; 21:53 VIDEO MEASURES THE LONG-AXIS DISPLAY SHIFT)
 
 ### Build status: GitHub capacity, not the patch
