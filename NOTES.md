@@ -71,7 +71,9 @@
   `fork/msdc-0079`, `workflow_dispatch` accepted (HTTP 204), run
   40755000295 queued (job 123051449834, sha 177ec29a).  This is the first
   xnu run since 40722066010 that is not immediately cancelled; watch it
-  with `python tools/gh-ci.py runs Gytis283123/ios-sweet 3`.
+  with `python tools/gh-ci.py runs Gytis283123/ios-sweet 3`.  A background
+  watcher (`research/tmp-msdc-split/watch-0098.py`, 4 h cap) polls the run
+  and downloads the artifact into `research/art-0098/` on success.
 - Next after a green build: `python tools/fetch-kernel-artifact.py latest
   Gytis283123/ios-sweet research\art-0098` (or `get` with the artifact
   id), rebuild the `shim-boot-...-0098` image with the 0094 ADT/fb270
