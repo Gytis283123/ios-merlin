@@ -78,9 +78,15 @@
   (default 10 s); `sweetlog=0` disables it.
 - Verified `git apply --check --directory=research/tmp-0096/xnu` -> rc 0
   (post-0098 tree); source copy in `research/tmp-0099/`.
+- `build-msdcroot0.py` regenerates the payload from `adt.bin`, so the display
+  base is **not** inherited from the source image; `make-0099-image.py` now
+  re-applies it with `tools/patch-shim-videobase.py` after packing.
+  Rehearsal with the 0098 kernel reproduces `fbup-585` byte for byte
+  (sha256 `9C8A3364...`), so the two-step build is proven.
 - `watch-run.py 40882565021 research/art-0099` runs in the background.
   Image: `python research/tmp-msdc-split/make-0099-image.py
-  research/art-0099/kernel.development.sweet` (default source = `fbup-585`).
+  research/art-0099/kernel.development.sweet` (default source = fb270,
+  display base re-applied by the tool).
 
 ### Next
 
