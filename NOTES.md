@@ -1,6 +1,70 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-29 LATEST-79: 0100 ON-DISK LOG READ END-TO-END - CPU 2.35 GHz AND CARD ~50 MB/s (BOTH SLOW-THEORIES DEAD); BOOT REACHES SpringBoard+backboardd BUT securityd RETRIES kAKSWrapKey FOREVER; PATCH 0101 (WRAPKEY/UNWRAPKEY) WRITTEN AND REHEARSED, NOT YET BUILT)
+
+### The 0100 log (research/logs/sweetlog-0100-20261029.txt; phone in recovery, pulled read-only via adb dd of the last 1025 4K blocks of userdata)
+
+- Ring flush #416 at 4151 s.  Boot timeline: **33.9 s** power-on -> MSDC
+  attach (`MERLIN CLK: ... counter now 33920 ms`), then log start (flush 1
+  = 0 s) and userspace.
+- **CPU-clock hypothesis DEAD**: `4194304 dependent adds in 3569 us ->
+  ~2350 MHz core`.  **Card-path hypothesis DEAD**: MSDC init 11 ms, reads
+  steady 49-51.6 MB/s during bootstrap (~29.7 MB/s cumulative by flush 380
+  once random I/O dominates).
+- The 69 minutes were NOT a freeze: flushes every 10.004 s with no gaps the
+  whole run.  launchd did the full bootstrap in minutes (389 execs in the
+  first 3 min, 200+ distinct daemons), then idled/respawned for the rest,
+  re-reading ~8.1 GB through the crash-respawn churn.
+- Userspace got FAR: `exec SpringBoard` at ~5 s (its AKS calls sel 0/35/7
+  all -> 0x0), backboardd `open AppleCLCD type 0 -> 0x0`, `SWEET FB:
+  display on` at ~50 s.  Yet no frame was ever presented (the console was
+  still on screen; 0056 present/0067 console-mute would have hidden it) -
+  SpringBoard never drew frame 0.
+- AKS stub score: 1732 of 1734 calls succeed.  The failures:
+  **securityd sel 10 = kAKSWrapKey, 228 x kIOReturnUnsupported
+  (0xe00002c7), retried forever** (in 2/32 out 1/40 - RFC 5649 shape for
+  32-byte keys), plus profiled sel 31 x3 and datamigrator sel 93/34 x1.
+  securityd never exits - it spins on WrapKey.
+- Steady-state respawn loop: fairplayd.H2 x403, bluetoothd x401 (silent
+  exits, no jetsam/kill lines, no crash reports - waiting on services),
+  CommCenter x108 (crosses the 32-thread watermark each life - spins on
+  missing baseband; harmless).
+- Survived early errors (context, not the wedge): root volume unsealed
+  (error 25), libignition preboot lookup fail 25, launchd
+  vm_shared_region check_np failed, Jetsam 50 MB HWM opt-in fail 22.
+
+### Patch 0101 (WRITTEN + REHEARSED, NOT built, NOT flashed)
+
+- `ios-sweet/xnu/patches/0101-sweet-aks-wrapkey.patch` (4,840 B, 2 hunks,
+  LF): implements kAKSWrapKey (10) / kAKSUnwrapKey (11) in
+  SweetKeyStore.cpp.  Blob = RFC 5649 header (0xA65959A6 + BE32 length) +
+  key XOR a fixed 32-byte pad - no corecrypto in the SWEET kernel (0013),
+  so this is self-consistent wrap/unwrap, not real AES; protects no
+  secrets (no passcode, no keybag).  scalarOutput[0] = blob/key length;
+  unwrap validates header and length.  Securityd's next call pattern will
+  print itself (every AKS call is logged).
+- Rehearsal: `git apply --check` clean against the post-0096 tree
+  (research/tmp-0096/xnu, SweetKeyStore.cpp is post-0055; 0097-0100 don't
+  touch it), applied result byte-identical to the worked tree after EOL
+  normalization; braces/parens balanced; 0097-0100 patch set has no
+  SweetKeyStore overlap.
+- Reusable downloader for the next CI run:
+  `python research/tmp-msdc-split/par-dl.py ARTIFACT_ID TOTAL_BYTES OUT.zip [BUDGET_S]`
+  (sizes come from the artifacts API; parallel range parts, resumable).
+
+### Next
+
+1. Confirm with the user, then push ios-sweet and dispatch xnu.yml (the
+   local-only rule covers ios-merlin; the fork push is the established CI
+   path - but it still gets a yes first).
+2. When the run succeeds: par-dl the artifacts, build
+   `research/merlin-boot/shim-boot-merlin-msdc-0101-fbup-585.img` with
+   make-0099-image.py, flash boot (confirm again), boot, photo + log pull.
+3. Read the new log: if securityd proceeds, look for the first UI present
+   (console-mute) or the next wedge by name; if fairplayd/bluetoothd still
+   loop, their wait target will show in the exec/service pattern.
+
 ## Agent handoff / active work (2026-10-29 LATEST-78: 0100 BOOT PHOTOGRAPHED AT ~62 MIN - LAUNCHD ALIVE AND EXEC'ING, BUT fairplayd.H2 + bluetoothd CRASH-RESPAWN IN A ~5 s LOOP AND NO MAIN UI; NEXT = PULL THE ON-DISK LOG VIA TWRP)
 
 ### Photo 2026-10-29 20:13 local (phone running the 0100 image, booted ~19:10)
