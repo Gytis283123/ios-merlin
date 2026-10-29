@@ -1,6 +1,52 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-29 LATEST-80: 0101 BUILT BY CI AND PACKED - shim-boot-merlin-msdc-0101-fbup-585.img READY; WAITING FOR THE USER TO FLASH BOOT)
+
+### CI for 0101 (sha 10ae489): five queue deaths, then success
+
+- Attempts 1-4 (40935174767, 40937688647, 40940113658, 40942535153) all died
+  to the hosted-runner capacity problem: ~15 min queued, cancelled, **zero
+  steps**.  The detached watcher (research/tmp-msdc-split/retry-build-0101.py,
+  download step removed - par-dl.py fetches instead) re-dispatched each time.
+- User started triggering manually from the UI.  LESSON LEARNED (recorded for
+  the next time): the workflow's concurrency group (xnu-msdc-0079,
+  cancel-in-progress) means **every new queued run kills the previous one** -
+  the watcher's attempt 6 cancelled the user's first in-flight build, and
+  each further manual trigger cancelled the previous queued run.  The watcher
+  was killed (PID found via CommandLine match) as soon as this was visible.
+  **Never run the watcher and manual triggers at the same time.**
+- **Run 40949232694 (user's trigger, 20:27:44Z) SUCCEEDED** at 20:35:18Z
+  (~7.6 min build).  Artifacts: `xnu-kernel` id **12930279836**
+  (60,067,850 B), `xnu-buildtree` id **12931790905** (23,214,759 B); both
+  downloaded with par-dl.py in a single round each and extracted to
+  research/art-0101/; `kernel.development.sweet` 17,238,288 B, sha256
+  `4a996d3e3193096ef68e7654f209b80ae9d0bd2112cadd21aff561951b3e62d8`
+  (matches the artifact SHA256SUMS).
+
+### 0101 image BUILT and verified (NOT flashed)
+
+- `research/merlin-boot/shim-boot-merlin-msdc-0101-fbup-585.img`:
+  **17,021,907 bytes, sha256
+  `D2391D21276743DC159978543A2E3B77C368024BFEDD4FFA7238AB2CFAD61911`**
+- Builder verify: SWEETXNU payload 16,645,856 B; cmdline OK (0099 cmdline
+  unchanged); shim slot + dtb byte-identical to the E1 baseline; display
+  base 0x7e39c458 re-applied (ADT reg at payload+0xfdfcd8 + boot_args Video
+  base); shim.gz round-trip OK.
+- What 0101 adds vs 0100: AKS WrapKey/UnwrapKey stub (see LATEST-79) - the
+  only change is the SweetKeyStore.cpp hunk.
+
+### Next
+
+1. User flashes `boot` with the 0101 image (`fastboot flash boot` +
+   `fastboot reboot`, never `fastboot boot`), lets it run, photographs the
+   first frame, then reboots to TWRP read-only for the log pull.
+2. Read the new log: securityd sel 10 should now return 0x0 (and the first
+   kAKSUnwrapKey calls will show their real argument shapes).  Success
+   signal: UI presents (console-mute fires) or new AKS selectors get
+   exercised; failure signal: fairplayd/bluetoothd loop continues and the
+   next wedge should name itself in the log.
+
 ## Agent handoff / active work (2026-10-29 LATEST-79: 0100 ON-DISK LOG READ END-TO-END - CPU 2.35 GHz AND CARD ~50 MB/s (BOTH SLOW-THEORIES DEAD); BOOT REACHES SpringBoard+backboardd BUT securityd RETRIES kAKSWrapKey FOREVER; PATCH 0101 (WRAPKEY/UNWRAPKEY) WRITTEN AND REHEARSED, NOT YET BUILT)
 
 ### The 0100 log (research/logs/sweetlog-0100-20261029.txt; phone in recovery, pulled read-only via adb dd of the last 1025 4K blocks of userdata)
