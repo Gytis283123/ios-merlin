@@ -64,6 +64,24 @@
   `bluetoothd`.  The 0098 attach line (`MERLIN MSDC: ... CMD18/CMD25`) has not
   been seen on screen yet.
 
+### 0099 pushed: console log over MSDC (CI run 40882565021, queued)
+
+- Patch `xnu/patches/0099-merlin-msdc-sweetlog.patch`, commit `a3b4153` on
+  branch `msdc-0079`, pushed to the fork; `gh-ci.py dispatch ... msdc-0079`
+  -> run **40882565021** (sha a3b4153), queued 13:30Z.  The earlier run
+  40882322430 was cancelled by the re-dispatch (concurrency group).
+- Content: `merlin_msdc_log_thread()`/`merlin_msdc_log_start()`, started at the
+  end of `merlin_msdc_init()` after `mo.ready = true`; the same SWEETLOG
+  header/4 MiB ring in the last 4 MiB + 4 KiB of userdata, written in 4 KiB
+  (8-sector) blocks coalesced up to `msdc_blocks/8` blocks per CMD25 under
+  `merlin_msdc_lock`; first flush right after attach, then every `ufslogsecs`
+  (default 10 s); `sweetlog=0` disables it.
+- Verified `git apply --check --directory=research/tmp-0096/xnu` -> rc 0
+  (post-0098 tree); source copy in `research/tmp-0099/`.
+- `watch-run.py 40882565021 research/art-0099` runs in the background.
+  Image: `python research/tmp-msdc-split/make-0099-image.py
+  research/art-0099/kernel.development.sweet` (default source = `fbup-585`).
+
 ### Next
 
 1. Flash `...-fbup-585.img` (never `fastboot boot`) once the phone is in
@@ -72,8 +90,10 @@
 2. Moved correctly -> new display baseline.  Overshot (top cut) -> smaller dy.
    Nothing moved -> 0x3860 is not the UI path and the 0046/ADT route needs a
    register-level look.  Panic/black -> flash the `-ba` variant.
-3. Then 0099: SWEETLOG over MSDC (the 0047 ring is drained only by the UFS
-   driver, so merlin writes no log) and read the launchd/CommCenter loop.
+3. 0099 (SWEETLOG over MSDC) is already in CI, run 40882565021; when the
+   artifact lands, build the 0099 image and flash it, let it loop for a
+   minute, then boot TWRP (read-only) and pull the log with
+   `tools/sweet-log-pull.sh` to diagnose the launchd/CommCenter loop.
 
 
 ## Agent handoff / active work (2026-10-28 LATEST-74: 0098 KERNEL BUILT BY CI AND PACKED INTO A FLASHABLE IMAGE; FLASH PENDING THE PHONE ON USB)
