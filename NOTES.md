@@ -28,9 +28,12 @@
   - `MERLIN MSDC: init took N ms`.
 - Run 40891076950 never got a macOS runner: job `build` sat queued 15 min and
   was cancelled with 0 steps (same GitHub capacity problem as 0098 on
-  2026-10-28).  `research/tmp-msdc-split/retry-build-0100.py` now re-dispatches
-  until a runner is assigned and downloads to `research/art-0100` (16 attempts,
-  6 h cap); it is running in the background.
+  2026-10-28).  The first retry died on a local DNS blip while polling; the
+  script now retries network errors (GET and POST) and adopts a run id given as
+  argv[1].  Current attempt: **run 40893883100** (sha 833022d), adopted with
+  `python research/tmp-msdc-split/retry-build-0100.py 40893883100`; it
+  re-dispatches by itself if this one is cancelled and downloads to
+  `research/art-0100` (16 attempts, 6 h cap).
 - Plain `fastboot boot`/flash rules unchanged: flash `boot` only, never boot the
   image from fastboot, never touch bootloader/recovery/modem/persist.
 
