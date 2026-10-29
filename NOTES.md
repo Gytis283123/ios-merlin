@@ -26,8 +26,11 @@
   - `MERLIN LOG: flush N at S.mmm s` before every 10 s flush, so the on-disk log
     dates itself.
   - `MERLIN MSDC: init took N ms`.
-- Watcher running in the background:
-  `research/tmp-msdc-split/watch-run.py 40891076950 research/art-0100`.
+- Run 40891076950 never got a macOS runner: job `build` sat queued 15 min and
+  was cancelled with 0 steps (same GitHub capacity problem as 0098 on
+  2026-10-28).  `research/tmp-msdc-split/retry-build-0100.py` now re-dispatches
+  until a runner is assigned and downloads to `research/art-0100` (16 attempts,
+  6 h cap); it is running in the background.
 - Plain `fastboot boot`/flash rules unchanged: flash `boot` only, never boot the
   image from fastboot, never touch bootloader/recovery/modem/persist.
 
