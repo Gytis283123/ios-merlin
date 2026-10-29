@@ -1,7 +1,7 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
-## Agent handoff / active work (2026-10-29 LATEST-77: 0100 CI BUILD SUCCEEDED (run 40899159128) AFTER TWO RUNNER-CAPACITY FAILURES; RETRY SCRIPT DIED MID-DOWNLOAD; ARTIFACTS BEING RE-DOWNLOADED WITH CURL, THEN BUILD THE 0100 IMAGE)
+## Agent handoff / active work (2026-10-29 LATEST-77: 0100 CI BUILD SUCCEEDED (run 40899159128); BOTH ARTIFACTS DOWNLOADED TO research/art-0100; 0100 BOOT IMAGE BUILT AND VERIFIED - WAITING FOR PHONE IN FASTBOOT TO FLASH IT)
 
 ### What happened to the 0100 build on 2026-10-29 (all sha 833022d, branch msdc-0079)
 
@@ -19,27 +19,50 @@
   no data): **`tools/fetch-kernel-artifact.py::fetch` and `tools/gh-ci.py::req`
   set no socket timeout**, so a stalled TLS connection blocks forever.
   The process later exited having created nothing; `research/art-0100/` was
-  still absent.
-- Fix in progress: re-downloaded the two artifacts with
-  `curl --retry 8 --retry-all-errors -C --speed-limit 1000 --speed-time 60`
-  (resumable; link measured ~23 KB/s, ETA ~1 h) into `research/art-0100/`.
-  If this session dies mid-download, re-run the same curl loop - the ids
-  above are all that is needed.
+  still absent.  Sequential curl resume also died twice (link stalls below
+  1 KB/s for >60 s; background tasks get killed at ~10 min here).
+- Fix that worked: **`research/tmp-msdc-split/par-dl.py`** (local-only,
+  research/ is gitignored) - 12 parallel curl range parts, each resuming from
+  its own byte offset, `--speed-limit 1000 --speed-time 30` abort + re-run.
+  Parallel connections beat the per-connection stall cap (~4x).  Re-running
+  it is idempotent; finished parts are kept.
+- Both artifacts downloaded and verified (zips kept in `research/art-0100/`):
+  - `kernel.development.sweet` 17,241,032 B, sha256
+    `3f3c531768dae27621f7b6f28b9ae31a78791fd47f80e132b5ebb545d6ddc036`
+    (matches the artifact's SHA256SUMS)
+  - `kernel.development.sweet.link/` + dSYM lldbmacros for symbolication;
+    `buildtree.tgz` from artifact-12909162570 not yet extracted.
 
-### Next (unchanged plan, unblocked once the download lands)
+### 0100 image BUILT (2026-10-29, not flashed)
 
-1. Unzip `research/art-0100/artifact-12908838442.zip`; expect
-   `kernel.development.sweet`.
-2. Build the 0100 image:
-   `python research/tmp-msdc-split/make-0099-image.py research/art-0100/kernel.development.sweet --out research/merlin-boot/shim-boot-merlin-msdc-0100-fbup-585.img`
-   (or `--fb-base 0x7e605438` to keep the display question separate).
-3. Flash `boot` only (confirm with the user first), let it boot 40-60 min,
-   `tools/sweet-log-pull.sh` via TWRP read-only, then read `MERLIN CLK/MSDC/LOG`
-   lines: CPU MHz, counter-at-attach, per-command and per-16 MiB KiB/s, flush
-   timeline; pick the next fix (CPU clock / card path / pre-driver boot).
-4. Display test still waiting: phone flashed with
+`python research/tmp-msdc-split/make-0099-image.py research/art-0100/kernel.development.sweet --out research/merlin-boot/shim-boot-merlin-msdc-0100-fbup-585.img`
+
+- `research/merlin-boot/shim-boot-merlin-msdc-0100-fbup-585.img`:
+  **17,021,907 bytes, sha256
+  `8B0122DBD4A4E9ABBAF683E9EAF52F9A4E469361B528E5E5CFD2995D39C3E417`**
+- Builder verify output: SWEETXNU payload 16,645,824 B; cmdline OK (0100
+  keeps the 0099 cmdline incl. `msdc_readverify=1`); shim slot + dtb
+  byte-identical to the E1 baseline; display base 0x7e605438 -> 0x7e39c458
+  applied to BOTH the ADT sweet-fbcon reg (payload+0xfdfcb8 - offset moved
+  because the payload is regenerated from the 0100 kernel) and boot_args
+  Video base (same 585-row shift as the already-flashed 0098 display test);
+  patched movz/movk at shim+0x3860, gzip size unchanged (9471 B); shim.gz +
+  payload + dtb round-trip OK.
+
+### Next
+
+1. When the phone is in fastboot: **flash `boot` with the 0100 image
+   (confirm with the user first)**, `fastboot reboot`, let it run the 40-60
+   min boot, boot TWRP read-only and pull the log with
+   `tools/sweet-log-pull.sh`.
+2. Read the `MERLIN CLK/MSDC/LOG` lines: CPU MHz, counter-at-attach,
+   per-command and per-16 MiB KiB/s, flush timeline; pick the next fix
+   (CPU clock / card path / pre-driver boot).
+3. Display test still waiting: phone flashed with
    `shim-boot-merlin-msdc-0098-fbup-585.img` (sha256 `9C8A3364...`), one photo
-   of the first frame decides whether the 585-row shift is right.
+   of the first frame decides whether the 585-row shift is right.  The 0100
+   image keeps the same display base, so its first frame doubles as that
+   photo if the 0098 test is skipped.
 
 ## Agent handoff / active work (2026-10-29 LATEST-76: 0100 BOOT-TIMING INSTRUMENTATION PUSHED, CI RUN 40891076950 BUILDING; PHONE NOT IN FASTBOOT, DISPLAY TEST STILL WAITING)
 
