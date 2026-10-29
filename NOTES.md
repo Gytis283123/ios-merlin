@@ -34,13 +34,15 @@
 - Plain `fastboot boot`/flash rules unchanged: flash `boot` only, never boot the
   image from fastboot, never touch bootloader/recovery/modem/persist.
 
-### Phone state (2026-10-29 ~14:24Z)
+### Phone state (2026-10-29 ~14:45Z)
 
-- `fastboot devices` is empty; nothing was flashed since the 0098 image.  The
-  display test needs the phone in fastboot (Vol-Down + Power).
-- Pending flash, unchanged from LATEST-75:
-  `shim-boot-merlin-msdc-0098-fbup-585.img` (sha256 `9C8A3364...`), fallback
-  `shim-boot-merlin-msdc-0098-fbup-585-ba.img` (`E50665AE...`).
+- **Flashed and rebooted** `shim-boot-merlin-msdc-0098-fbup-585.img`
+  (sha256 `9C8A3364...`, boot partition, 16,606 KB, `fastboot flash boot` +
+  `fastboot reboot`, not `fastboot boot`).  Waiting for the user's photo of the
+  first visible frame to judge the 585-row shift.
+- Fallback if the ADT move panics or the log block vanishes:
+  `shim-boot-merlin-msdc-0098-fbup-585-ba.img` (`E50665AE...`) moves only the
+  boot_args UI base.
 
 ### Next
 
