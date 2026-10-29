@@ -1,6 +1,56 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-29 LATEST-78: 0100 BOOT PHOTOGRAPHED AT ~62 MIN - LAUNCHD ALIVE AND EXEC'ING, BUT fairplayd.H2 + bluetoothd CRASH-RESPAWN IN A ~5 s LOOP AND NO MAIN UI; NEXT = PULL THE ON-DISK LOG VIA TWRP)
+
+### Photo 2026-10-29 20:13 local (phone running the 0100 image, booted ~19:10)
+
+Observations (read off the photo, user: "Just this, no main Display just this"):
+
+- Screen shows only the kernel console, no SpringBoard/main UI.
+- `MERLIN LOG: flush N` lines 362..376 at 3611.527 s -> 3751.586 s, every
+  **10.004 s** (3611.527, 3621.531, 3631.535, 3641.540, 3651.544, ...,
+  3751.586 - deltas all 10.004 s, +4 ms drift).  flush 376 at ~3751 s =
+  **~62.5 min after boot start**; MERLIN LOG prints are 0100-only, so this
+  is the 0100 image flashed at ~19:05-19:10 local, after LATEST-77 built it.
+- Between every consecutive pair of flushes exactly four lines:
+  `exec xpcproxy`, `exec fairplayd.H2`, `exec xpcproxy`, `exec bluetoothd`.
+  One spawn pair per ~5 s, alternating, stable across the whole visible
+  window (>= 140 s of history).
+- Console text starts at the very top of the panel (first line half-clipped
+  under the bezel) - the 585-row shift behaves as designed ("log at the
+  top"); exact overshoot can't be judged because the console wrap point
+  scrolls.  Older flushes 362-365 reappear lower on screen (framebuffer
+  console wraparound, cosmetic).
+
+Inferences (marked guesses):
+
+- Kernel AND launchd are alive; userspace reached exec'ing daemons - far
+  beyond any earlier state.  The arch counter/timer runs at real-time rate
+  (10.004 s flush cadence), so the wall clock is not drifting.
+- GUESS: fairplayd.H2 and bluetoothd exit within seconds and launchd
+  respawn them forever (deterministic ~5 s cycle).  SpringBoard is never
+  exec'd, hence no main display.  Prime suspect stays the AKS/0038 stub
+  (cf. the captured `SWEET AKS: profiled sel 31 -> 0xe00002c7` boot-loop
+  line) or another unimplemented mach service both daemons wait on; the
+  earlier "launchd/CommCenter loop" note (0099 planning) is likely the same
+  phenomenon at an earlier stage.
+- The `MERLIN CLK` (CPU MHz) and `MERLIN MSDC` answers are NOT in the photo
+  (they print early and scrolled/wrapped away); they are in the on-disk log.
+
+### Next
+
+1. Reboot the phone to TWRP **read-only** and pull the on-disk log with
+   `tools/sweet-log-pull.sh` (needs the user's hands for the button combo).
+   The log has: `MERLIN CLK` counter-at-attach + CPU MHz, `MERLIN MSDC`
+   per-command/per-16 MiB rates and init time, every flush timestamp, and -
+   the actual prize - launchd's exec/exit history: which service call fails
+   first and why fairplayd.H2/bluetoothd crash-loop.
+2. Diagnose from the log, then pick the next patch (AKS stub extension vs
+   CPU clock vs card path).
+3. Display: treat the 0100 image's top-anchored console as the working
+   585-row baseline; refine dy only if a later photo shows overshoot.
+
 ## Agent handoff / active work (2026-10-29 LATEST-77: 0100 CI BUILD SUCCEEDED (run 40899159128); BOTH ARTIFACTS DOWNLOADED TO research/art-0100; 0100 BOOT IMAGE BUILT AND VERIFIED - WAITING FOR PHONE IN FASTBOOT TO FLASH IT)
 
 ### What happened to the 0100 build on 2026-10-29 (all sha 833022d, branch msdc-0079)
