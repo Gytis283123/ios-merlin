@@ -1,6 +1,59 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-29 LATEST-76: 0100 BOOT-TIMING INSTRUMENTATION PUSHED, CI RUN 40891076950 BUILDING; PHONE NOT IN FASTBOOT, DISPLAY TEST STILL WAITING)
+
+### 0100: what the next boot will tell us (commit `833022d`, CI run 40891076950)
+
+- User's idea: the 40-60 min boot may be a CPU-clock problem, so 0100 measures
+  instead of guessing.  Patch `ios-sweet/xnu/patches/0100-merlin-boot-timing.patch`
+  (8,018 B) applies on top of 0099; the 0099+0100 chain reproduces the worked
+  driver tree byte for byte (66,785 B, LF-normalized), so CI builds exactly what
+  was tested locally.
+- New prints (`msdcprobe=0` disables only the CPU loop):
+  - `MERLIN CLK: cntfrq ... hz ..., counter now N ms` - the arch counter at
+    attach.  If the SoC counter starts at zero this is the time from power-on to
+    the MSDC driver, which separates a slow LK/shim/kernel-init boot from a slow
+    card path.
+  - `MERLIN CLK: 4194304 dependent adds in U us -> ~M MHz core (2 cycles/iter)`
+    - a core left at ~100 MHz by the bootloader would explain everything; a
+    ~2 GHz reading clears the CPU.
+  - `MERLIN MSDC: cmd N read/write xS took U us` for the first five commands.
+  - `MERLIN MSDC: ... cmds ... KiB in ... ms -> ... KiB/s (last CMD18 xS U us)`
+    every 16 MiB.  A per-command timeout stall reads ~100 KiB/s; a healthy CMD18
+    path reads tens of MiB/s.  This is also the first hard check of the 0098
+    multi-block claim.
+  - `MERLIN LOG: flush N at S.mmm s` before every 10 s flush, so the on-disk log
+    dates itself.
+  - `MERLIN MSDC: init took N ms`.
+- Watcher running in the background:
+  `research/tmp-msdc-split/watch-run.py 40891076950 research/art-0100`.
+- Plain `fastboot boot`/flash rules unchanged: flash `boot` only, never boot the
+  image from fastboot, never touch bootloader/recovery/modem/persist.
+
+### Phone state (2026-10-29 ~14:24Z)
+
+- `fastboot devices` is empty; nothing was flashed since the 0098 image.  The
+  display test needs the phone in fastboot (Vol-Down + Power).
+- Pending flash, unchanged from LATEST-75:
+  `shim-boot-merlin-msdc-0098-fbup-585.img` (sha256 `9C8A3364...`), fallback
+  `shim-boot-merlin-msdc-0098-fbup-585-ba.img` (`E50665AE...`).
+
+### Next
+
+1. Flash the display test as soon as the phone is in fastboot; one photo decides
+   whether the UI moves up by 585 rows (logo 48%, bar 55%, log at the top).
+   Keep it as baseline if right; rebuild with a smaller dy if it overshot; flash
+   the `-ba` variant if the ADT move panics.
+2. When run 40891076950 succeeds, build the 0100 image with
+   `research/tmp-msdc-split/make-0099-image.py research/art-0100/kernel.development.sweet
+   --out research/merlin-boot/shim-boot-merlin-msdc-0100-fbup-585.img`
+   (or `--fb-base 0x7e605438` to keep the display question separate), flash it,
+   let it run, boot TWRP read-only and pull the log with
+   `tools/sweet-log-pull.sh`.
+3. Read the CPU MHz, counter-at-attach, MSDC KiB/s and flush timeline, then pick
+   the next fix (CPU clock / card path / pre-driver boot).
+
 ## Agent handoff / active work (2026-10-29 LATEST-75: LAST DISPLAY TEST WAS INVALID - REPACK BUG FOUND AND FIXED; FIRST REAL TEST OF THE "PANEL SCANS 585 ROWS BEFORE THE FB BASE" THEORY IS BUILT AND WAITING FOR THE PHONE IN FASTBOOT; AKS BOOT-LOOP LINES CAPTURED)
 
 ### Repack bug that invalidated the previous display test (root cause, confirmed)
