@@ -1,6 +1,81 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-29 LATEST-75: LAST DISPLAY TEST WAS INVALID - REPACK BUG FOUND AND FIXED; FIRST REAL TEST OF THE "PANEL SCANS 585 ROWS BEFORE THE FB BASE" THEORY IS BUILT AND WAITING FOR THE PHONE IN FASTBOOT; AKS BOOT-LOOP LINES CAPTURED)
+
+### Repack bug that invalidated the previous display test (root cause, confirmed)
+
+- `...-fbdy-585.img` (patched `con_fb`) rebooted at the Redmi logo.  That was
+  **not** the display change: `patch-shim-fbbase.py` sliced the ramdisk at
+  header `recovery_dtbo_offset`, which is 0 in these images (parts are stored
+  sequentially: header page, kernel, ramdisk, dtb).  The rebuilt image carried
+  the first page of the boot image as its ramdisk, so the payload/ADT were
+  garbage and iOS never started.
+- Both repack tools now slice sequentially (`ps + align(ks,ps)`, then
+  `+ align(rs,ps)`) and assert `payload[:4] != b"ANDROID!"`; the round-trip
+  verify (`tools/unpack_bootv2.py`) compares shim.gz, ramdisk and dtb byte for
+  byte.  Same bug class could have hit any earlier hand-repacked image.
+
+### Where the iOS boot-UI base really comes from (disassembly, confirmed)
+
+- `0x7e605438` appears as an 8-byte literal twice in the shim: start.S paint
+  code (shim+0x1828, loaded at 0x814) and `con_fb` (.data 0x4c48, used at
+  0x2518).  Moving `con_fb` resets the phone before anything is printed.
+- The *loader* writes the boot-UI base into `boot_args.Video.v_baseAddr` with
+  `mov w9,#0x5438; movk w9,#0x7e60,lsl 16` at **shim+0x3860**, followed by
+  v_display=1, v_rowBytes=4320 (0x10e0), v_width=1080 (0x438), v_height=2340
+  (0x924), v_depth=32.  That movz/movk pair is unique in the shim.
+- New tool `tools/patch-shim-videobase.py` patches that pair, optionally the ADT
+  `sweet-fbcon` reg `<0x7e605438,0x9a3f80>` (payload+0xfdbc48; 0x9a3f80 =
+  2340*4320 = one full frame), repacks and round-trip verifies.
+
+### Images built 2026-10-29 (not flashed yet)
+
+| file (`research/merlin-boot/`) | change | sha256 |
+| --- | --- | --- |
+| `shim-boot-merlin-msdc-0098-fbup-585.img` | boot_args base **and** ADT reg = `0x7e39c458` | `9C8A3364055353B9D281F2AB138A030B894E1D0245A1DDEAF4D6BC46438F20B7` |
+| `shim-boot-merlin-msdc-0098-fbup-585-ba.img` | only boot_args base (fallback if the ADT move panics) | `E50665AED0ED430BB0CF4EBE0E692AD00A5DF4A2ADECDA331234677A22B77808` |
+| `shim-boot-merlin-msdc-0098-window-be-fb270.img` | known-good baseline | `1D776751...` |
+
+- Shim diff vs fb270 is exactly 4 bytes at 0x3861,0x3862,0x3864,0x3865; the
+  shim's own console (`con_fb` at C) is untouched, and payload/dtb are
+  byte-identical apart from the ADT reg in the first image.
+
+### Panel-start hypothesis, and why 585
+
+- If the panel window starts at B and we draw at D, content appears at
+  (D-B)/4320 rows.  Drawing at C=`0x7e605438` puts the logo at 73% / the bar at
+  80% of the long axis (iPhone X design: 48%/55%) and the kernel log block
+  starts 25% down - one global shift of ~25%.  25% of 2340 = 585 rows exactly,
+  so B = C - 585*4320 = **0x7e39c458** and moving the draw base to B should put
+  row 0 at the top.  The 585 is still derived from the measured 25%, not from a
+  register dump; if it overshoots, rebuild with a smaller dy.
+- The ADT reg only drives the kernel text console; patch 0046 feeds the UI from
+  `Video.v_baseAddr`.  Moving both keeps logs and UI aligned.
+
+### Boot-loop evidence from the console photo (2026-10-28, current good image)
+
+- `SWEET AKS: profiled sel 31 arg0 0 in 1/0 out 0/32768 -> 0xe00002c7` -
+  `profiled` asks for a 32 KiB output buffer that patch 0038's stub does not
+  handle.
+- `profiled sel 17 ... out 0/4096 -> 0x0` (works),
+  `securityd sel 10 arg0 0 in 2/32 out 1/40 -> 0xe00002c7` (WrapKey, unsupported).
+- Daemons cycling: `exec xpcproxy`, `corecaptured`, `fairplayd.H2`,
+  `bluetoothd`.  The 0098 attach line (`MERLIN MSDC: ... CMD18/CMD25`) has not
+  been seen on screen yet.
+
+### Next
+
+1. Flash `...-fbup-585.img` (never `fastboot boot`) once the phone is in
+   fastboot, reboot, take one photo: logo should sit at ~48% and the bar at
+   ~55% of the long axis, kernel log at the top.
+2. Moved correctly -> new display baseline.  Overshot (top cut) -> smaller dy.
+   Nothing moved -> 0x3860 is not the UI path and the 0046/ADT route needs a
+   register-level look.  Panic/black -> flash the `-ba` variant.
+3. Then 0099: SWEETLOG over MSDC (the 0047 ring is drained only by the UFS
+   driver, so merlin writes no log) and read the launchd/CommCenter loop.
+
+
 ## Agent handoff / active work (2026-10-28 LATEST-74: 0098 KERNEL BUILT BY CI AND PACKED INTO A FLASHABLE IMAGE; FLASH PENDING THE PHONE ON USB)
 
 ### Run 40759087869: success
