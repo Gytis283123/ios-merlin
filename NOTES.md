@@ -1,6 +1,46 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-29 LATEST-77: 0100 CI BUILD SUCCEEDED (run 40899159128) AFTER TWO RUNNER-CAPACITY FAILURES; RETRY SCRIPT DIED MID-DOWNLOAD; ARTIFACTS BEING RE-DOWNLOADED WITH CURL, THEN BUILD THE 0100 IMAGE)
+
+### What happened to the 0100 build on 2026-10-29 (all sha 833022d, branch msdc-0079)
+
+- Run 40893883100 (14:40Z) and run 40896507205 (14:56Z) both **failed with the
+  capacity problem**: job `build` "was not acquired by Runner of type hosted
+  even after multiple attempts", cancelled with **zero steps** (annotations
+  read directly from the check-runs API).  ~15 min queued each, nothing built.
+- Run **40899159128** (created 15:12:17Z by the retry loop) got a macOS runner
+  and **succeeded** (first CI success since 40882565021/0099).  Live artifacts
+  (unexpired, IDs for re-download):
+  - `xnu-kernel` id **12908838442**, 60,058,300 bytes
+  - `xnu-buildtree` id **12909162570**, 23,213,210 bytes
+- The retry script (`research/tmp-msdc-split/retry-build-0100.py`) dispatched
+  that run itself, then hung in its download (~35 min, ESTABLISHED connection,
+  no data): **`tools/fetch-kernel-artifact.py::fetch` and `tools/gh-ci.py::req`
+  set no socket timeout**, so a stalled TLS connection blocks forever.
+  The process later exited having created nothing; `research/art-0100/` was
+  still absent.
+- Fix in progress: re-downloaded the two artifacts with
+  `curl --retry 8 --retry-all-errors -C --speed-limit 1000 --speed-time 60`
+  (resumable; link measured ~23 KB/s, ETA ~1 h) into `research/art-0100/`.
+  If this session dies mid-download, re-run the same curl loop - the ids
+  above are all that is needed.
+
+### Next (unchanged plan, unblocked once the download lands)
+
+1. Unzip `research/art-0100/artifact-12908838442.zip`; expect
+   `kernel.development.sweet`.
+2. Build the 0100 image:
+   `python research/tmp-msdc-split/make-0099-image.py research/art-0100/kernel.development.sweet --out research/merlin-boot/shim-boot-merlin-msdc-0100-fbup-585.img`
+   (or `--fb-base 0x7e605438` to keep the display question separate).
+3. Flash `boot` only (confirm with the user first), let it boot 40-60 min,
+   `tools/sweet-log-pull.sh` via TWRP read-only, then read `MERLIN CLK/MSDC/LOG`
+   lines: CPU MHz, counter-at-attach, per-command and per-16 MiB KiB/s, flush
+   timeline; pick the next fix (CPU clock / card path / pre-driver boot).
+4. Display test still waiting: phone flashed with
+   `shim-boot-merlin-msdc-0098-fbup-585.img` (sha256 `9C8A3364...`), one photo
+   of the first frame decides whether the 585-row shift is right.
+
 ## Agent handoff / active work (2026-10-29 LATEST-76: 0100 BOOT-TIMING INSTRUMENTATION PUSHED, CI RUN 40891076950 BUILDING; PHONE NOT IN FASTBOOT, DISPLAY TEST STILL WAITING)
 
 ### 0100: what the next boot will tell us (commit `833022d`, CI run 40891076950)
