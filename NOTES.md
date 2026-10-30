@@ -27,6 +27,21 @@
 - CI run 41087860631 (workflow_dispatch msdc-0079 @ `d62f3dc2`) queued
   16:13 UTC; artifact/image facts to be appended.
 
+### 0106 shim (prepared, not pushed)
+
+- `xnu/patches/0106-merlin-gpu-userclient-shim.patch` on local ios-sweet
+  branch `msdc-0106` (commit `ee6b35a`, based on 0105 `d62f3dc`). Kept
+  unpushed so the queued 0105 run and the watcher's retry dispatches stay on
+  d62f3dc.
+- `IOAcceleratorESUserClient` overrides initWithTask/start/clientClose/
+  clientDied/externalMethod. When boot-arg `sweetgpuclient=1` is present the
+  stub services set kIOUserClientClassKey, so IOServiceOpen succeeds; every
+  externalMethod logs `SWEET GPU: uc sel N in a/b out c/d -> unsupported
+  (shim)` (first 200 calls) and returns kIOReturnUnsupported. Without the
+  boot-arg the 0105 behavior is unchanged. One image can A/B both.
+- Dispatch `msdc-0106` only after the 0105 image is packed (or on request):
+  the shim is a diagnostic/user-client-presence test, not a renderer.
+
 ### Next
 
 1. When CI lands: pack with the verified recipe to
