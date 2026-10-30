@@ -1,6 +1,85 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-30 LATEST-85: 0103 BOOT LOG ANALYZED - CLOCKS AND SAMPLER WERE INVISIBLE FOR STARTUP-ORDER REASONS; 0104 REPRINTS CLOCKS LATE AND STARTS THE SPRINGBOARD SAMPLER ON THE MSDC PATH; CI RUN 41067047807)
+
+### 0103 boot + log pull (observation)
+
+- User ran the 0103 cpus=8 image; at ~115 min the visible tail was the
+  same exec loop (photo at 6912 s). SetupAssistant still never exec'd.
+- Pulled the ring via TWRP as before (/dev/block/mmcblk0p46, 52,064,911,360 B,
+  skip 12,710,135) -> research/logs/sweetlog-0103-20261030.bin ->
+  `.txt` 473,094 B, 9,701 lines, 463,639 B logged, 720 flushes, last
+  7193.016 s. No wrap; the whole boot is present.
+- 8/8 CPUs on hardware again: requested=8 selected=8, cpu 0..7 including
+  mpidr 0x600/0x700 came alive, 8/8 initialized.
+- Loop: 4,140 execs (xpcproxy 2,059, fairplayd.H2 713, bluetoothd 710,
+  CommCenter 111); 448 CRASH lines; SpringBoard exec'd once (line 557)
+  with 4 AKS calls, all 0x0, and no output; 362 IOAcceleratorES
+  "-> 0 found" for backboardd; AKS wrap/unwrap all 0x0.
+
+### Why the clocks were invisible (observation, root cause)
+
+- The ring contains NO "SWEET CLK" and no "entered initCPU" line at all,
+  not even for cpu0 - in this log or in 0100-0102. initCPU's kprintf is
+  emitted before the persistent-log console path is active; the ring's
+  first recorded lines are the platform-expert stage (it does capture
+  startAll's IOLog lines and the Darwin banner that follow). The
+  measurement runs, but its one print is lost. The QEMU run proved the
+  measurement itself.
+
+### Why the SpringBoard sampler never ran (observation, root cause)
+
+- No "SMP --- sample" / "SMP SpringBoard" lines in ANY log (0100-0103).
+  0054 starts the sampler from the sweet-ufs attach (DT /sweet-ufs), but
+  merlin has no such node: the live root/log path is the MSDC driver
+  (0098/0099), whose merlin_msdc_init() starts the working "MERLIN LOG"
+  thread. The sampler thread was never started. The same is true of the
+  0047 sweet_log_thread; the flushes come from merlin_msdc_log_thread.
+
+### 0104 fix (action)
+
+- `xnu/patches/0104-merlin-clk-report-sampler.patch` (3 files), ios-sweet
+  msdc-0079 commit `56359c9`, pushed to fork/msdc-0079.
+  - SweetCPU.cpp: store per-CPU MHz/mpidr at initCPU; new
+    `sweet_report_cpu_clocks()` reprints the same "SWEET CLK" lines.
+  - sweet_ufs.c: call it in `merlin_msdc_init()` next to
+    `merlin_cpu_report()`; start `sweet_sample_start()` at the MSDC attach
+    (the path that actually runs).
+  - sweet_sample.c: one-shot start guard; print the CPU clocks at the top
+    of each of the 40 sampler rounds (first at 90 s, then every 120 s), so
+    the numbers also stay visible in the screen tail.
+- `git apply` verified against the 0103 buildtree sources.
+- CI: run 41067047807 failed and 41069390347 was cancelled on macOS-runner
+  capacity; the retry run **41070303179** (msdc-0079 @ `56359c90`)
+  succeeded at 14:15:44 UTC (~6 min). Artifacts xnu-kernel 12985701427 and
+  xnu-buildtree 12985326712 -> `research/art-0104/`. Kernel
+  `kernel.development.sweet` 17,241,512 B, sha256
+  `7B92386DFDAE94B2697CBE5A5EEEEF8617C05B8615AF20A6D7781574221F423E`
+  (SHA256SUMS match); the buildtree SweetCPU.cpp/sweet_ufs.c/sweet_sample.c
+  contain `sweet_report_cpu_clocks` and the MSDC `sweet_sample_start()`.
+
+### 0104 image (action)
+
+- `research/merlin-boot/shim-boot-merlin-msdc-0104-clksmp-cpus8-fbup-585.img`,
+  17,023,955 B, sha256
+  `08CB1661EDFD5819B393F5B330AEF5CFFCF7C8C453DF61656F43F16883F25C3C`.
+  Same verified recipe (0102 reproduced bit-exact earlier); cmdline = 0103
+  cpus=8; shim slot + dtb unchanged. Strings verified in kernel and image:
+  the SWEET CLK formats, `SMP --- sample`, `SMP %s[%d] slide`, `cpus=8`.
+
+### Next
+
+1. User: `fastboot boot research\merlin-boot\shim-boot-merlin-msdc-0104-clksmp-cpus8-fbup-585.img`
+   (never flash), let it run, then pull the log via TWRP as before.
+2. Expect 8 SWEET CLK lines at MSDC init (~34 s, also in the console), then
+   "SMP --- sample 0" at 90 s with SpringBoard/backboardd user stacks, then
+   clocks again at every sampler round. Symbolicate the SpringBoard pcs
+   with `tools/sweet-crash.py` (shared cache + root) to see the blocking
+   frame.
+3. That stack decides the next fix (IOAcceleratorES service, a missing
+   Mach service, or a UIKit assertion) - do not guess before it lands.
+
 ## Agent handoff / active work (2026-10-30 LATEST-84: PER-CPU CLOCK MEASUREMENT BUILT - 0103 KERNEL REPORTS `SWEET CLK` (PMCCNTR), QEMU SHOWS THE LINE, 0103 cpus=8 IMAGE READY FOR THE PHONE)
 
 ### Correction to LATEST-83 (observation, from the source)
