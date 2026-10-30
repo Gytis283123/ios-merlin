@@ -108,8 +108,8 @@
 - Created xnu/patches/0083-sweet-clk-measure-debug.patch (2 hunks, 2 files):
   - pexpert/pexpert/arm64/SWEET.h: SWEET_SMP_MAX_CPUS 6→8; added PMCR_E/PMCR_C/PMCNTENSET_CNTEN0 bit defs for PMCCNTR_EL0 enable.
   - iokit/Kernel/arm/SweetCPU.cpp: removed phys_id > 0x500 check in start() (keeps (phys_id & 0xff) != 0 and num_cpus > MAX so A75s mpidr 0x600/0x700 are allowed); added forward declarations for sweet_pmccntr_enable() / sweet_measure_cpu_mhz(); call both from initCPU() and print per-CPU MHz via kprintf ("SWEET CLK: cpu=N mpidr=0xNNNN M MHz"); if PMCCNTR reads don't advance, prints "PMU trapped, clock unknown".
-- Patch NOT yet applied against XNU source (XNU tree lives on macOS / ios-sweet CI, not this Windows host). Needs `git apply --check` + build via ios-sweet CI.
-- Not flashed; fastboot boot only when user confirms.
+- Patch pushed to ios-sweet origin (commit a2fc114 via merge 2876f1b). Push to ios-sweet triggers xnu.yml CI workflow (per fetch-kernel-artifact.py docstring: CI runs when head touches xnu/patches/**). CI build applies the patch and builds the kernel on macOS runners.
+- Remaining after CI: user downloads the built kernel, packs it into a boot image, then `fastboot boot` (never flash) and checks the boot log for `SWEET CLK: cpu=N mpidr=0xNNNN M MHz` lines on all 8 CPUs.
 
 ## Agent handoff / active work (2026-10-30 LATEST-82: 0102 BUILT BY CI AND PACKED - shim-boot-merlin-msdc-0102-fbup-585.img READY; WAITING FOR THE USER TO FLASH BOOT)
 
