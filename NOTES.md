@@ -1,6 +1,89 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-30 LATEST-84: PER-CPU CLOCK MEASUREMENT BUILT - 0103 KERNEL REPORTS `SWEET CLK` (PMCCNTR), QEMU SHOWS THE LINE, 0103 cpus=8 IMAGE READY FOR THE PHONE)
+
+### Correction to LATEST-83 (observation, from the source)
+
+- The "Patch 0083 written" clock patch never applied anywhere: it was
+  generated against a stale SweetCPU.cpp/SWEET.h (expected
+  `SWEET_SMP_MAX_CPUS 6` and `phys_id > 0x500`). The msdc-0079 CI branch
+  already carries 0078 (`SWEET_SMP_MAX_CPUS 8`, `phys_id > 0x700`), so both
+  hunks would have been rejected by `git apply`. The CI run that LATEST-83
+  called "triggered" (41042841361) was a workflow_dispatch on 063b1967 and
+  built 0102 again, not the clock patch.
+- The CPU-management fix itself (A75 mpidr 0x600/0x700 accepted, eight
+  cores) is 0078 and is already proven on hardware by the 0102+cpus=8 boot;
+  no further management change was needed for this measurement.
+
+### 0103 clock patch (action)
+
+- `xnu/patches/0103-sweet-clk-measure-debug.patch` (114 lines), ios-sweet
+  msdc-0079 commit `9103b39`, pushed to fork/msdc-0079.
+  - SWEET.h: PMCR_E/PMCR_C/PMCR_D/PMCNTENSET_CNTEN0 bit definitions; the
+    8-core comment now says six A55 + two big (A76 on sweet, A75 on merlin).
+  - SweetCPU.cpp: `sweet_pmu_start_counter()` clears PMCR.D (else the
+    counter runs /64), sets E|C, enables CNTEN0 and ISBs;
+    `sweet_measure_cpu_mhz()` compares PMCCNTR_EL0 with CNTPCT_EL0 over
+    ~10 ms; initCPU() prints `SWEET CLK: cpu=N mpidr=0xNNNN <mhz> MHz`, or
+    `SWEET CLK: cpu=N PMU trapped, clock unknown` when the counter does not
+    advance. The stale "A76 cores require separate work" header is fixed.
+  - `git apply` verified clean against the 0102 buildtree sources; the
+    PMCCNTR/PMCR/PMCNTENSET register names compile with clang
+    -target arm64-apple.
+- CI run **41046396796** (workflow_dispatch, msdc-0079 @ `9103b392`):
+  success, ~6 min (11:12:59-11:19 UTC). Artifacts xnu-kernel 12972223904
+  and xnu-buildtree 12973265829 -> `research/art-0103/`. Kernel
+  `kernel.development.sweet` 17,241,256 B, sha256
+  `FD023B17DE56313D79A9BCA90EE639D61D4B9253D9393CD6C704364BE877C18E`
+  (SHA256SUMS match); the buildtree SweetCPU.cpp contains the SWEET CLK
+  code, so the artifact really is the patched build.
+
+### QEMU validation (observation)
+
+- Payload from the 0103 kernel + `xnu/out-0001/merlin-q.adt` + merlin-init
+  (`research/tmp-clk/merlin-payload-qemu-0103.bin`), 20 s headless run.
+  fb console snapshot `research/tmp-clk/qemu-0103/fb.txt` shows:
+  `SWEET CPU: cpu=0 entered initCPU mpidr=0x0 EL1 IRQs=1`,
+  `SWEET CLK: cpu=0 mpidr=0x0 1003 MHz`,
+  `SWEET CPU: cpu=0 mpidr=0x0 came alive; SGI1 OK`,
+  `SWEET CPU: 1/1 CPUs initialized, SGI1 verified`; no panic
+  (result.json `no_panic_observed`).
+- The 1003 MHz is a TCG artifact (QEMU's cycle counter tracks guest time,
+  not a real core clock). It proves the PMU enable/read/ratio path and the
+  print; on hardware the same line is the real OPP.
+
+### 0103 image (action)
+
+- Recipe re-verified before use: rebuilding the 0102 image from
+  `research/art-0102/kernel.development.sweet` with build-msdcroot0.py +
+  patch-shim-videobase (0x7e39c458) reproduced its sha256 `95899D15...`
+  bit for bit. The same recipe then packed 0103.
+- `research/merlin-boot/shim-boot-merlin-msdc-0103-clk-cpus8-fbup-585.img`,
+  17,021,907 B, sha256
+  `2702C241EE2A7469528113AEEF3C37012476293E8C4BECF8416E67B56E4672B1`.
+  cmdline identical to 0102 except `cpus=8`; shim slot + dtb unchanged;
+  the image differs from the 0102+cpus=8 image only inside the kernel
+  region.
+- Strings verified in both the CI kernel and the packed image: the two
+  SWEET CLK formats and `SWEET CPU: requested=%u selected=%u (limit=%u)`;
+  `cpus=8` present.
+
+### Next
+
+1. User: `fastboot boot research\merlin-boot\shim-boot-merlin-msdc-0103-clk-cpus8-fbup-585.img`
+   (never flash), let it run, then pull the log via TWRP as in
+   LATEST-81/83.
+2. Expect eight `SWEET CLK: cpu=N mpidr=0xN00 <MHz> MHz` lines.
+   Interpretation: ~1170 MHz on both clusters means the shim's 2.35 GHz
+   figure assumed 2 cycles/iter and the real OPP is the LK one; A75s
+   markedly above the A55s means per-cluster OPP; `PMU trapped` means the
+   loop-shape fallback is needed. Do not quote the QEMU 1003 MHz as
+   hardware data.
+3. This measurement settles the open clock question in LATEST-83. A
+   DVFS/OPP driver is still out of scope: nothing in XNU raises MT6768
+   clocks today.
+
 ## Agent handoff / active work (2026-10-30 LATEST-83: 0102 + cpus=8 BOOTED - ALL 8 CORES ONLINE (incl. both A75s), kAKSUnwrapKey NOW RETURNS 0x0 (12/12) AND kAKSWrapKey TOO (177/177); BOOT STILL PARKS AT THE SAME fairplayd/bluetoothd LOOP, SPRINGBOARD STILL DRAWS NOTHING)
 
 ### 0102 + cpus=8 boot, log pulled (observation)

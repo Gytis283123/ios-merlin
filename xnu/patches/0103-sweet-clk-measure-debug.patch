@@ -1,0 +1,114 @@
+diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
+index 2545cf9..1c3782f 100644
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -1,7 +1,7 @@
+ /*
+- * A55 SMP bring-up for sweet using XNU's legacy IOCPU interface and PSCI.
+- * The architected timer and SGI1 already enter through pe_fiq/sleh_irq.
+- * CPU_OFF, suspend and the A76 cores still require separate platform work.
++ * Eight-core SMP bring-up for the SWEET config using XNU's legacy IOCPU
++ * interface and PSCI. The architected timer and SGI1 already enter through
++ * pe_fiq/sleh_irq. CPU_OFF and suspend still require separate platform work.
+  */
+ #include <pexpert/arm64/board_config.h>
+ 
+@@ -25,6 +25,9 @@ class SweetCPU;
+ static SweetCPU *sweet_cpus[MAX_CPUS];
+ static uint32_t sweet_cpus_registered;
+ 
++static void sweet_pmu_start_counter(void);
++static int sweet_measure_cpu_mhz(void);
++
+ /* SMCCC 1.0: x0 is the signed PSCI result; do not assume x1-x17 survive. */
+ static int32_t
+ sweet_psci_cpu_on(uint64_t target, uint64_t entry, uint64_t context)
+@@ -203,6 +206,16 @@ SweetCPU::initCPU(bool boot)
+ 	kprintf("SWEET CPU: cpu=%u entered initCPU mpidr=0x%llx EL%llu IRQs=%u\n",
+ 	    getCPUNumber(), __builtin_arm_rsr64("MPIDR_EL1") & 0xffffULL,
+ 	    __builtin_arm_rsr64("CurrentEL") >> 2, ml_get_interrupts_enabled());
++	/* Report the boot clock: LK selects the OPP and nothing here changes it. */
++	sweet_pmu_start_counter();
++	int mhz = sweet_measure_cpu_mhz();
++	if (mhz > 0) {
++		kprintf("SWEET CLK: cpu=%u mpidr=0x%llx %u MHz\n",
++		    getCPUNumber(), __builtin_arm_rsr64("MPIDR_EL1") & 0xffffULL,
++		    (unsigned)mhz);
++	} else {
++		kprintf("SWEET CLK: cpu=%u PMU trapped, clock unknown\n", getCPUNumber());
++	}
+ 	__atomic_store_n(&initialized, 1, __ATOMIC_RELEASE);
+ }
+ 
+@@ -251,6 +264,43 @@ SweetCPU::startCPU(vm_offset_t start_paddr, vm_offset_t arg_paddr)
+ 	return KERN_SUCCESS;
+ }
+ 
++/* Enable PMCCNTR_EL0 on this CPU and count every core clock (PMCR.D = 0). */
++static void
++sweet_pmu_start_counter(void)
++{
++	uint64_t pmcr = __builtin_arm_rsr64("PMCR_EL0");
++
++	pmcr &= ~PMCR_D;
++	pmcr |= PMCR_E | PMCR_C;
++	__builtin_arm_wsr64("PMCR_EL0", pmcr);
++	__builtin_arm_wsr64("PMCNTENSET_EL0", PMCNTENSET_CNTEN0);
++	__builtin_arm_isb(ISB_SY);
++}
++
++/* Core cycles (PMCCNTR) vs the 13 MHz arch counter (CNTPCT) over ~10 ms. */
++static int
++sweet_measure_cpu_mhz(void)
++{
++	uint64_t cntfrq = __builtin_arm_rsr64("CNTFRQ_EL0");
++	uint64_t c0, c1, t0, t1;
++
++	if (cntfrq == 0) {
++		return -1;
++	}
++	c0 = __builtin_arm_rsr64("PMCCNTR_EL0");
++	t0 = __builtin_arm_rsr64("CNTPCT_EL0");
++	uint64_t target = t0 + cntfrq / 100;
++	do {
++		t1 = __builtin_arm_rsr64("CNTPCT_EL0");
++	} while (t1 < target);
++	c1 = __builtin_arm_rsr64("PMCCNTR_EL0");
++
++	if (c1 == c0 || t1 == t0) {
++		return -1;	/* PMCCNTR not counting (trapped or absent) */
++	}
++	return (int)(((c1 - c0) * cntfrq) / ((t1 - t0) * 1000000ULL));
++}
++
+ void
+ SweetCPU::quiesceCPU(void)
+ {
+diff --git a/pexpert/pexpert/arm64/SWEET.h b/pexpert/pexpert/arm64/SWEET.h
+index b99c2f4..3973a72 100644
+--- a/pexpert/pexpert/arm64/SWEET.h
++++ b/pexpert/pexpert/arm64/SWEET.h
+@@ -18,13 +18,19 @@
+ #define SWEET                     1
+ 
+ /*
+- * All eight cores (six A55 + two A76) as one homogeneous SMP cluster:
+- * cpus=N is clamped here. Same ISA level (ARMv8.2), 64-byte lines, PSCI
+- * CPU_ON; the scheduler does not know the A76s are faster (no AMP/P-E
+- * clusters yet).
++ * All eight cores (six A55 + two big: A76 on sweet, A75 on merlin) as one
++ * homogeneous SMP cluster: cpus=N is clamped here. Same ISA level
++ * (ARMv8.2), 64-byte lines, PSCI CPU_ON; the scheduler does not know the
++ * big cores are faster (no AMP/P-E clusters yet).
+  */
+ #define SWEET_SMP_MAX_CPUS         8
+ 
++/* PMUv3 cycle counter (PMCCNTR_EL0) control. */
++#define PMCR_E                    (1ULL << 0)   /* enable all counters */
++#define PMCR_C                    (1ULL << 1)   /* reset cycle counter */
++#define PMCR_D                    (1ULL << 3)   /* 1 = cycle counter / 64 */
++#define PMCNTENSET_CNTEN0         (1ULL << 31)  /* cycle counter enable */
++
+ #define ARM_ARCH_TIMER
+ #define __ARM_ARCH__              8
+ #define __ARM_VMSA__              8
