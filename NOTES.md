@@ -1,6 +1,58 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-30 LATEST-82: 0102 BUILT BY CI AND PACKED - shim-boot-merlin-msdc-0102-fbup-585.img READY; WAITING FOR THE USER TO FLASH BOOT)
+
+### 0102: root cause of the 0101 AKS wall (established from the source)
+
+- The 0101 `sel 11` failures never reached the stub. The selector dispatch in
+  `AppleKeyStoreUserClient::externalMethod` had
+  `case kAKSUnwrapKey: if (out_scalars < 1) { ret = kIOReturnBadArgument; break; }`
+  and securityd calls it with `out 0/32` - key bytes only, no length scalar.
+  All 290 calls returned `0xe00002c2` from that guard, not from the blob
+  header. The 40-byte input may well have been a well-formed blob.
+- 0102 removes the guard and writes the key to the structure output descriptor
+  without touching `scalarOutputCount` when the caller passed no output scalar.
+- Instrumentation in the same build: `SWEET AKS: unwrap #n bag .. class ..
+  len .. out .. own/FOREIGN wlen .. hdr <8 bytes>` for the first 8 and every
+  128th call; `SWEET AKS: wrap #n bag .. class .. len ..`. That answers both
+  open questions from LATEST-81 (what the blob is, and why sel 10 vanished).
+- FB: at layer-0 present #2 and #200, `sweet_fb_thumb` logs a 32x40
+  luminance ASCII thumbnail of the panel plus `nonzero n/1280` and an FNV
+  signature, so a black / static / changing composition is readable from the
+  log without a photo.
+
+### 0102 build (observation)
+
+- Patch `xnu/patches/0102-sweet-aks-unwrap-diag-fb-thumb.patch` (6,706 B, LF,
+  2 files), ios-sweet commit `063b196`, pushed `10ae489..063b196` to
+  `fork/msdc-0079`.
+- CI run **41020854873** (sha `063b1967`): success 07:42:47 UTC, ~8 min total.
+  Artifacts `xnu-kernel` 12961004586 (60,068,774 B) and `xnu-buildtree`
+  12960809979 (23,216,311 B) -> `research/art-0102/`.
+  Kernel `kernel.development.sweet` 17,241,256 B,
+  sha256 `A3B949D4FFB6F5C1AA133345C43CD0A30B667B566932C4B09A2242F061510B17`.
+- Image `research/merlin-boot/shim-boot-merlin-msdc-0102-fbup-585.img`,
+  17,021,907 B, sha256
+  `95899D154C1330DBE670E878B3213B4576C7A9767F715E3032E78E583AC9EBE8`.
+  Builder verify: payload 16,646,048 B, cmdline unchanged, shim slot + dtb
+  byte-identical to E1, ADT/Video base 0x7e605438 -> 0x7e39c458, round-trip OK.
+- Confirmed the new format strings are inside both the CI kernel and the packed
+  image (`SWEET AKS: unwrap #`, `SWEET FB: |`, `panel 200`, `wrap #%u bag`), so
+  the image really carries 0102 and not a stale payload.
+
+### Next
+
+1. User flashes `boot` with the 0102 image (confirm first), boots, photographs
+   the first frame, lets it run, then pulls the log via TWRP as in LATEST-81
+   (last 1025 x 4 KiB of `/dev/block/mmcblk0p46`, skip 12,710,135).
+2. In the new log: `unwrap #n ... own|FOREIGN` -> does securityd stop retrying
+   sel 11 after 0102 answers it, and does anything new appear after that?
+   `SWEET FB: panel 2` / `panel 200` thumbnails -> is the composition black,
+   static (same sig) or changing?
+3. CI run again only after the next change is written; the workflow
+   concurrency group cancels queued/in-progress runs.
+
 ## Agent handoff / active work (2026-10-30 LATEST-81: 0101 BOOTED ~76 MIN AND ITS ON-DISK LOG PULLED - kAKSWrapKey (sel 10) IS GONE, securityd NOW RETRIES kAKSUnwrapKey (sel 11) x290 WITH A 40-BYTE BLOB THE STUB REJECTS (0xe00002c2); UI STILL BLACK, SAME fairplayd/bluetoothd CLEAN-EXIT LOOP)
 
 ### 0101 boot + log pull (observation)
