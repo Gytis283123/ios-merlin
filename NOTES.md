@@ -1,6 +1,64 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-30 LATEST-89: 0106 KERNEL BUILT ON macos-15 (macos-14 IS BROWNED OUT) AND THE SWEETGPUCLIENT IMAGE IS PACKED - shim-boot-merlin-msdc-0106-gpu-uc-cpus8-fbup-585.img 8DA37BED, awaiting the boot test)
+
+### macos-14 CI brownout (root cause, explains LATEST-85 "capacity" failures too)
+
+- Every dispatch on 2026-10-30 18:50-19:09 UTC (10 runs incl. msdc-0079
+  controls) was cancelled within seconds, zero steps recorded. The run
+  page annotation: "scheduled macOS 14 runner image brownout - macOS 14
+  runner images will be retired on November 2, 2026"
+  (actions/runner-images#13518). Brownouts run **14:00-00:00 UTC daily**
+  through Nov 1; the 17:01 UTC 0105 success was in a gap.
+- The workflow pins `runs-on: macos-14` because Xcode 15 iig matches the
+  xnu-8796 IORPC ABI. Migration options are macos-15/macos-26 only.
+
+### macos-15 migration test (action + observation) - IT BUILDS
+
+- Branch `msdc-0106-macos15` (ios-sweet `12327eab` = msdc-0106 + one-line
+  runs-on: macos-15), pushed to fork, dispatched during the brownout.
+- **Run 41113966391 SUCCEEDED in ~8 min.** The Xcode 16 iig
+  risk in the workflow comment did not materialize (Deps selects the
+  oldest Xcode on the image). This unblocks CI past the Nov 2 retirement;
+  only the runs-on line needs migrating for future patches.
+- Artifacts xnu-kernel 13005152454 / xnu-buildtree 13004762977 ->
+  `research/art-0106/`. Kernel `kernel.development.sweet` sha256
+  `eb18ab32b25f0cd52042b886de49d9fd64390e392cc32279c19b1da31e67ce80`
+  (SHA256SUMS match).
+
+### 0106 image (action)
+
+- `research/merlin-boot/shim-boot-merlin-msdc-0106-gpu-uc-cpus8-fbup-585.img`,
+  17,036,243 B, sha256
+  `8DA37BED68F2F3F877036A9FFAB2A09216D7CC4136E98D3E501611144E8248F8`.
+  Verified recipe (make-0099-image.py); cmdline = 0104 with cpus=8 PLUS
+  `sweetgpuclient=1` (a superset of 0105: the stub-publish lines still
+  print, and IOServiceOpen now succeeds against the stubs); repack
+  reproduced the sha bit-exact; shim slot + dtb E1 lineage, Video base
+  0x7e39c458. Strings verified in kernel, buildtree (SweetPlatformExpert
+  has the PE_parse_boot_argn gate + kIOUserClientClassKey + sel logging)
+  and the packed image.
+
+### Next
+
+1. User: `fastboot boot research\merlin-boot\shim-boot-merlin-msdc-0106-gpu-uc-cpus8-fbup-585.img`
+   (never flash), let it run ~1 h, pull the log via TWRP as in LATEST-86
+   (mmcblk0p46, skip 12,710,135).
+2. Look for: `SWEET GPU: IOAcceleratorES published` (0105 layer),
+   `SWEET GPU: user client opened on IOAcceleratorES (shim)` and a stream
+   of `SWEET GPU: uc sel N in a/b out c/d -> unsupported (shim)` lines
+   (0106 layer = what backboardd actually calls), eight SWEET CLK lines,
+   and whether backboardd's IOK lines stop saying `-> 0 found` and
+   SpringBoard's frozen mach_msg2/BoardServices stack changes or
+   SetupAssistant execs.
+3. If the user wants the 0105-behavior control instead, the same kernel
+   packs without `sweetgpuclient=1` (or boot-arg absent = identical to
+   0105).
+4. CI housekeeping: future patch dispatches should use a macos-15 branch
+   (or migrate runs-on) - macos-14 dies in brownout windows until Nov 2
+   and fully after.
+
 ## Agent handoff / active work (2026-10-30 LATEST-88: BUG-FIX SWEEP ON THE SHIM/TOOLS WORKING TREE - 18 findings, 18 independently confirmed, 18 fixed; WSL clang rebuild + QEMU smoke reaches bb stage 9 "xnu entry"; UNCOMMITTED-THEN-COMMITTED as one sweep commit, 0105 image unaffected)
 
 ### The sweep (action)
