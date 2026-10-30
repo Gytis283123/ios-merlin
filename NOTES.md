@@ -103,6 +103,14 @@
 3. cpus=8 is now the default candidate cmdline for future timing tests; keep
    the cpus=1 image for A/B.
 
+### Patch 0083 written (action)
+
+- Created xnu/patches/0083-sweet-clk-measure-debug.patch (2 hunks, 2 files):
+  - pexpert/pexpert/arm64/SWEET.h: SWEET_SMP_MAX_CPUS 6→8; added PMCR_E/PMCR_C/PMCNTENSET_CNTEN0 bit defs for PMCCNTR_EL0 enable.
+  - iokit/Kernel/arm/SweetCPU.cpp: removed phys_id > 0x500 check in start() (keeps (phys_id & 0xff) != 0 and num_cpus > MAX so A75s mpidr 0x600/0x700 are allowed); added forward declarations for sweet_pmccntr_enable() / sweet_measure_cpu_mhz(); call both from initCPU() and print per-CPU MHz via kprintf ("SWEET CLK: cpu=N mpidr=0xNNNN M MHz"); if PMCCNTR reads don't advance, prints "PMU trapped, clock unknown".
+- Patch NOT yet applied against XNU source (XNU tree lives on macOS / ios-sweet CI, not this Windows host). Needs `git apply --check` + build via ios-sweet CI.
+- Not flashed; fastboot boot only when user confirms.
+
 ## Agent handoff / active work (2026-10-30 LATEST-82: 0102 BUILT BY CI AND PACKED - shim-boot-merlin-msdc-0102-fbup-585.img READY; WAITING FOR THE USER TO FLASH BOOT)
 
 ### 0102: root cause of the 0101 AKS wall (established from the source)

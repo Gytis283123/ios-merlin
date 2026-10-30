@@ -1,0 +1,109 @@
+--- a/pexpert/pexpert/arm64/SWEET.h
++++ b/pexpert/pexpert/arm64/SWEET.h
+@@ -17,9 +17,14 @@
+
+ #define SWEET                     1
+
+-/* Six homogeneous A55s; cpus=N is clamped here until A76/AMP is audited. */
+-#define SWEET_SMP_MAX_CPUS         6
++/* Eight cores: four A55 + two A75 in separate clusters. */
++#define SWEET_SMP_MAX_CPUS         8
++
++/* PMU (PMCCNTR_EL0) control bits (Armv8.2 PMUv3). */
++#define PMCR_E                    (1ULL << 0)   /* Enable all counters */
++#define PMCR_C                    (1ULL << 1)   /* Cycle counter reset */
++#define PMCNTENSET_CNTEN0         (1ULL << 31)  /* Cycle counter enable */
+
+ #define ARM_ARCH_TIMER
+ #define __ARM_ARCH__              8
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -39,6 +39,8 @@
+ 	return (int32_t)x0;
+ }
+
++static void sweet_pmccntr_enable(void);
++static int sweet_measure_cpu_mhz(void);
++
+ class SweetCPU : public IOCPU {
+ 	OSDeclareDefaultStructors(SweetCPU);
+ 	const OSSymbol *cpuName = NULL;
+@@ -69,11 +69,11 @@ SweetCPU::start(IOService *provider)
+ 	if (*(const uint32_t *)reg->getBytesNoCopy() != cpu->phys_id) {
+ 		return false;
+ 	}
+-	if (cpu->phys_id > 0x500 || (cpu->phys_id & 0xff) != 0 ||
+-	    topology->num_cpus > SWEET_SMP_MAX_CPUS) {
+-		panic("SWEET CPU: invalid A55 topology cpu=%u mpidr=0x%x count=%u",
+-		    cpu->cpu_id, cpu->phys_id, topology->num_cpus);
++	if ((cpu->phys_id & 0xff) != 0 || topology->num_cpus > SWEET_SMP_MAX_CPUS) {
++		panic("SWEET CPU: invalid topology cpu=%u mpidr=0x%x count=%u",
++		    cpu->cpu_id, cpu->phys_id, topology->num_cpus);
+ 	}
+ 	if (!IOCPU::start(provider)) {
+ 		return false;
+@@ -191,6 +191,15 @@ SweetCPU::initCPU(bool boot)
+ 	setCPUState(kIOCPUStateRunning);
+ 	kprintf("SWEET CPU: cpu=%u entered initCPU mpidr=0x%llx EL%llu IRQs=%u\n",
+ 	    getCPUNumber(), __builtin_arm_rsr64("MPIDR_EL1") & 0xffffULL,
+ 	    __builtin_arm_rsr64("CurrentEL") >> 2, ml_get_interrupts_enabled());
++	/* Enable the PMU cycle counter and report this CPU's clock speed. */
++	sweet_pmccntr_enable();
++	int mhz = sweet_measure_cpu_mhz();
++	if (mhz > 0) {
++		kprintf("SWEET CLK: cpu=%u mpidr=0x%llx %u MHz\n",
++		    getCPUNumber(), __builtin_arm_rsr64("MPIDR_EL1") & 0xffffULL,
++		    (unsigned)mhz);
++	} else {
++		kprintf("SWEET CLK: cpu=%u PMU trapped, clock unknown\n", getCPUNumber());
+ 	}
+ 	__atomic_store_n(&initialized, 1, __ATOMIC_RELEASE);
+ }
+@@ -239,6 +248,37 @@ SweetCPU::startCPU(vm_offset_t start_paddr, vm_offset_t arg_paddr)
+ 	return KERN_SUCCESS;
+ }
+
++/* Enable the PMU cycle counter (PMCCNTR_EL0) on this CPU. */
++static void
++sweet_pmccntr_enable(void)
++{
++	uint64_t pmcr = __builtin_arm_rsr64("pmcr_el0");
++	pmcr |= PMCR_E | PMCR_C;
++	__builtin_arm_wsr64("pmcr_el0", pmcr);
++	__builtin_arm_wsr64("pmcntenset_el0", PMCNTENSET_CNTEN0);
++	__asm__ volatile("isb" ::: "memory");
++}
++
++/* Measure this CPU's clock in MHz by comparing PMCCNTR cycles vs CNTPCT over
++ * a fixed CNTPCT interval (~1 ms). Returns MHz, or -1 if PMCCNTR is trapped
++ * (reads don't advance). */
++static int
++sweet_measure_cpu_mhz(void)
++{
++	uint64_t cntfrq = __builtin_arm_rsr64("cntfrq_el0");
++	uint64_t start_cyc, end_cyc, start_cnt, end_cnt;
++
++	start_cyc = __builtin_arm_rsr64("pmccntr_el0");
++	start_cnt = __builtin_arm_rsr64("cntpct_el0");
++
++	/* Busy-wait for ~1 ms of CNTPCT ticks. */
++	uint64_t target = start_cnt + cntfrq / 1000;
++	while (__builtin_arm_rsr64("cntpct_el0") < target)
++		;
++
++	end_cyc = __builtin_arm_rsr64("pmccntr_el0");
++	end_cnt = __builtin_arm_rsr64("cntpct_el0");
++
++	if (end_cyc == start_cyc) {
++		return -1;	/* PMCCNTR not counting (trapped by secure monitor) */
++	}
++
++	uint64_t cyc_delta = end_cyc - start_cyc;
++	uint64_t cnt_delta = end_cnt - start_cnt;
++	/* MHz = (cycles / cnt_delta) * (cntfrq / 1e6) */
++	return (int)((cyc_delta * cntfrq) / (cnt_delta * 1000000ULL));
++}
++
+ void
+ SweetCPU::signalCPU(IOCPU *target)
+ {
