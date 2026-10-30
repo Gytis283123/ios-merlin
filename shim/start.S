@@ -9,7 +9,7 @@ _head:
 	.long	0			/* code1 */
 	.quad	0			/* text_offset */
 	.quad	_end			/* image_size (linked at 0) */
-	.quad	0xa			/* flags: LE, 4K pages, place anywhere */
+	.quad	0xa			/* flags: LE, 16K pages, place anywhere */
 	.quad	0			/* res2 */
 	.quad	0			/* res3 */
 	.quad	0			/* res4 */
@@ -22,6 +22,7 @@ _start:
 	msr	daifset, #0xf
 	mov	x19, x0			/* DTB pointer from ABL */
 #ifdef MERLIN
+#ifndef SHIM_QEMU
 	/* merlin early life, BEFORE anything else touches the world.
 	 * 1) pet the toprgu AP watchdog LK handed us armed (RESTART
 	 *    register, key 0x1971): without a pet the 16s window runs out
@@ -35,6 +36,9 @@ _start:
 	ldr	x20, =0x10007000
 	movz	w21, #0x1971
 	str	w21, [x20, #0x8]
+	/* 3) the red splash paint below is the phone splash address
+	 *    (0x7e605000), not console.h's SHIM_QEMU FB_BASE - on QEMU the
+	 *    console is the only display, so skip the phone-plane paints. */
 	ldr	x20, =0x7e605000
 	movz	w22, #0xffff, lsl #16	/* RED (a8r8g8b8) */
 	mov	w23, #48
@@ -45,6 +49,7 @@ _start:
 	add	x20, x20, #(4320 - 96 * 4)	/* next row after 96 cols */
 	subs	w23, w23, #1
 	b.ne	1b
+#endif
 #endif
 	msr	spsel, #1
 	adr	x1, _stack_top
@@ -61,10 +66,12 @@ _start:
 	b	1b
 2:	mov	x0, x19
 #ifdef MERLIN
+#ifndef SHIM_QEMU
 	/* GREEN proof block (rows 48..96) on the splash: survived bss zero
 	 * + vectors setup; shim_main is next. */
 	ldr	x20, =(0x7e605000 + 48 * 4320)
-	movz	w22, #0xff00, lsl #16	/* GREEN */
+	movz	w22, #0xff00, lsl #16	/* GREEN (a8r8g8b8) */
+	movk	w22, #0xff00
 	mov	w23, #48
 3:	mov	w24, #96
 4:	str	w22, [x20], #4
@@ -73,6 +80,7 @@ _start:
 	add	x20, x20, #(4320 - 96 * 4)
 	subs	w23, w23, #1
 	b.ne	3b
+#endif
 #endif
 	bl	shim_main
 3:	wfe
@@ -96,9 +104,9 @@ secondary_entry:
 
 /*
  * Exception vectors. Each slot stashes x29/x30, loads its slot number
- * and jumps to the common path, which saves x0-x28 and calls
- * exc_handler(slot, regs). IRQs return; everything else ends in the
- * on-screen panic.
+ * and jumps to the common path, which saves x0-x28 plus the interrupted
+ * lr and calls exc_handler(slot, regs). IRQs return; everything else
+ * ends in the on-screen panic.
  */
 .macro vent slot
 	.balign	0x80
@@ -144,6 +152,7 @@ exc_common:
 	stp	x24, x25, [sp, #192]
 	stp	x26, x27, [sp, #208]
 	str	x28, [sp, #224]
+	str	x30, [sp, #232]		/* interrupted lr, exc_handler reads regs[29] */
 	mov	x0, x29
 	mov	x1, sp
 	bl	exc_handler
@@ -162,6 +171,7 @@ exc_common:
 	ldp	x24, x25, [sp, #192]
 	ldp	x26, x27, [sp, #208]
 	ldr	x28, [sp, #224]
+	ldr	x30, [sp, #232]
 	add	sp, sp, #(30 * 8)
 	ldp	x29, x30, [sp], #16
 	eret

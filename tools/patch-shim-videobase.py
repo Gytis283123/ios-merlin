@@ -39,6 +39,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 STRIDE = 4320
 HEIGHT = 2340
+# 0x7e605438 comes from an older FB_BASE and matches only the deployed
+# in-flight image lineage (E1, repacked through 0105, see NOTES.md); shims
+# freshly built from shim/console.h encode 0x7e605000 - pass
+# --old-base 0x7e605000 for those (the assert below expects exactly 1 hit).
 DEFAULT_OLD = 0x7E605438
 ADT_SIZE = STRIDE * HEIGHT          # 0x9a3f80
 

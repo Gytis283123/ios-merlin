@@ -12,6 +12,7 @@
 #include "loader.h"
 #include "fdt.h"
 #include "ufs.h"
+#include "ramfb.h"
 
 #define IMEM_RESTART_REASON	0x146aa65cUL	/* qcom,msm-imem restart_reason@65c */
 #define RESTART_BOOTLOADER	0x77665500U
@@ -200,7 +201,7 @@ void exc_handler(uint64_t slot, uint64_t *regs)
 	con_hex("SPSR", rsr("spsr_el1"));
 	con_hex("X0", regs[0]);
 	con_hex("X1", regs[1]);
-	con_hex("X30", regs[29]);	/* stashed lr is just above the frame */
+	con_hex("X30", regs[29]);	/* interrupted lr, saved by exc_common */
 	reset(40);
 }
 
@@ -629,44 +630,49 @@ static void bigfact(const char *label, uint64_t v)
 void shim_main(uint64_t dtb)
 {
 #ifdef MERLIN
+#ifdef SHIM_QEMU
+	/* QEMU virt has no MTK watchdog/GIC at the merlin addresses, so the
+	 * diag would abort before the loader runs.  Same code path from
+	 * con_clear() on, just without the hardware pokes. */
+	stage = "loader";
+	/* If QEMU was started with -device ramfb, let it scan our
+	 * framebuffer out to the GUI window.  Harmless without it. */
+	ramfb_init(FB_BASE, FB_W, FB_H, FB_STRIDE);
+	con_clear(0);
+	bb_report();
+	const char *why = loader_boot(dtb);
+	con_clear(RED);
+	con_str("LOADER", why);
+	for (;;)
+		delay_ms(5000);
+#else
 	/* boot 7: boot 6 proved the gzip(Image)+FDT blob shape runs on the
 	 * phone and its diag draws - but SCALE-2 text is unreadable in a
 	 * phone photo.  So: full small diag once (wiped), then the facts
 	 * page at 8x glyph scale on top, then the full diag again below
 	 * the facts page.  Camera reads the top, eyes read the rest. */
 	stage = "diag";
+	con_clear(0);		/* black canvas: default scale-2 font only */
+	bb_report();		/* how far the previous (reset) boot got */
+	bb_set(1, "shim start");
 	diag_small(dtb);
+	bb_set(2, "diag done");
 
-	con_big_mode(8);
+	/* boot 10: the full diag fills all 73 rows, so the loader's own lines
+	 * fell off the bottom of the panel on 0009.  Wipe to black, reprint
+	 * the two live values still outstanding, then hand over: the next
+	 * screen is the loader status or xnu's early console. */
+	stage = "loader";
 	con_clear(0);
-	bigfact("EL", rsr("currentel") >> 2);
-	bigfact("CNTFRQ", rsr("cntfrq_el0"));
-	bigfact("DTB", dtb);
-	con_big_hex("WDTMODE", rd32(MTK_RGU + RGU_WDT_MODE));
-	con_big_hex("WDTLEN", rd32(MTK_RGU + RGU_WDT_LENGTH));
-	for (int i = 0; i < bg_nmem && i < 2; i++) {
-		bigfact(i ? "MEMB1" : "MEMB0", bg_memb[i]);
-		bigfact(i ? "MSZ1" : "MSZ0", bg_msz[i]);
-	}
-	if (bg_has_ilo) {
-		bigfact("INITLO", bg_ilo);
-		bigfact("INITHI", bg_ihi);
-	}
-	if (bg_has_fb)
-		bigfact("ATAGFB", bg_fb);
-	if (bg_ntirq > 0)
-		con_big_hex("T0", bg_tirq[0]);
-	if (bg_ntirq > 1)
-		con_big_hex("T1", bg_tirq[1]);
-	if (bg_ntirq > 2)
-		con_big_hex("T2", bg_tirq[2]);
-	con_big_hex("NCPU", (uint32_t)ncpus);
-	con_big_hex("MPIDR", (uint32_t)(rsr("mpidr_el1") & 0xffffff));
-	con_big_mode(0);
-
-	diag_small(dtb);
+	bb_report();		/* keep the previous boot's post-mortem visible */
+	con_hex("MEMBASE", bg_memb[0]);
+	con_hex("MEMSIZE", bg_msz[0]);
+	const char *why = loader_boot(dtb);
+	con_clear(RED);
+	con_str("LOADER", why);
 	for (;;)
 		delay_ms(5000);		/* spins with wdt_pet() inside */
+#endif
 #else
 	struct mmu_info mi;
 

@@ -18,8 +18,14 @@ import struct
 import sys
 
 HERE = __import__('os').path.dirname(__import__('os').path.abspath(__file__))
-INIT_VA, INIT_SIZE = 0xfffffe0007a7bb44, 0xc4
-TX_VA, TX_SIZE = 0xfffffe0007a7bc10, 0x3e4
+# VAs and original first instruction words below are from xnu/out-dlildbg2
+# (kernel.development.sweet, sha256 13789e21f7c90925158d30dfd2a09c3ef280ff
+# c772cc20afd6516d81c2697cfc; symtab _fbcon_init/_fbcon_transmit_data).
+# They are kernel-build-specific: on any other kernel the first-word assert
+# in main() must fire - do not weaken it, a missed VA overwrites unrelated
+# __TEXT_EXEC code (re-derive the VAs + originals from the new symtab).
+INIT_VA, INIT_SIZE, INIT_ORIG = 0xfffffe0007a7af24, 0xc4, 0xd0002fc8
+TX_VA, TX_SIZE, TX_ORIG = 0xfffffe0007a7aff0, 0x3e4, 0xd0002fc8
 NOP = 0xd503201f
 
 
@@ -53,10 +59,16 @@ def main():
     tx = open(f'{HERE}/fbcon-1x.tx.bin', 'rb').read()
     assert len(init) <= INIT_SIZE, len(init)
     assert len(tx) <= TX_SIZE, len(tx)
-    for va, blob, size in ((INIT_VA, init, INIT_SIZE), (TX_VA, tx, TX_SIZE)):
+    for va, blob, size, orig in ((INIT_VA, init, INIT_SIZE, INIT_ORIG),
+                                 (TX_VA, tx, TX_SIZE, TX_ORIG)):
         o = file_off(segs, va)
         first = struct.unpack_from('<I', buf, o)[0]
-        assert first != NOP, f'{va:#x}: already patched?'
+        assert first == orig, (f'{va:#x}: expected original {orig:#010x}, '
+                               f'found {first:#010x} - kernel mismatch? '
+                               're-derive the VAs from the new symtab')
+        assert (size - len(blob)) % 4 == 0, \
+            f'{va:#x}: {(size - len(blob)) % 4} trailing original bytes left ' \
+            'between the blob and the NOP fill; rebuild the blobs'
         buf[o:o + len(blob)] = blob
         struct.pack_into(f'<{(size - len(blob)) // 4}I', buf, o + len(blob),
                          *([NOP] * ((size - len(blob)) // 4)))

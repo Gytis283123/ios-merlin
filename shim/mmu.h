@@ -1,11 +1,10 @@
 #pragma once
 #include <stdint.h>
+#include "console.h"
 
-#ifdef MERLIN
-#define FB_PHYS	0x7e605000UL		/* lk splash (atag,videolfb) */
-#else
-#define FB_PHYS	0x9c000000UL
-#endif
+/* console.h owns the framebuffer-base fact (FB_BASE, SHIM_FB_BASE-aware);
+ * FB_PHYS is just the physical-address name for it. */
+#define FB_PHYS	FB_BASE
 
 struct mmu_info {
 	uint64_t img_lo, img_hi, ttbr;

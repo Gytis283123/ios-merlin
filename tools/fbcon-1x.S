@@ -36,8 +36,10 @@ fbcon_init_1x:
 	ldr	w8, [x8, #:lo12:fbcon_stride]
 	cbz	w8, 2f
 	mov	w10, #0
-1:	adrp	x5, fbcon_rows		/* clear_row clobbers x5 */
-	ldr	w9, [x5, #:lo12:fbcon_rows]
+1:	adrp	x5, fbcon_height
+	ldr	w9, [x5, #:lo12:fbcon_height]
+	add	w9, w9, #15
+	lsr	w9, w9, #4
 	cmp	w10, w9
 	b.hs	2f
 	mov	w0, w10
@@ -155,14 +157,6 @@ fbcon_newline_1x:
 2:	str	w3, [x2, #:lo12:fbcon_row]
 	mov	w0, w3
 	bl	fbcon_clear_row_1x
-	adrp	x2, fbcon_row
-	ldr	w3, [x2, #:lo12:fbcon_row]
-	add	w0, w3, #1
-	adrp	x4, fbcon_rows
-	ldr	w4, [x4, #:lo12:fbcon_rows]
-	cmp	w0, w4
-	csel	w0, wzr, w0, eq
-	bl	fbcon_clear_row_1x
 9:	ldp	x29, x30, [sp], #16
 	ret
 
@@ -191,6 +185,10 @@ fbcon_scroll_1x:
 fbcon_clear_row_1x:				// w0 = row
 	lsl	w1, w0, #4			// y = row*16
 	add	w2, w1, #16			// end y
+	adrp	x5, fbcon_height
+	ldr	w5, [x5, #:lo12:fbcon_height]
+	cmp	w2, w5
+	csel	w2, w2, w5, lo
 	adrp	x3, fbcon_base
 	ldr	x3, [x3, #:lo12:fbcon_base]
 	adrp	x4, fbcon_stride

@@ -2,17 +2,21 @@ OUTPUT_FORMAT(elf64-littleaarch64)
 ENTRY(fbcon_init_1x)
 SECTIONS
 {
-	. = 0xfffffe0007a7bb44;		/* _fbcon_init in the 0080+0082 kernel (nm) */
+	/* Both addresses from xnu/out-dlildbg2's symtab (kernel.development.sweet,
+	 * sha256 13789e21f7c90925158d30dfd2a09c3ef280ffc772cc20afd6516d81c2697cfc),
+	 * NOT the 0083-era kernels; they move every kernel build - re-derive
+	 * before reuse (see patch-fbcon1x.py). */
+	. = 0xfffffe0007a7af24;		/* _fbcon_init (symtab) */
 	.init : { *(.init) }
-	. = 0xfffffe0007a7bc10;		/* _fbcon_transmit_data (nm) */
+	. = 0xfffffe0007a7aff0;		/* _fbcon_transmit_data (symtab) */
 	.tx : { *(.tx) }
 }
-fbcon_width  = 0xfffffe00080781b0;
-fbcon_cols   = 0xfffffe00080781b4;
-fbcon_height = 0xfffffe00080781b8;
-fbcon_rows   = 0xfffffe00080781bc;
-fbcon_row    = 0xfffffe00080781c0;
-fbcon_col    = 0xfffffe00080781c4;
-fbcon_base   = 0xfffffe00080781c8;
-fbcon_stride = 0xfffffe00080781d0;
+fbcon_width  = 0xfffffe0008074150;
+fbcon_cols   = 0xfffffe0008074154;
+fbcon_height = 0xfffffe0008074158;
+fbcon_rows   = 0xfffffe000807415c;
+fbcon_row    = 0xfffffe0008074160;
+fbcon_col    = 0xfffffe0008074164;
+fbcon_base   = 0xfffffe0008074168;
+fbcon_stride = 0xfffffe0008074170;
 iso_font     = 0xfffffe0007b5fec0;

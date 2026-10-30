@@ -1,6 +1,67 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-30 LATEST-88: BUG-FIX SWEEP ON THE SHIM/TOOLS WORKING TREE - 18 findings, 18 independently confirmed, 18 fixed; WSL clang rebuild + QEMU smoke reaches bb stage 9 "xnu entry"; UNCOMMITTED-THEN-COMMITTED as one sweep commit, 0105 image unaffected)
+
+### The sweep (action)
+
+- ZCode dynamic workflow (run dwfrun-e4c8282e): 3 bug hunters (shim C,
+  tools Python, cross-file consistency) -> independent confirmer per
+  finding -> one Code writer applied fixes -> gcc -fsyntax-only +
+  py_compile gate (13 files, all pass). Full report: workflow artifact
+  "Bug hunt and fix report"; 18-row findings table alongside.
+- Highlights (all confirmed by repro, not just reading):
+  - HIGH tools/patch-fbcon1x.py: only pre-write check was `!= NOP`, so on
+    any kernel other than out-dlildbg2 it would overwrite ~1.2 KB of
+    unrelated __TEXT_EXEC (simulated on art-0105: words 0x53103e69/
+    0x3941510a pass the old assert). Now asserts the expected original
+    word per site and fails loudly on 0105 / already-patched input.
+  - shim/ramfb.c:73: fw_cfg DMA completion poll read a non-volatile
+    static; clang -O2 deleted the poll loop entirely. Volatile read
+    restored; the loop is back in the disassembly (10M countdown,
+    error-bit check).
+  - shim/start.S: QEMU builds no longer paint the phone plane
+    (0x7e605000 literal absent from out-fixcheck/start.o); GREEN proof
+    block had a missing movk (painted opaque black) - fixed; exception
+    frame now saves/restores the interrupted lr to regs[29] (X30 on the
+    panic screen was stale stack bytes); Image-header flags comment
+    corrected to 16K pages (0xa per Linux image.h; value kept).
+  - shim/loader.c bb_set: NUL-terminates after the copy (shorter message
+    over a previous boot's longer one left residue on the persistent
+    0xBFFFF000 page).
+  - shim/mmu.h FB_PHYS unified under console.h FB_BASE (was a third
+    divergent copy of the FB base, latent).
+  - tools/patch-earlyfb.py: FIXUPS VAs re-derived for the 0105 kernel
+    (f576189d, method validated bit-exact against art-0083); tool runs
+    end-to-end on 0105 now; module-level main() guarded for import.
+  - Comments corrected: mkbootimg.py id is the RAW digest; fbcon-1x.ld
+    kernel attribution (old "0083" claim wrong); console.h/patch-shim-
+    videobase.py now document that fresh shims encode 0x7e605000 and the
+    deployed E1 lineage carries 0x7e605438 (--old-base must match).
+
+### Verification (observation)
+
+- WSL clang 21.1.8 (same flags as build-qemu.sh) rebuilt both configs
+  into shim/out-fixcheck/ and shim/out-fixcheck-phone/ (7 pre-existing
+  warnings, unchanged). start.S also compiled without SHIM_QEMU: paint
+  code + green movk + x30 save all present; phone literal 1 hit, QEMU 0.
+- QEMU smoke (tools/qemu-shim.py, out-fixcheck Image + 0105 payload):
+  black-box seq=7 stage=9 "xnu entry" (the deepest bb_set), 74 console
+  lines, no exception/panic screen.
+- NOTE: build-qemu.sh always defines SHIM_QEMU, so the phone splash
+  paints only exist in build.sh (aarch64-linux-gnu-gcc) builds; the
+  "phone" variant of build-qemu.sh only changes FB geometry.
+
+### Next
+
+1. Nothing pending on this sweep - committed as one milestone commit.
+2. 0105 boot test still the active hardware step (LATEST-87); the sweep
+   changed shim/tools sources only and does not affect the packed 0105
+   image (no repack done - source fixes reach images only on the next
+   rebuild).
+3. 0106 (msdc-0106, ee6b35a) dispatch still awaiting the 0105 boot
+   result, per LATEST-87.
+
 ## Agent handoff / active work (2026-10-30 LATEST-87: 0105 = printf SWEET CLK + INERT GPU ACCELERATOR SERVICES (IOAcceleratorES/IOAcceleratorESLegacy/AGXAccelerator) SO THE PENDING BACKBOARD MATCHES COMPLETE; CI 41087860631)
 
 ### 0105 patch (action)

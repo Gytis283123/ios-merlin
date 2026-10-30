@@ -70,7 +70,7 @@ def main():
     )
     hdr += a.name.encode()[:16].ljust(16, b"\0")
     hdr += a.cmdline.encode()[:512].ljust(512, b"\0")
-    hdr += b"\0" * 32                # id: sha1 hex, filled below
+    hdr += b"\0" * 32                # id: raw sha1 digest, filled below
     hdr += a.extra_cmdline.encode()[:1024].ljust(1024, b"\0")
     hdr += struct.pack("<I", 0)      # recovery_dtbo_size (v1)
     hdr += struct.pack("<Q", 0)      # recovery_dtbo_offset
@@ -88,7 +88,7 @@ def main():
         img += pad(dtb, a.page_size)
 
     # id = sha1 over the unpadded sections, in AOSP order (kernel, ramdisk,
-    # second, recovery_dtbo, dtb); stored as 20 hex chars + NUL.
+    # second, recovery_dtbo, dtb); stored as the RAW 20-byte digest (not hex).
     h = hashlib.sha1()
     for part in (kernel, ramdisk, second, dtb):
         if part:
