@@ -25,7 +25,29 @@
     renderer is claimed; the software framebuffer path is unchanged.
 - `git apply` verified against the 0104 buildtree sources.
 - CI run 41087860631 (workflow_dispatch msdc-0079 @ `d62f3dc2`) queued
-  16:13 UTC; artifact/image facts to be appended.
+  16:13 UTC and FAILED; the watcher's retries (41090220226/41090318309/
+  41091330668 cancelled, 41091501788 failed on runner capacity) ended with
+  **41095066351 SUCCESS at 17:01:02 UTC** (same `d62f3dc2`, ~17 min).
+
+### 0105 artifacts + image (done)
+
+- Artifacts xnu-kernel 12996623308 / xnu-buildtree 12996333694 ->
+  `research/art-0105/`. Kernel `kernel.development.sweet` 17,252,096 B,
+  sha256
+  `f576189d21e8161e4660a98252bf936e82da67c73f3c291da97872545ab5a1fc`
+  (SHA256SUMS match). Buildtree confirmed patched: SweetCPU.cpp:320
+  `sweet_report_cpu_clocks()` now printf; SweetPlatformExpert.cpp +
+  KernelConfigTables.cpp contain the IOAcceleratorES/Legacy/AGX
+  personalities.
+- Image
+  `research/merlin-boot/shim-boot-merlin-msdc-0105-gpu-clk-cpus8-fbup-585.img`,
+  17,034,195 B, sha256
+  `dc696f28aa9db17408926410ec3893b250c7d8f7358d261d39ec70012565ea88`.
+  Packed with the verified recipe (make-0099-image.py, cmdline = 0104
+  with cpus=8); a from-scratch repack reproduced the sha256 bit-exact.
+  Strings verified in kernel and image: `SWEET GPU: %s published (stub;
+  no renderer)`, both SWEET CLK formats, `cpus=8`. Shim slot + dtb
+  byte-identical to E1, Video base 0x7e605438 -> 0x7e39c458.
 
 ### 0106 shim (prepared, not pushed)
 
