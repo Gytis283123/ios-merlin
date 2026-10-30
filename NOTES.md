@@ -1,6 +1,80 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-30 LATEST-81: 0101 BOOTED ~76 MIN AND ITS ON-DISK LOG PULLED - kAKSWrapKey (sel 10) IS GONE, securityd NOW RETRIES kAKSUnwrapKey (sel 11) x290 WITH A 40-BYTE BLOB THE STUB REJECTS (0xe00002c2); UI STILL BLACK, SAME fairplayd/bluetoothd CLEAN-EXIT LOOP)
+
+### 0101 boot + log pull (observation)
+
+- Device merlin `204719200409`, image `research/merlin-boot/shim-boot-merlin-msdc-0101-fbup-585.img`
+  (sha256 `D2391D21...`) flashed 2026-10-29, booted 2026-10-30.
+- Photo at flush 361 @ 3611.563 s (1 h 00 m 11 s): Apple logo + static
+  progress bar + kernel console; exactly four lines between flushes
+  (`exec xpcproxy`, `exec fairplayd.H2`, `exec xpcproxy`, `exec bluetoothd`),
+  i.e. the same 10 s respawn cycle as 0100 at 62 min.
+- Pulled read-only from TWRP by `adb shell dd` of the last 1025 x 4 KiB of
+  userdata (`/dev/block/mmcblk0p46`, 52,064,911,360 B) at skip 12,710,135 ->
+  `research/logs/sweetlog-0101-20261030.bin` (4,198,400 B) -> `.txt`
+  **418,051 B, 7,884 lines, 455 flushes, last flush 4542.034 s (~75.7 min)**.
+  Ring not wrapped (whole boot present, from the kernel banner).
+- Boot: `MERLIN CLK ... counter now 33667 ms`, 2349 MHz core,
+  `MERLIN MSDC: init took 11 ms`; final MSDC line `245185 cmds 8618040 KiB
+  in 285379 ms -> 30198 KiB/s` (last CMD25 x32 731 us). `readverify enabled`,
+  no mismatch line at all. **DMA SPILL 128 lines, max count 127000** - the
+  same canary false positive as 0100 (118 lines, 117000, see below).
+- No panic. 2,895 execs / 218 distinct names; xpcproxy 1436, fairplayd.H2
+  **441**, bluetoothd **436**, CommCenter 109 (all 109 have `CRASH` lines),
+  homed 12 crashes, driverkitd 1. SpringBoard is exec'd once, never crashes,
+  makes 5 AKS calls (sel 0/35/7/35 at 50 s, sel 7 again at 960 s) and emits
+  **zero** stdout lines; the only `|backboardd|` lines are the 15 objc
+  duplicate-class warnings at 20 s.
+
+### AKS: 0101 changed the failure but did not unblock (observation)
+
+- 2,139 AKS calls, 242 distinct signatures.
+- 0100: `securityd sel 10` (kAKSWrapKey) **228 x 0xe00002c7**. 0101: **no
+  sel 10 call at all**, at any point in the boot.
+- 0101: `securityd sel 11` (kAKSUnwrapKey) **290 x `in 2/40 out 0/32 ->
+  0xe00002c2`** (kIOReturnBadArgument), first at 40 s, last at 4202 s;
+  ~4/min with long gaps, i.e. a slow retry, not a spin.
+- Unchanged failures: `profiled sel 31` 5 x 0xe00002c7 (0/32768 out),
+  `com.apple.datamigrator sel 93` 1 x, `sel 34` 1 x.
+- Inferences (guesses, NOT established): the 40-byte input is the shape our
+  own `sweet_aks_wrap_key` emits (8-byte RFC-5649 header + 32-byte key), but
+  it is also the shape of a real keybag blob, and the 0101 stub prints no
+  bytes, so the log cannot say which. The disappearance of sel 10 is
+  likewise unexplained; the selector change means securityd took a
+  different branch than on 0100.
+
+### Display state (observation + one correction)
+
+- `SWEET FB: 206000 swaps` at the end (0100: 205000) and the 0056 present
+  path copies layer surfaces to the panel, so backboardd is compositing.
+  `IOK backboardd: matching ... IOAcceleratorES ... -> 0 found` x334 and
+  `ApplePearlSEPDriver -> none` in both logs. The screen nevertheless shows
+  only the shim splash + console text: the composition carries no UI.
+- CORRECTION to LATEST-79/80: "console still on screen" is NOT evidence that
+  no frame was presented. `sweet_console_muted` is only set when boot-arg
+  `sweetfb_noconsole=1` is present (0067), and this cmdline lacks it, so the
+  console always draws over the GUI. Absence of UI is established by the
+  photo (black + logo + bar + text), not by the console.
+- The DMA SPILL lines are a 0085/0098 canary artifact, not corruption: they
+  start in the first seconds (count 1: `bad 1984 first 64 len 512`), appear
+  on both boots (117000 vs 127000 by the end), and readverify never reported
+  a mismatch across ~8.6 GB. Do not chase them.
+
+### Next
+
+1. 0102 (NOT written yet): on a rejected sel 11, print the first 16 bytes +
+   length of the blob, and make unwrap tolerant (any 8..40-byte input ->
+   deterministic 32-byte key, still logging which branch was taken) so one
+   build both diagnoses and unblocks. Also print the sel 10/11 scalar args
+   to explain why sel 10 vanished.
+2. UI thread is now the bigger question: SpringBoard is alive and silent,
+   its last AKS call is at 960 s, and backboardd presents frames that contain
+   no UI. Next diagnostic should look at the composited layer mask (which
+   surfaces are enabled at present time), not at AKS.
+3. Phone is in TWRP as of the pull; nothing else is pending on the device.
+
 ## Agent handoff / active work (2026-10-29 LATEST-80: 0101 BUILT BY CI AND PACKED - shim-boot-merlin-msdc-0101-fbup-585.img READY; WAITING FOR THE USER TO FLASH BOOT)
 
 ### CI for 0101 (sha 10ae489): five queue deaths, then success
