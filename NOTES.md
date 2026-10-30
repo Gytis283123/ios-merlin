@@ -1,6 +1,108 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-30 LATEST-83: 0102 + cpus=8 BOOTED - ALL 8 CORES ONLINE (incl. both A75s), kAKSUnwrapKey NOW RETURNS 0x0 (12/12) AND kAKSWrapKey TOO (177/177); BOOT STILL PARKS AT THE SAME fairplayd/bluetoothd LOOP, SPRINGBOARD STILL DRAWS NOTHING)
+
+### 0102 + cpus=8 boot, log pulled (observation)
+
+- Image `research/merlin-boot/shim-boot-merlin-msdc-0102-cpus8-fbup-585.img`
+  (sha256 `E1099FBB...`, one byte different from the cpus=1 0102 image:
+  `cpus=1` -> `cpus=8`), flashed by the user, ran ~60 min, phone to TWRP.
+- Pulled read-only as before -> `research/logs/sweetlog-0102-20261031.bin`
+  (4,198,400 B) -> `.txt` **404,769 B, 7,248 lines, 363 flushes, last
+  3621.523 s (~60.4 min)**, ring not wrapped.
+- **SMP WORKS ON HARDWARE (first time in this project):** `SWEET CPU:
+  requested=8 selected=8 (limit=8)`, then for cpu 1..7
+  `CPU_ON target=0xN00 entry_pa=0x81492000 context=N` /
+  `PSCI CPU_ON rc=0` / `mpidr=0xN00 came alive; SGI1 OK`, ending
+  `8/8 CPUs initialized, SGI1 verified`. That includes **0x600 and 0x700 =
+  the two A75s**, i.e. the second cluster's power domain works through the
+  same PSCI path. Patches 0065+0078 are proven on hardware.
+- User observation: boot and log output are visibly faster; 8 cores instead
+  of 1 A55. (Not yet measured with a controlled timer.)
+
+### AKS: THE 0101 WALL IS GONE (observation)
+
+- `sel 11` kAKSUnwrapKey: **12 calls, all `-> 0x0`** (0101: 290 x
+  `0xe00002c2`). First at 10 s, last at 1980 s. The logged blobs are
+  `bag 0 class 40 len 40 out 32 own wlen 32 hdr a65959a600000020` -
+  the first 8 bytes are exactly our RFC-5649 header with a 32-byte length,
+  i.e. the blob WAS produced by our own kAKSWrapKey. The 0101 guard
+  (`out_scalars < 1`) was the whole failure.
+- `sel 10` kAKSWrapKey: **177 calls, all `-> 0x0`** (0100: 228 failures;
+  0101: zero calls). Logged `wrap #n bag 0 class <7/10/11/...> len 32`.
+- securityd's last AKS call is at 2801 s; no retry spin. Remaining
+  failures are the old three: profiled sel 31 x3, datamigrator sel 93 x1,
+  sel 34 x1 (all 0xe00002c7).
+
+### The boot still parks (observation)
+
+- 2,347 execs / 221 distinct names in 60 min (0101: 2,895 / 218 in 76 min).
+  Same loop: fairplayd.H2 358, bluetoothd 357 clean exits (zero CRASH lines
+  for either), CommCenter 108 crashes (all have CRASH lines), xpcproxy 1162.
+- SpringBoard exec'd once, never crashes, makes 5 AKS calls (50 s and
+  950 s, all 0x0) and still emits **zero** output lines.
+- **SetupAssistant is still never exec'd.** New daemon names vs 0101 are
+  only fitnesscoachingd x9, nanoregistryd, ospredictiond, swcd.
+- No panic. No new stage. This is the next wall.
+
+### Display probe result (observation + a flaw in the probe)
+
+- `SWEET FB: panel 2 nonzero 42/1280 sig 824551059856bdbd`,
+  `panel 200 nonzero 36/1280 sig 1d3aa312ba7d7eaf`: the frame changed
+  between presents 2 and 200, but the sampled patterns are sparse vertical
+  stripes, i.e. **2x-scaled console text, not UI**. The thumbnail is taken
+  from `fPixels` AFTER the layer copy, and on this port the layer surface
+  aliases the same panel memory the fbcon draws into, so the probe cannot
+  separate console text from an iOS scene. Next version must hash the
+  layer surface BEFORE the copy.
+- `SWEET FB: 194000 swaps` at 3281.381 s is the LAST swap-counter line,
+  although the log runs to 3621 s: **backboardd stopped swapping ~5.7 min
+  before the end.** Unexplained; possibly display idle. Worth a counter
+  print when swap stops.
+
+### Timing: "50 min to exec" is a screen artifact (observation)
+
+- launchd exec at **35.1 s** after reset (wall timestamp 16:00:35.098,
+  `MERLIN CLK: counter now 33948 ms`), SpringBoard at ~39 s, backboardd
+  ~45 s. The log's own flush/exec order proves the exec stage starts in the
+  first 10 s of log time.
+- What takes ~50 min is the *readability* of the console: until
+  backboardd's presents stop (3281 s in this run) the panel is overwritten
+  at ~10 Hz by the layer copies, so the fbcon text only becomes stable on
+  screen near the end. The user's photo (flush 350 at 3491 s) is 3 min
+  after swaps stopped.
+
+### Clock question (open; needs a measurement, not a guess)
+
+- `MERLIN CLK: 4194304 dependent adds in 3569 us -> ~2350 MHz core
+  (2 cycles/iter)` is the same figure as 0100/0101. The loop is
+  `subs`+`b.ne`; if it retires at 1 cycle/iter the core is ~1.175 GHz, and
+  2 cycles/iter gives 2.35 GHz, which is ABOVE this SoC's max (2.0 GHz A75 /
+  1.8 GHz A55). So one of the two assumptions is wrong and the real clock
+  is probably ~1.17 GHz - i.e. the LK OPP, with no DVFS driver in XNU to
+  raise it. **Do not quote 2.35 GHz as fact.**
+- Planned probe: enable PMCCNTR_EL0 (PMCR.E/C, PMCNTENSET bit 31) and
+  compare cycles vs CNTPCT over a fixed interval on every CPU, printing
+  per-CPU MHz. That settles cycles/iter and gives the real OPP. If PMU is
+  trapped by the secure monitor, fall back to two loop shapes (subs-only
+  and adds-only) to solve for cycles/iter.
+
+### Next
+
+1. 0103 proposal: per-CPU PMCCNTR clock report; layer-surface hash BEFORE
+   the panel copy (replaces the contaminated thumbnail); print when swaps
+   stop. If the layers hash to a constant (e.g. all zero), SpringBoard is
+   not drawing at all and the wall is inside SpringBoard/UIKit, not the
+   present path.
+2. SpringBoard blocker is the main thread now: it is alive, silent, and its
+   last AKS call is at 950 s. Candidate causes (guesses): missing
+   IOAcceleratorES (334 `-> 0 found`), waiting on a Mach service that never
+   registers, or a UIKit status-bar/screen-size assertion. The 0054 process
+   sampler could dump its kernel stack if extended to user threads.
+3. cpus=8 is now the default candidate cmdline for future timing tests; keep
+   the cpus=1 image for A/B.
+
 ## Agent handoff / active work (2026-10-30 LATEST-82: 0102 BUILT BY CI AND PACKED - shim-boot-merlin-msdc-0102-fbup-585.img READY; WAITING FOR THE USER TO FLASH BOOT)
 
 ### 0102: root cause of the 0101 AKS wall (established from the source)
