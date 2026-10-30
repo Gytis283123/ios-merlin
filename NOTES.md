@@ -1,6 +1,67 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-30 LATEST-86: 0104 LOG PULLED - THE SAMPLER WORKS AND SPRINGBOARD'S MAIN THREAD IS FROZEN IN ONE mach_msg2 / BoardServices CALL FOR THE WHOLE HOUR; SWEET CLK IS STILL ZERO BECAUSE kprintf IS THE PEXPERT EARLY CONSOLE, NOT THE RING)
+
+### 0104 log pull (observation)
+
+- Pulled via TWRP as before (/dev/block/mmcblk0p46, 52,064,911,360 B,
+  skip 12,710,135) -> research/logs/sweetlog-0104-20261030.bin ->
+  `.txt` 499,537 B, 8,173 lines, 375 flushes, last 3741.558 s. No wrap.
+- The 0054 sampler now runs (the 0104 MSDC start fix works): 31 samples
+  (`SMP --- sample 0` at 90 s .. sample 30), 695 SMP lines, and the
+  per-sample clock reprint call is present.
+- SWEET CLK / PMU trapped lines: **0**. `kprintf` is not osfmk printf: it
+  is the pexpert early console (`pexpert/arm/pe_kprintf.c`, declared in
+  pexpert.h), so it never reaches the serial_console `_cnputs` ring.
+  0104's `sweet_report_cpu_clocks()` used kprintf, so it is invisible even
+  when called from `printf`-based sampler rounds. A one-word fix (printf)
+  remains.
+
+### SpringBoard is not crashed - it is asleep in one call (observation)
+
+- SpringBoard pid 27, `slide 0xc10000 mh 0x104100000`. Thread t0 is
+  bit-identical in all 31 samples (90 s .. ~62 min):
+  `pc 0x1c3221030 lr 0x1c3232b18 sp 0x16bcfa990 bt 0x1c3232db8
+  0x1c3221524 0x18e77a308 0x18e77a694 0x1d27fe0ec 0x19c5bf128
+  0x19c5c1e78 0x19c5c1554 0x18e908ce0 0x1a32ac304 0x1c64755c8 0x1a5234344`.
+- pc disassembles to the `ret` after `mov x16, #-0x2f; svc #0x80` in
+  libsystem_kernel: **Mach trap 47 = mach_msg2_trap** (mach_trap_table
+  `/* 47 */ MACH_TRAP(mach_msg2_trap, ...)`). The thread is waiting for a
+  Mach message, not spinning or faulting.
+- Unslid with the sampler slide and mapped with the iOS 26H392 dyld image
+  table (research/ipsw-x/cache): libsystem_kernel+0x12db8 / +0x1524 ->
+  libdispatch+0x36308/+0x36694 -> libxpc+0xe0ec -> BoardServices+0x3128 /
+  0x5e78 / 0x5554 -> BackBoardServices+0x3ace0 -> FrontBoard+0x5c304 ->
+  SpringBoard.framework+0x9b5c8 -> dyld+0x14344. A synchronous
+  BoardServices/BackBoard XPC call from SpringBoard's main thread that
+  never gets its reply (outer frames are FP-walk, treat as indicative).
+- Other SpringBoard threads: t1 in libdispatch (dispatch worker, trace
+  frames), t2..t5 at libsystem_kernel+0x14f0 with bt libsystem_pthread,
+  i.e. idle pthread workers. No crash, no spin, no kernel wait.
+- backboardd pid 57: its t0 is in the same mach_msg2 wait; IOKit trace
+  shows 302x `IOAcceleratorES -> 0 found`, 30x `-> none`, 29x
+  `IOAcceleratorESLegacy -> none`, 2x `AGXAccelerator -> none`, while it
+  does find IOMobileFramebuffer (notify), SweetHIDTouch/Buttons, and
+  AppleKeyStore. It keeps presenting layers (last `SWEET FB: 194000
+  swaps`), so composition works but the accelerator service is absent.
+- Process set: runningboardd 1 exec, backboardd 1, SpringBoard 1,
+  frontboardd 0 (not a daemon on this build), SetupAssistant 0.
+- Display: the ~1 h Apple-logo/progress screen is the boot UI staying on
+  top; swaps stop at 194000 and the console tail becomes visible; the exec
+  stage itself starts in the first flushes (~35 s).
+
+### Next
+
+1. 0105: change `sweet_report_cpu_clocks()` kprintf -> printf so the eight
+   SWEET CLK lines finally land in the ring (and on screen).
+2. Identify the never-answered BKS request: log mach_msg2 trap traffic
+   (msgh_id + receiver task) for SpringBoard (pid 27) and backboardd
+   (pid 57), or publish a minimal IOAcceleratorES/AGXAccelerator stub and
+   see whether backboardd's scene/workspace reply unblocks SpringBoard.
+3. Keep the sampler (40 rounds) - it is the first working window into
+   userland; the stack above is the wall, not a resource shortage.
+
 ## Agent handoff / active work (2026-10-30 LATEST-85: 0103 BOOT LOG ANALYZED - CLOCKS AND SAMPLER WERE INVISIBLE FOR STARTUP-ORDER REASONS; 0104 REPRINTS CLOCKS LATE AND STARTS THE SPRINGBOARD SAMPLER ON THE MSDC PATH; CI RUN 41067047807)
 
 ### 0103 boot + log pull (observation)
