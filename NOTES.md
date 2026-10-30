@@ -1,6 +1,45 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-30 LATEST-87: 0105 = printf SWEET CLK + INERT GPU ACCELERATOR SERVICES (IOAcceleratorES/IOAcceleratorESLegacy/AGXAccelerator) SO THE PENDING BACKBOARD MATCHES COMPLETE; CI 41087860631)
+
+### 0105 patch (action)
+
+- `xnu/patches/0105-merlin-gpu-stubs-clk-printf.patch` (3 files), ios-sweet
+  msdc-0079 commit `d62f3dc`, pushed to fork/msdc-0079.
+  - SweetCPU.cpp: `sweet_report_cpu_clocks()` kprintf -> printf. kprintf is
+    the pexpert early console (pe_kprintf) and never reaches the
+    serial_console `_cnputs` ring, which is why 0104's late reprint was
+    still invisible. printf is the osfmk console path the sampler and MSDC
+    code already use.
+  - SweetPlatformExpert.cpp: inert `IOAcceleratorES` service plus
+    `IOAcceleratorESLegacy` and `AGXAccelerator` subclasses; start()
+    registers the service and logs `SWEET GPU: <class> published (stub;
+    no renderer)`.
+  - KernelConfigTables.cpp: three built-in personalities
+    (IOProviderClass IOResources, distinct IOMatchCategory) so IOKit
+    instantiates the stubs at boot; clients matching those class names
+    (backboardd: 302x IOAcceleratorES 0 found, 29x Legacy none, 2x
+    AGXAccelerator none) now get a match/notification. IOServiceOpen
+    returns kIOReturnUnsupported (no user client class property), so no
+    renderer is claimed; the software framebuffer path is unchanged.
+- `git apply` verified against the 0104 buildtree sources.
+- CI run 41087860631 (workflow_dispatch msdc-0079 @ `d62f3dc2`) queued
+  16:13 UTC; artifact/image facts to be appended.
+
+### Next
+
+1. When CI lands: pack with the verified recipe to
+   `research/merlin-boot/shim-boot-merlin-msdc-0105-gpu-clk-cpus8-fbup-585.img`
+   (cpus=8) and check the SWEET GPU + SWEET CLK strings.
+2. User boots it; look for `SWEET GPU: IOAcceleratorES published` etc. and
+   backboardd IOK lines changing from `-> 0 found`/`none` to found, eight
+   SWEET CLK lines at MSDC init and per sample, and whether SpringBoard's
+   t0 stack changes or SetupAssistant execs. Pull the log as usual.
+3. The stubs are inert: if backboardd opens them and needs a renderer, it
+   will log; a user-client shim is the next step only if the match alone
+   does not unblock the BoardServices reply.
+
 ## Agent handoff / active work (2026-10-30 LATEST-86: 0104 LOG PULLED - THE SAMPLER WORKS AND SPRINGBOARD'S MAIN THREAD IS FROZEN IN ONE mach_msg2 / BoardServices CALL FOR THE WHOLE HOUR; SWEET CLK IS STILL ZERO BECAUSE kprintf IS THE PEXPERT EARLY CONSOLE, NOT THE RING)
 
 ### 0104 log pull (observation)

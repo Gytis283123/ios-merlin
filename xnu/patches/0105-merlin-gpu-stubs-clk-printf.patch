@@ -1,0 +1,97 @@
+diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
+index 1d0274e..759d715 100644
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -317,11 +317,11 @@ sweet_report_cpu_clocks(void)
+ 	for (unsigned int i = 0; i < topology->num_cpus && i < MAX_CPUS; i++) {
+ 		int mhz = __atomic_load_n(&sweet_cpu_mhz[i], __ATOMIC_ACQUIRE);
+ 		if (mhz > 0) {
+-			kprintf("SWEET CLK: cpu=%u mpidr=0x%llx %u MHz\n", i,
++			printf("SWEET CLK: cpu=%u mpidr=0x%llx %u MHz\n", i,
+ 			    (unsigned long long)__atomic_load_n(&sweet_cpu_mpidr[i],
+ 			    __ATOMIC_ACQUIRE), (unsigned)mhz);
+ 		} else {
+-			kprintf("SWEET CLK: cpu=%u PMU trapped, clock unknown\n", i);
++			printf("SWEET CLK: cpu=%u PMU trapped, clock unknown\n", i);
+ 		}
+ 	}
+ }
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 0631685..e2e69c6 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -79,4 +79,48 @@ SweetPlatformExpert::processTopLevel(IORegistryEntry *root)
+  * "compatible" string and "model" (D22AP / iPhone10,3 in the ADT), which
+  * is what the iPhone userland (MobileGestalt) expects.
+  */
++
++/*
++ * Stub GPU accelerators. backboardd keeps matching IOAcceleratorES /
++ * IOAcceleratorESLegacy / AGXAccelerator while SpringBoard's main thread
++ * sits in a BoardServices XPC call (LATEST-86). Merlin has no GPU driver,
++ * so publish inert services with those class names: matching and
++ * notifications succeed, IOServiceOpen returns kIOReturnUnsupported, and
++ * the compositor keeps using the software framebuffer path.
++ */
++class IOAcceleratorES : public IOService {
++	OSDeclareDefaultStructors(IOAcceleratorES);
++
++public:
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
++
++bool
++IOAcceleratorES::start(IOService *provider)
++{
++	const char *name = getMetaClass()->getClassName();
++
++	if (!IOService::start(provider)) {
++		return false;
++	}
++	setName(name);
++	registerService();
++	IOLog("SWEET GPU: %s published (stub; no renderer)\n", name);
++	return true;
++}
++
++class IOAcceleratorESLegacy : public IOAcceleratorES {
++	OSDeclareDefaultStructors(IOAcceleratorESLegacy);
++};
++
++OSDefineMetaClassAndStructors(IOAcceleratorESLegacy, IOAcceleratorES);
++
++class AGXAccelerator : public IOAcceleratorES {
++	OSDeclareDefaultStructors(AGXAccelerator);
++};
++
++OSDefineMetaClassAndStructors(AGXAccelerator, IOAcceleratorES);
++
+ #endif /* SWEET */
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index 92f3e26..2f17647 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -82,6 +82,21 @@ const char * gIOKernelConfigTables =
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = SweetBattery;"
+     "   },"
++    "   {"
++    "     'IOClass'         = IOAcceleratorES;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = IOAcceleratorES;"
++    "   },"
++    "   {"
++    "     'IOClass'         = IOAcceleratorESLegacy;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = IOAcceleratorESLegacy;"
++    "   },"
++    "   {"
++    "     'IOClass'         = AGXAccelerator;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = AGXAccelerator;"
++    "   },"
+ #endif
+     "   {"
+     "     'IOClass'         = IOPanicPlatform;"
