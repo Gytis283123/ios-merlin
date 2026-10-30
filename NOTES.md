@@ -41,6 +41,33 @@
   image (`SWEET AKS: unwrap #`, `SWEET FB: |`, `panel 200`, `wrap #%u bag`), so
   the image really carries 0102 and not a stale payload.
 
+### SMP variant (user request 2026-10-30): cpus=8
+
+- The port has had SMP support since 0065 (PSCI CPU_ON + secondary reset
+  trampoline) and 0078 raised `SWEET_SMP_MAX_CPUS` to 8; the packed ADT has
+  all eight `cpu-id` nodes (0x0..0x7). Every boot log so far says
+  `SWEET CPU: requested=1 selected=1 (limit=8)`, i.e. only the cmdline kept
+  the boot single-core. No log in research/logs shows a boot with cpus>1,
+  so the SMP path is UNTESTED on this hardware.
+- Built `research/merlin-boot/shim-boot-merlin-msdc-0102-cpus8-fbup-585.img`
+  (17,021,907 B, sha256
+  `E1099FBB9ABF0F7826CEB4F4182E5A8AE4D07EDBCF7EC456CFEE9A6E5FCB7684`) from the
+  same 0102 kernel with `--cmdline` where `cpus=1` -> `cpus=8`. Verified:
+  it differs from the 0102 cpus=1 image in exactly ONE byte (offset
+  194656, `1` -> `8`), so core count is the only variable.
+- Expected in the log if it works: `SWEET CPU: requested=8 selected=8`,
+  seven `cpu_start() cpu: N` lines and `cpu=N mpidr=0xN00 came alive;
+  SGI1 OK`. Expected failure modes: hang right after `cpu_start() cpu: 1`
+  (PSCI CPU_ON rejected / wrong entry), or a panic in
+  `sweet_secondary_entry` (cache/MMU state). A75s (mpidr 0x600/0x700) are
+  the riskiest pair: different cluster power domain, and the port treats
+  them as homogeneous.
+- Fallback ladder if 8 fails: `cpus=2` (two A55, same cluster), then
+  `cpus=4` (all A55). Both are cmdline-only rebuilds, no CI.
+- Core count does NOT address the stall: the boot is single-threaded and
+  waiting by SpringBoard time. It only speeds the daemon-start/IO burst
+  (218 daemons, 389 execs in the first ~3 min on one A55).
+
 ### Next
 
 1. User flashes `boot` with the 0102 image (confirm first), boots, photographs
