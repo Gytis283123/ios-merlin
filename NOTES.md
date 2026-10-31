@@ -1,6 +1,44 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-31 LATEST-98: 0114 BOOT READ AT 40 MIN - argv[0] OUTCOME FIX WORKS (mediaserverd STARTED, REAL PATHS EVERYWHERE); MEDIASERVERD'S STREAM ENDS IN A TIGHT LOOP OF EMPTY 0x20000000 SENDS = SOMETHING FAILS REPEATEDLY, LIKELY A MISSING DESTINATION PORT (AUDIO STACK); SPRINGBOARD t0 FROZEN 7TH BOOT; 0115 = LOG mach_msg2 SEND RESULTS FOR THE TRACED TRIO)
+
+### 0114 boot log (observation; research/logs/sweetlog-0114-20261031.{bin,txt}, pulled at flush 245 = 2,441 s)
+
+- argv[0] outcome fix verified on hardware: outcomes now carry real
+  paths (/usr/sbin/fairplayd.H2 241x, /usr/sbin/bluetoothd 240x,
+  CoreTelephony/Session/Calendar frameworks...), and **`SWEET EXEC:
+  mediaserverd started` exists** (1 hit, /usr/libexec/mediaserverd) -
+  mediaserverd's exec completes.
+- mediaserverd traced (pid 29): 1,287 sends / 885 recvs of normal XPC
+  dispatch traffic (same id families as SpringBoard: 3405, 200, 206,
+  3418, 8000, 412...), then its stream ENDS in a tight loop of
+  **`send id=536870912 (0x20000000) sz=0`** repeated - an empty send
+  attempted over and over. Not a recv wait: a repeatedly FAILING send
+  (classic invalid-destination signature when the target service was
+  never registered).
+- SpringBoard t0 STILL frozen: slide 0x2f304000, 0x1f1915030 -
+  0x2f304000 = 0x1C2611030, 7th boot. send id=40232 count 24, still no
+  828-byte reply anywhere.
+- Working chain hypothesis: SpringBoard/backboardd -> MediaRemote 40232
+  -> mediaserverd -> mediaserverd's own sends fail (audio stack missing
+  in this port - no audio driver) -> nothing replies anywhere.
+
+### Next (0115)
+
+1. Patch: log the mach_msg2 SEND RESULT (error code) for the traced trio
+   (SpringBoard/backboardd/mediaserverd) - a failed send returns
+   MACH_SEND_INVALID_DEST / MACH_SEND_TIMED_OUT etc.; hook at the
+   syscall return (careful: same lock-safety rules; the return value is
+   available where mach_msg2_trap returns) or capture the kernel-side
+   error in mach_msg2_kernel's exit path filtered by pid.
+2. An INVALID_DEST result on mediaserverd's 0x20000000 loop names the
+   missing service; then check launchd/registry for who should own that
+   port (audio server: mediaserverd itself hosts AudioServer? or
+   appleh13camerad/IOAudio family missing) and stub it (0116), same
+   playbook as the GPU stubs.
+3. Keep: early pull (~15 min), argv[0] outcomes, mediaserverd in tracer.
+
 ## Agent handoff / active work (2026-10-31 LATEST-97: 0114 PACKED - EXEC OUTCOMES NOW NAME THE REAL BINARY (argv[0], hook before free - 0109 logged every daemon as xpcproxy) + MEDIASERVERD JOINS THE MACH TRACER; message 40232 identified as MediaRemote-family (media frameworks); image shim-boot-merlin-msdc-0114-execnames-cpus8-fbup-585.img D8CC8497 READY)
 
 ### The 40232 identification (observation, from the RE scan artifacts + image mapping)
