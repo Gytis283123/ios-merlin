@@ -1,6 +1,75 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-31 LATEST-97: 0114 PACKED - EXEC OUTCOMES NOW NAME THE REAL BINARY (argv[0], hook before free - 0109 logged every daemon as xpcproxy) + MEDIASERVERD JOINS THE MACH TRACER; message 40232 identified as MediaRemote-family (media frameworks); image shim-boot-merlin-msdc-0114-execnames-cpus8-fbup-585.img D8CC8497 READY)
+
+### The 40232 identification (observation, from the RE scan artifacts + image mapping)
+
+- The second RE agent also died silently (no FINDINGS.md), but its
+  intermediate scans survived in research/tmp-re2/ and finished the job:
+  `scan_imm2.out` lists movz-immediate hits for the 40224..40232 id
+  family, and mapping the hit addresses through `images.json` puts them
+  in MediaPlayer / MediaToolbox / iTunesCloud / JavaScriptCore / Apple
+  MediaServices - a **MediaRemote-family MIG subsystem**. Message 40232
+  (40-byte request, 828-byte reply nobody sends) is a media-stack call;
+  both SpringBoard (now-playing UI) and backboardd (lock-screen
+  controls) send it.
+- mediaserverd execs early (log line 814) and is alive all boot (AKS
+  calls at lines 3373..12492) - not a startup race. It simply never
+  answers.
+- Exec-outcome mislabel root-caused: 1,056 "xpcproxy started" outcomes
+  for 528 spawn waves = two per wave - the daemon's own exec outcome
+  printed with the stale spawner name (posix-spawn-in-place). Daemons DO
+  complete execs.
+
+### 0114 (action; msdc-0114 @ `8b07a69`, CI run 41231878288 SUCCESS)
+
+- `xnu/patches/0114-merlin-trace-v3.patch` (two files):
+  - kern_exec.c: the exec-outcome hook moves to right after the
+    `bad_notrans:` label (BEFORE execargs_free) and names the image from
+    `imgp->ip_startargv` (argv[0], %.40s) instead of the stale p->p_name.
+  - mach_msg.c: **mediaserverd joins the Mach tracer filter** (its own
+    send/recv stream shows what the expected reply producer is itself
+    waiting for).
+- Attempt history this round: v1-v3 lost to edit-toolchain traps
+  (orphan `#if` after relocating the hook -> "unterminated conditional
+  directive"; CRLF autocrlf checkout mismatch; cwd resets). Final patch
+  verified by ACTUALLY applying it with GNU patch and inspecting the
+  result: #if/#endif 124/124, braces 834/834 and 153/153, argv[0]
+  strings present, old hook gone.
+- Process notes: `fetch-kernel-artifact.py latest` is NOT time-ordered
+  (returned the failed run's 178 KB artifact - check size + run
+  timestamp, fetch by explicit id); `git apply` silently does nothing
+  when cwd is not the intended tree - verify with GNU patch applied for
+  real and grep the result.
+- Kernel sha256
+  `37e55dab7bd0583f5f2e0e8073f17ba065d9f7267335b7972ed332be5342876d`
+  (SHA256SUMS match); %.40s + MSG828 strings verified in kernel,
+  buildtree (kern_exec 2, mach_msg 1) and image.
+
+### 0114 image (action)
+
+- `research/merlin-boot/shim-boot-merlin-msdc-0114-execnames-cpus8-fbup-585.img`,
+  **17,052,627 B** (grew: argv-name strings), sha256
+  `D8CC8497098CD07BB62F7973A4E75DC4370EE2E03B405E21F30B3939FC0409E1`,
+  repack bit-exact, strings verified in the packed image.
+
+### Next
+
+1. User: `fastboot boot research/merlin-boot/shim-boot-merlin-msdc-0114-execnames-cpus8-fbup-585.img`
+   (never flash), **~15 min only**, TWRP pull ->
+   research/logs/sweetlog-0114-*.
+2. Read: (a) `SWEET MSG` lines from **mediaserverd** - its sends/recvs
+   around the 40232 window show what it waits for; (b) `SWEET EXEC:
+   mediaserverd started` (real name now) to confirm the exec completes;
+   (c) any `SWEET MSG828` from mediaserverd itself; (d) SpringBoard t0
+   vs 0x1C2611030.
+3. If mediaserverd is waiting on its OWN dependency (likely: audio
+   hardware / IOAudioFamily / AppleH pipework this port lacks), the
+   candidate 0115 is a mediaserverd-shaped stub answer or faking its
+   dependency the same way the GPU stubs work - same pattern, one level
+   up the chain.
+
 ## Agent handoff / active work (2026-10-31 LATEST-96: 0113 BOOT READ AT 16 MIN - SPRINGBOARD t0 STILL FROZEN AT 0x1C2611030 (6TH BOOT), SEL 33 ARGS CAPTURED (arg2 CONSTANT 0x34e5b, arg1 NONCE-LIKE), MSG828 HITS = UNRELATED XPC; AWAITING RE AGENT'S 40232 ANALYSIS)
 
 ### 0113 boot log (observation; research/logs/sweetlog-0113b-20261031.{bin,txt}, pulled at flush 99 = 980 s - EARLY PULL, the new rule: everything happens in the first minutes)
