@@ -1,6 +1,69 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-31 LATEST-94: PIVOT TO THE MACH TRACER - 0112 LOGS EVERY SpringBoard/backboardd mach_msg2 SEND/RECV; BUILT BY A ZCODE WORKFLOW END-TO-END (researchers -> writer -> gates/reviewer -> ship -> CI -> pack); image shim-boot-merlin-msdc-0112-machmsg-cpus8-fbup-585.img d6965f9d READY; RE AGENT STILL RUNNING)
+
+### The pivot (decision, user-approved)
+
+- After 0110's result (sel 33 no-op success unsatisfying, exactly 197
+  attempts like the refusal) the user chose to stop the GPU one-selector
+  ladder and attack SetupAssistant directly: trace the Mach conversation
+  SpringBoard (pid 27) is frozen inside. LATEST-86 proposed this; it was
+  outranked by the GPU experiments until now. 0111 (sc= scalar values)
+  rides along in the stack for free.
+
+### 0112 mach message tracer (action) - built by a ZCode dynamic workflow end-to-end
+
+- `xnu/patches/0112-merlin-machmsg-trace.patch` (msdc-0112 @ `2e28fa52`,
+  CI run 41209617594 SUCCESS): hook at **mach_msg2_trap entry** in
+  osfmk/ipc/mach_msg.c, inside the documented "Nothing locked" region,
+  after the vector_msg decode, BEFORE any copyin - printf can never run
+  with an ipc/port lock held there. One hook covers both processes
+  (platform binaries only reach mach_msg2_trap).
+  - Filter by proc NAME (proc_name_address strcmp): exactly
+    "SpringBoard" or "backboardd" - matched by name, not pid, so pid
+    drift between boots does not matter.
+  - Format: `SWEET MSG: pid %d (%s) %s id=%u sz=%u` (send/recv). Send id
+    = mv_id>>32, send size = mb_ss>>32 (packed scalar trap args, same
+    unpacking as the body) - ZERO user-memory reads. Recv lines log
+    id=0 (unknowable at trap entry; the post-receive hook was REJECTED
+    because the kmsg lock is held there) and recv size = (uint32_t)rs_pr.
+  - Cap: static sweet_msg_logged, hard 4000 lines then silent.
+- Built by the workflow "Mach tracer patch 0112": two hook researchers
+  (entry vs kmsg path) -> writer with the full gauntlet in its
+  instructions -> independent adversarial kernel reviewer (round 1 found
+  a real gate failure; rounds 2-3 verdict "PATCH IS SOUND") ->
+  deterministic gates (git apply --check, GNU patch --dry-run, applied
+  content: braces 149/149, literal backslash-n, no signature/header) ->
+  shipper (branch/push/dispatch) -> CI poll -> artifact string verify ->
+  pack -> repack bit-exact. The writer's evidence dump is in the
+  workflow's FINDINGS-style finding; verify script kept at
+  research/tmp-0112-wf/verify_gauntlet.py.
+- Accepted blind spots (documented): recv id=0, vector sends sz=0,
+  combined send+recv = two counted lines, non-atomic counter can
+  overshoot 4000 slightly, the global cap lets one process starve the
+  other's lines.
+- Image `research/merlin-boot/shim-boot-merlin-msdc-0112-machmsg-cpus8-fbup-585.img`,
+  17,036,243 B, sha256
+  `d6965f9d6e50cf86da7735ae479b51563fd1584a00a3aeab22e8e44003fb7b49`;
+  SWEET MSG + 0111 sc= strings verified in kernel/buildtree/image;
+  kernel sha in research/art-0112 (workflow packed from the 0112 run's
+  own artifact).
+
+### Next
+
+1. User: `fastboot boot research\merlin-boot\shim-boot-merlin-msdc-0112-machmsg-cpus8-fbup-585.img`
+   (never flash), ~15 min unless the log moves, TWRP pull ->
+   research/logs/sweetlog-0112-*.
+2. Read the SWEET MSG stream around SpringBoard's stall: the last send
+   before the rcv wait, its id and destination - that is the request
+   nobody answers. Cross-check the RE agent's findings
+   (research/tmp-re/FINDINGS.md, still running) for the handler side.
+3. The 279x IOAcceleratorES notification loop and the 197x sel-33 loop
+   should also appear as message traffic - their ids may explain both.
+4. If the ring wraps (4000-line cap may bite: backboardd sends a LOT),
+   consider raising the cap or filtering ids in 0113.
+
 ## Agent handoff / active work (2026-10-31 LATEST-93: 0110 BOOT READ - SEL 33 NO-OP SUCCESS DID NOT SATISFY IT (EXACT SAME 197 ATTEMPTS AS THE REFUSAL, THEN GAVE UP); 0111 LOGS THE COMMAND'S SCALAR ARGUMENTS; RE AGENT EXTRACTING BACKBOARDD FROM THE DYLD CACHE - image shim-boot-merlin-msdc-0111-gpu-uc-scalars-cpus8-fbup-585.img 38AA5F8C READY)
 
 ### 0110 boot log (observation; research/logs/sweetlog-0110-20261031.{bin,txt}, flush 373 at ~3,700+ s)
