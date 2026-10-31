@@ -1,6 +1,48 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-31 LATEST-99: 0115 PACKED - MACH SEND-RESULT LOGGING FOR THE TRACED TRIO (SWEET MSGERR: failed send -> error code, naming the missing service); image shim-boot-merlin-msdc-0115-msgerr-cpus8-fbup-585.img 3AF101BB READY)
+
+### 0115 (action; msdc-0115 @ `1f1f88e`, CI run 41242503655 SUCCESS)
+
+- `xnu/patches/0115-merlin-msgerr.patch`: at mach_msg2_trap's tail (after
+  `ipc_port_thread_group_unblocked()`, before `return mr;` - same
+  lock-safety region as the 0112 entry tracer), a failed SEND from
+  SpringBoard/backboardd/mediaserverd logs
+  `SWEET MSGERR: pid %d (%s) id=%u sz=%u kr=0x%x`. Recv results are not
+  logged (rcv timeouts are normal polling). Helper capped at 2000 lines.
+- v1 (bda9c6f3) died on two edit-toolchain bugs, both instructive:
+  single-quote strcmp constants ('SpringBoard' is a C int, not a string
+  - chr(39) vs chr(34) in the edit script), and the call-site anchor
+  `return mr;` preceded by `ipc_port_thread_group_unblocked();` matched
+  an EARLIER unblocked() outside mach_msg2_trap (option64/mv_id
+  undeclared at :1113). v2 anchors strictly from the trap's definition
+  line. ALSO: 0114's patch already added mediaserverd to the filter -
+  v1's second hunk was a no-op against the real base.
+- Verification: real GNU patch apply + content inspection (braces
+  157/157, format string literal backslash-n, single-quote bug absent).
+- Kernel sha256
+  `a34ebd3cf50d031b5b75fee561ab24bede677ce2cbf496a620213301f0d8df23`
+  (SHA256SUMS match); MSGERR string verified in kernel, buildtree
+  (mach_msg.c 1x) and image.
+- Image `research/merlin-boot/shim-boot-merlin-msdc-0115-msgerr-cpus8-fbup-585.img`,
+  17,052,627 B, sha256
+  `3AF101BBF0D958152FF841434B146DEDF546B3081D27E65DE98DED4FDD7E007C`,
+  repack bit-exact.
+
+### Next
+
+1. User: `fastboot boot research/merlin-boot/shim-boot-merlin-msdc-0115-msgerr-cpus8-fbup-585.img`
+   (never flash), **~15 min only**, TWRP pull -> research/logs/sweetlog-0115-*.
+2. Grep `SWEET MSGERR`: mediaserverd's 0x20000000 send-loop error codes.
+   `kr=0x10000004` (MACH_SEND_INVALID_DEST) = the destination service was
+   never registered -> 0116 stubs that service. `kr=0x1000000b`
+   (MACH_SEND_TIMED_OUT) = it exists but never answers -> different fix.
+   SpringBoard/backboardd failures around the 40232 window are equally
+   interesting (the 828-byte reply producer may show as a failed send
+   FROM mediaserverd).
+3. SpringBoard t0 reference check: 0x1C2611030 (7 consecutive boots).
+
 ## Agent handoff / active work (2026-10-31 LATEST-98: 0114 BOOT READ AT 40 MIN - argv[0] OUTCOME FIX WORKS (mediaserverd STARTED, REAL PATHS EVERYWHERE); MEDIASERVERD'S STREAM ENDS IN A TIGHT LOOP OF EMPTY 0x20000000 SENDS = SOMETHING FAILS REPEATEDLY, LIKELY A MISSING DESTINATION PORT (AUDIO STACK); SPRINGBOARD t0 FROZEN 7TH BOOT; 0115 = LOG mach_msg2 SEND RESULTS FOR THE TRACED TRIO)
 
 ### 0114 boot log (observation; research/logs/sweetlog-0114-20261031.{bin,txt}, pulled at flush 245 = 2,441 s)
