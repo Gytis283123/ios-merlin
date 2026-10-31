@@ -1,6 +1,65 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-31 LATEST-92: 0108 BOOT READ - PURE QUERY WALK COMPLETED (sel 2/0/4), BACKBOARDD THEN HAMMERED COMMAND sel 33 (2 IN) 197x; 0110 = ANSWER EVERYTHING + 0109 EXEC OUTCOME LOGGING - image shim-boot-merlin-msdc-0110-gpu-uc-all-cpus8-fbup-585.img EBE89972 READY)
+
+### 0108 boot log (observation; research/logs/sweetlog-0108-20261031.{bin,txt}, flush 385 at 3,841 s, no wrap)
+
+- The generalized zero-answer worked: sel 2 (0/536) -> zeroed success,
+  sel 0 (0/64) -> zeroed success, AND sel 4 (0/32) -> zeroed success.
+- Then `uc sel 33 in 2/0 out 0/0 -> unsupported` fired **197 times** - a
+  tight retry loop on an input-carrying COMMAND. backboardd requires it;
+  the pure-query generalization could not pass it.
+- Exec set expanded (routined, liveactivityd, tccd, coreduetd, dasd,
+  calaccessd, remotepairingdeviced, MobileGestaltHelper per the user's
+  console photo), 2,599 exec lines total - but SpringBoard t0 is STILL
+  the frozen reference (slide 0x3eeb0000, 0x2014c1030-0x3eeb0000 =
+  0x1C2611030, 1 unique stack over 31 samples). SetupAssistant 0.
+
+### 0109 + 0110 (action) - user requested exec start/fail logging; commands now answered too
+
+- `xnu/patches/0109-merlin-exec-outcome.patch` (msdc-0109 @ `9a760b07`,
+  CI green run 41192339242): at exec_activate_image's single bottom
+  return (both paths funnel through it) log the OUTCOME:
+  `SWEET EXEC: <name> started` on success, `SWEET EXEC: <name> failed to
+  start err=<errno>` on failure. 0042's `exec <name>` allow-line stays.
+- `xnu/patches/0110-merlin-gpu-uc-answer-commands.patch` (msdc-0110 @
+  `e6016a23`, CI green run 41193228209): the no-input restriction is
+  dropped - EVERY selector is answered. Queries (output requested, <=
+  16384) keep zeroed output; commands (no output) get a logged no-op
+  success (`uc sel %u in %u/%u -> no-op success (shim)`). Oversized
+  outputs stay refused. sel 33 should now succeed and the walk continue.
+- Both verified with the full gauntlet (git apply + GNU patch + applied-
+  content string/brace checks); 0109's process was clean first try.
+
+### 0110 image (action)
+
+- `research/merlin-boot/shim-boot-merlin-msdc-0110-gpu-uc-all-cpus8-fbup-585.img`,
+  17,036,243 B, sha256
+  `EBE89972FB983E0C1CBC978D59B003BFA86A6EDE295C8D014E5C2A59AB524155`.
+  Verified recipe; cmdline = 0104 + cpus=8 + `sweetgpuclient=1`; repack
+  reproduced bit-exact; SWEET EXEC started/failed, zeroed-success and
+  no-op-success strings all verified in kernel, buildtree and image.
+  Kernel sha256
+  `154baa4306fc0928b348be37b469d2a088b4e23011b5e83b483b63938358fb57`.
+
+### Next
+
+1. User: `fastboot boot research\merlin-boot\shim-boot-merlin-msdc-0110-gpu-uc-all-cpus8-fbup-585.img`
+   (never flash). ~15 min enough unless the log MOVES.
+2. Read: (a) the `uc sel` stream past sel 33 - how far does the walk go,
+   does a SECOND client open (IOAcceleratorES); (b) `SWEET EXEC: ...
+   failed to start err=` lines - which daemons die and with what errno;
+   (c) SpringBoard t0 vs frozen reference 0x1C2611030; (d) new execs /
+   SetupAssistant.
+3. If sel-33's no-op success misleads backboardd into waiting for real
+   GPU work (hang without new selectors), the next step is identifying
+   sel 33's true meaning from backboardd's binary (IOKit userspace
+   AGX headers compiled into it) rather than more no-ops.
+4. The exec outcome lines double the per-exec log volume; if the ring
+   starts wrapping (check `flush #` vs `total`), raise the ring or drop
+   the allow-line duplicate.
+
 ## Agent handoff / active work (2026-10-31 LATEST-91: 0107 BOOT PULLED - SEL 2 ANSWERED, BACKBOARDD IMMEDIATELY ASKED SEL 0 (0/64) AND WAS REFUSED AGAIN; 0108 GENERALIZES: EVERY PURE-OUTPUT QUERY GETS ZEROED SUCCESS - image shim-boot-merlin-msdc-0108-gpu-uc-queries-cpus8-fbup-585.img 0EA17BB3 READY FOR THE NEXT BOOT)
 
 ### 0107 boot log (observation; research/logs/sweetlog-0107-20261031.{bin,txt}, 7,979 lines, flush 340 at 3,391 s, no wrap)
