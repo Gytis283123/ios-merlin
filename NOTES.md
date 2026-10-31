@@ -1,6 +1,58 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-31 LATEST-93: 0110 BOOT READ - SEL 33 NO-OP SUCCESS DID NOT SATISFY IT (EXACT SAME 197 ATTEMPTS AS THE REFUSAL, THEN GAVE UP); 0111 LOGS THE COMMAND'S SCALAR ARGUMENTS; RE AGENT EXTRACTING BACKBOARDD FROM THE DYLD CACHE - image shim-boot-merlin-msdc-0111-gpu-uc-scalars-cpus8-fbup-585.img 38AA5F8C READY)
+
+### 0110 boot log (observation; research/logs/sweetlog-0110-20261031.{bin,txt}, flush 373 at ~3,700+ s)
+
+- sel 33 with `no-op success` was retried **exactly 197 times - the same
+  count as 0108's refusals** - then backboardd gave up. The retry loop is
+  deterministic (count- or window-bounded), NOT retry-until-success: a
+  no-op does not satisfy the command. The GPU stub strategy has hit its
+  ceiling at sel 33.
+- Exec outcome logging (0109) works: 2,489 `started`, only 3 failures,
+  all `err=2` (ENOENT) on early-boot probes (`launchd`, `init`,
+  `MSUEarlyBootTask`) - benign. No daemon dies at exec. SetupAssistant
+  execs 0.
+- SpringBoard t0 still the frozen reference (slide 0x39470000, pc
+  0x1fba81030-0x39470000 = 0x1C2611030). IOAcceleratorES notification
+  re-registration still 279x. STRATEGIC FACT: five boots of GPU-handshake
+  progress, ZERO movement in SpringBoard's stack - the BoardServices
+  reply may not be GPU-gated at all.
+
+### 0111 (action) + RE agent (action)
+
+- `xnu/patches/0111-merlin-gpu-uc-scalar-values.patch` (msdc-0111 @
+  `5cd1fa31`, CI green run 41202111746): the no-op IOLog now includes up
+  to 4 input scalar VALUES in hex (`uc sel %u in %u/%u
+  sc=%llx,%llx,%llx,%llx -> no-op success`), so the next boot shows what
+  sel 33 is actually being told. Kernel sha256
+  `b8c3e4c8271cd5ed8f228b75ac007368bdaccd02111f532d549dc843e4298f18`;
+  string verified in kernel + buildtree; image
+  `research/merlin-boot/shim-boot-merlin-msdc-0111-gpu-uc-scalars-cpus8-fbup-585.img`
+  17,036,243 B, sha256
+  `38AA5F8C4B5F62BCB26DA5A0C2AF26D4AE234807347836FC4017B11026E4FDE2`,
+  repack bit-exact.
+- A background RE agent is extracting backboardd from the on-disk dyld
+  shared cache (research/ipsw-x/cache, iOS 16.7.16 arm64; the `ipsw` CLI
+  was NOT installed - agent downloads it) to identify: sel 33's meaning
+  and its 2 scalar args, the 279x IOAcceleratorES notification loop's
+  wait condition, and (if cheap) the 536-byte sel-2 struct. Findings will
+  land in research/tmp-re/FINDINGS.md.
+
+### Next
+
+1. User: `fastboot boot research\merlin-boot\shim-boot-merlin-msdc-0111-gpu-uc-scalars-cpus8-fbup-585.img`
+   (never flash), ~15 min, TWRP pull -> research/logs/sweetlog-0111-*.
+2. Read the sel-33 line's sc= values and cross-check against the RE
+   agent's FINDINGS.md - that combination should identify the command.
+3. Then decide: implement sel 33's real semantics in the stub (if it is
+   answerable), or pivot to the BoardServices reply path (the GPU walk
+   may be a red herring for SpringBoard's stall - see the strategic fact
+   above).
+4. If the RE agent's findings are solid, fold them into the next patch;
+   keep one-variable-per-boot discipline.
+
 ## Agent handoff / active work (2026-10-31 LATEST-92: 0108 BOOT READ - PURE QUERY WALK COMPLETED (sel 2/0/4), BACKBOARDD THEN HAMMERED COMMAND sel 33 (2 IN) 197x; 0110 = ANSWER EVERYTHING + 0109 EXEC OUTCOME LOGGING - image shim-boot-merlin-msdc-0110-gpu-uc-all-cpus8-fbup-585.img EBE89972 READY)
 
 ### 0108 boot log (observation; research/logs/sweetlog-0108-20261031.{bin,txt}, flush 385 at 3,841 s, no wrap)
