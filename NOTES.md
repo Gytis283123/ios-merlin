@@ -1,6 +1,79 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-31 LATEST-90: 0106 LOG PULLED AND READ - GPU STUBS WORK, BACKBOARDD OPENED AGX AND WAS REFUSED ON ITS ONE QUERY (sel 2, 0/536); 0107 ANSWERS IT WITH ZEROED OUTPUT - image shim-boot-merlin-msdc-0107-gpu-uc-sel2-cpus8-fbup-585.img B209AE81 READY FOR THE NEXT BOOT)
+
+### 0106 boot log (observation; research/logs/sweetlog-0106-20261030.{bin,txt}, 8,510 lines, 345 flushes, last 3,441 s, no wrap; user pulled via TWRP mmcblk0p46 skip 12,710,135)
+
+- SWEET CLK FINALLY LANDS: 8 lines at MSDC init, A55 cluster 1174-1175 MHz
+  (mpidr 0x0-0x500), A75 cluster 1086-1087 MHz (mpidr 0x600/0x700). The
+  0103 open question is settled on hardware: per-cluster OPP, shim's
+  2.35 GHz figure was wrong, LK-clock hypothesis right.
+- GPU stubs (0105 layer) work: all three `published (stub; no renderer)`
+  lines present; `IOAcceleratorES -> 0 found` count = 0 (was 302x in
+  0104); the matching storm is gone.
+- User client (0106 layer) works: `IOK backboardd: matching1
+  AGXAccelerator -> AGXAccelerator`, then `open AGXAccelerator type 1 ->
+  0x0`, then EXACTLY ONE selector: `uc sel 2 in 0/0 out 0/536 ->
+  unsupported (shim)`. No retry, no IOAcceleratorES open, all hour.
+- After the refusal backboardd kept working (SURF create 1125x2436 BGRA,
+  FB sels) but re-registered `matching1 IOAcceleratorES ->
+  IOAcceleratorES` notifications 279x - a wait loop with no wake.
+- SpringBoard t0 is BIT-IDENTICAL to 0104 unslid: this boot's cache slide
+  is 0x62ec000 (CRASH lines), 0x1c88fd030-0x62ec000 = 0x1C2611030 and
+  lr 0x1c890eb18-0x62ec000 = 0x1C2622B18 = exactly the 0104
+  mach_msg2/BoardServices wait. SetupAssistant execs 0; the
+  fairplayd.H2/bluetoothd/xpcproxy exec loop continues.
+- Conclusion: the single sel-2 refusal is the only GPU-level wall seen;
+  answering it is 0107.
+
+### 0107 answering shim (action) - three patch attempts, two CI runs wasted, lessons recorded
+
+- `xnu/patches/0107-merlin-gpu-uc-answer-sel2.patch` (ios-sweet msdc-0107
+  @ `8b936f5`, based on msdc-0106-macos15): in IOAcceleratorESUserClient
+  ::externalMethod, selector 2 with structureInputSize==0,
+  structureOutputSize==536, structureOutput!=NULL -> memset output to 0,
+  log `SWEET GPU: uc sel 2 out 536 -> zeroed success (shim)`, return
+  kIOReturnSuccess. Every other selector stays refused (one dependency
+  revealed per boot).
+- v1 (ec94fef): hand-written patch with malformed hunk + git signature
+  trailer - build.sh's GNU patcher SKIPPED it with only a warning
+  ("corrupt patch at line 47") and the run built green WITHOUT the
+  change. Lesson: ALWAYS string-verify the artifact carries the new
+  format string; green CI proves nothing about a silently skipped patch.
+- v2 (d5c2919): plain git diff, applied - but the IOLog string literal
+  contained a raw CRLF (edit-toolchain escape mangling) -> compile error
+  at SweetPlatformExpert.cpp:169 ("expected expression", then local-class
+  cascades). Also: one v2 dispatch was lost to hosted-runner capacity
+  ("job was not acquired by Runner of type hosted").
+- v3 (8b936f5) GREEN, run 41178593745: kernel sha256
+  `375674be0fb1ee4b6bc0e7d550db841ce27a6df0004af0ff930cb34b11119702`
+  (SHA256SUMS match); `zeroed success` verified in kernel AND buildtree
+  (1 occurrence in SweetPlatformExpert.cpp).
+
+### 0107 image (action)
+
+- `research/merlin-boot/shim-boot-merlin-msdc-0107-gpu-uc-sel2-cpus8-fbup-585.img`,
+  17,036,243 B, sha256
+  `B209AE816D198BA47D9098AABBBE051A465273545AE6D8339944116F49EA26B0`.
+  Verified recipe; cmdline = 0104 + cpus=8 + `sweetgpuclient=1`; repack
+  reproduced bit-exact; the zeroed-success string and the cmdline are in
+  the packed image.
+
+### Next
+
+1. User: `fastboot boot research\merlin-boot\shim-boot-merlin-msdc-0107-gpu-uc-sel2-cpus8-fbup-585.img`
+   (never flash), ~1 h, pull via TWRP (mmcblk0p46, skip 12,710,135) ->
+   research/logs/sweetlog-0107-*.bin/.txt.
+2. Read the `SWEET GPU: uc sel ...` stream: expect sel 2 answered, then
+   whatever backboardd asks NEXT becomes 0108's next answer. Watch for
+   backboardd behaviour change (IOK lines, SURF/FB activity) and the
+   SpringBoard t0 unslid stack (slide from the CRASH lines; 0104/0106
+   reference: pc 0x1C2611030, lr 0x1C2622B18).
+3. If the zeroed struct panics or misleads backboardd, the sampler and
+   panic screen say so - fall back to identifying sel 2's struct from
+   backboardd's own disassembly before inventing field values.
+
 ## Agent handoff / active work (2026-10-30 LATEST-89: 0106 KERNEL BUILT ON macos-15 (macos-14 IS BROWNED OUT) AND THE SWEETGPUCLIENT IMAGE IS PACKED - shim-boot-merlin-msdc-0106-gpu-uc-cpus8-fbup-585.img 8DA37BED, awaiting the boot test)
 
 ### macos-14 CI brownout (root cause, explains LATEST-85 "capacity" failures too)
