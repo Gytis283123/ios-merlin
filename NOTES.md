@@ -1,6 +1,38 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-31 LATEST-96: 0113 BOOT READ AT 16 MIN - SPRINGBOARD t0 STILL FROZEN AT 0x1C2611030 (6TH BOOT), SEL 33 ARGS CAPTURED (arg2 CONSTANT 0x34e5b, arg1 NONCE-LIKE), MSG828 HITS = UNRELATED XPC; AWAITING RE AGENT'S 40232 ANALYSIS)
+
+### 0113 boot log (observation; research/logs/sweetlog-0113b-20261031.{bin,txt}, pulled at flush 99 = 980 s - EARLY PULL, the new rule: everything happens in the first minutes)
+
+- Tracer filled its 20,000-line budget (flood fix worked: backboardd
+  recvs gone, SpringBoard 777 lines unbroken).
+- SpringBoard t0 STILL the frozen reference: slide 0x2b4e0000, pc
+  0x1edaf1030 - 0x2b4e0000 = 0x1C2611030, 1 unique stack over 7 samples.
+  The active SpringBoard message lines are OTHER threads: a repeating
+  dispatch-drain cycle (recv 2440 -> 2720 -> 3372 growing) with sends
+  536870912 x2 (sz=0), 268435456 (sz=0), 3240, 1073742536.
+- **sel 33 arguments captured**: `sc=bc513372,34e5b` - arg2 CONSTANT
+  0x34e5b (217,435) on every call, arg1 varies per attempt (nonce- or
+  sequence-like 32-bit values). 24 sends of id 40232 this boot.
+- MSG828 watch: only unrelated XPC traffic (coreduetd pid 104 id
+  1073742224 sz 808-828; com.apple.migrat pid 121 id 1073742624 sz
+  776-780). The real 828-byte reply to 40232 still never sent.
+- Exec: 1,079 started, 3 benign ENOENT probes, SetupAssistant 0.
+
+### Next
+
+1. RE agent #2 (research/tmp-re2/FINDINGS.md when done) should name id
+   40232's destination + the 828-byte reply's producer and contents;
+   combine with arg2=0x34e5b.
+2. If 40232 is IOKit-notification-gated (both ends waiting for the same
+   message), the candidate fix is making the stub GPU services emit the
+   notification (IOServiceNotificationUser delivery) - that would also
+   explain backboardd's 279x re-registration loop.
+3. If the reply's producer is a daemon that never starts, the exec
+   outcome log already proves it is not exec-failing - it is either not
+   launchd-scheduled or blocked on something else.
+
 ## Agent handoff / active work (2026-10-31 LATEST-95: 0112 TRACER LOG READ - THE SMOKING GUN: SPRINGBOARD'S FROZEN LOOP IS `send id=40232 (40 B)` -> `recv 828-BYTE REPLY` AND NO PROCESS EVER SENDS 828 BYTES; backboardd SENDS THE SAME ID; 0113 TRACER V2 PACKED - image shim-boot-merlin-msdc-0113-machmsg-v2-cpus8-fbup-585.img B4024D09 READY)
 
 ### 0112 boot log (observation; research/logs/sweetlog-0112-20261031.{bin,txt}, flush 365, tracer cap 4000 hit at log line 5694 of 14,884)
