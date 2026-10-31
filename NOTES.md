@@ -1,6 +1,72 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-31 LATEST-95: 0112 TRACER LOG READ - THE SMOKING GUN: SPRINGBOARD'S FROZEN LOOP IS `send id=40232 (40 B)` -> `recv 828-BYTE REPLY` AND NO PROCESS EVER SENDS 828 BYTES; backboardd SENDS THE SAME ID; 0113 TRACER V2 PACKED - image shim-boot-merlin-msdc-0113-machmsg-v2-cpus8-fbup-585.img B4024D09 READY)
+
+### 0112 boot log (observation; research/logs/sweetlog-0112-20261031.{bin,txt}, flush 365, tracer cap 4000 hit at log line 5694 of 14,884)
+
+- **The stall, named:** SpringBoard's last captured pattern, repeated:
+  `SWEET MSG: pid 27 (SpringBoard) send id=40232 sz=40` ->
+  `recv id=0 sz=828` - it sends a 40-byte request with mach message id
+  40232 (0x9D30) and waits for an 828-byte reply. This is the mach_msg2
+  wait the sampler has shown since 0104.
+- **No process ever sends an 828-byte message** (0 sends in 700..900
+  window among the 4000 traced lines). The reply producer either never
+  runs or was not traced (only SpringBoard/backboardd were).
+- backboardd ALSO sends id 40232 (4x, 40 B) and 40231 (1x); both ends
+  speaking the same protocol suggests an IOKit notification/ack that our
+  stub GPU services were supposed to trigger, or an XPC transit whose
+  third party is missing.
+- backboardd flooded the cap (1,914 idle `recv id=0 sz=0` lines = its
+  dispatch-loop waits; top sends: 205 312x, 2889 282x, 2880 236x, 2865,
+  2802, 2810, 2809, 2801 - the 2800s family dominates; the 40331/40332
+  448-byte loop interleaves with the IOAcceleratorES notification
+  re-registrations (still 279x).
+- SpringBoard's other traffic: 3405, 3418, 3410, 3409 (3400s family),
+  1026, 3240, 4811, 40231/40232, 8000, and 0x40000000-prefixed ids.
+
+### 0113 tracer v2 (action)
+
+- `xnu/patches/0113-merlin-machmsg-v2.patch` (msdc-0113 @ `96bbccc`,
+  CI run 41221803021 SUCCESS; v1 5acf81c2 failed compile - the edit
+  anchor started at the sweet_msg_log signature line but the replacement
+  re-added its own `static void`, leaving the original above it:
+  "cannot combine with previous 'void' declaration specifier").
+- Changes: backboardd idle recv waits no longer log; cap 4000 -> 20000;
+  **any process's send in the 700..900-byte window logs as
+  `SWEET MSG828: pid %d (%s) send id=%u sz=%u`** - if the missing reply
+  producer ever runs, it names itself.
+- One process note: fetch-kernel-artifact "latest" returned the FAILED
+  run's 178 KB kernel artifact (artifact IDs are not time-ordered); the
+  correct artifacts were fetched by explicit id (kernel 13049819091,
+  buildtree 13049704128). Always check the artifact size AND the run's
+  completion timestamp.
+- Kernel sha256
+  `d4301d5f4f0b6beb1430c4ce6c6a86f82128f9994a27639b9ead4954ef65b5f8`
+  (SHA256SUMS match); MSG828 + SWEET MSG strings verified in kernel,
+  buildtree (tar -O pipe) and image.
+- Image `research/merlin-boot/shim-boot-merlin-msdc-0113-machmsg-v2-cpus8-fbup-585.img`,
+  17,036,243 B, sha256
+  `B4024D0961010868D1726F7733BBCDEBFA40703BB01C8318343A837436A50438`,
+  repack bit-exact.
+- RE agent (2nd attempt; the 1st died during setup with no output) is
+  disassembling SpringBoard/backboardd for id 40232: destination, reply
+  producer, reply contents. Findings -> research/tmp-re2/FINDINGS.md.
+
+### Next
+
+1. User: `fastboot boot research/merlin-boot/shim-boot-merlin-msdc-0113-machmsg-v2-cpus8-fbup-585.img`
+   (never flash), ~15 min, TWRP pull -> research/logs/sweetlog-0113-*.
+2. Grep `SWEET MSG828`: if ANY line appears, we have the reply producer
+   (or a candidate) - cross-check with the RE findings. If none appears,
+   the reply producer never runs: the 0114 question becomes "what is
+   supposed to start it" (a daemon? IOKit notification delivery from the
+   stubs? backboardd's own state machine, gated on the 279x loop?).
+3. Cross-check the id histograms (40232/40231/40331/40332/205/2880s)
+   against the RE agent's MIG-subsystem mapping.
+4. The tracer no longer logs backboardd recvs, so SpringBoard's send/recv
+   sequence now reads unbroken up to 20000 lines.
+
 ## Agent handoff / active work (2026-10-31 LATEST-94: PIVOT TO THE MACH TRACER - 0112 LOGS EVERY SpringBoard/backboardd mach_msg2 SEND/RECV; BUILT BY A ZCODE WORKFLOW END-TO-END (researchers -> writer -> gates/reviewer -> ship -> CI -> pack); image shim-boot-merlin-msdc-0112-machmsg-cpus8-fbup-585.img d6965f9d READY; RE AGENT STILL RUNNING)
 
 ### The pivot (decision, user-approved)
