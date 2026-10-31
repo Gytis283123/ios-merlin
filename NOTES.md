@@ -1,6 +1,86 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-10-31 LATEST-91: 0107 BOOT PULLED - SEL 2 ANSWERED, BACKBOARDD IMMEDIATELY ASKED SEL 0 (0/64) AND WAS REFUSED AGAIN; 0108 GENERALIZES: EVERY PURE-OUTPUT QUERY GETS ZEROED SUCCESS - image shim-boot-merlin-msdc-0108-gpu-uc-queries-cpus8-fbup-585.img 0EA17BB3 READY FOR THE NEXT BOOT)
+
+### 0107 boot log (observation; research/logs/sweetlog-0107-20261031.{bin,txt}, 7,979 lines, flush 340 at 3,391 s, no wrap)
+
+- The 0107 answer worked: `uc sel 2 out 536 -> zeroed success (shim)` and
+  backboardd ACCEPTED it and asked the next question: `uc sel 0 in 0/0
+  out 0/64 -> unsupported (shim)`. Then silence - one open, two selector
+  calls, whole boot. The zeros are tolerated (no panic, no complaint).
+- Pattern established: backboardd walks a list of pure get-info methods
+  (nothing in, struct out). Each refusal stops the walk.
+- SpringBoard t0 STILL the frozen reference: cache slide 0x37ad4000
+  (CRASH lines), 0x1fa0e5030-0x37ad4000 = 0x1C2611030 = exactly the
+  0104/0106 mach_msg2/BoardServices wait; 1 unique stack over all 28
+  samples. backboardd notification re-registration still 279x.
+  SetupAssistant execs 0; fairplayd.H2/bluetoothd loop continues.
+
+### 0108 answering shim (action) - two patch attempts wasted on toolchain traps, both root-caused
+
+- `xnu/patches/0108-merlin-gpu-uc-answer-queries.patch` (ios-sweet
+  msdc-0108 @ `b07f67d`): externalMethod now answers EVERY selector with
+  structureInputSize==0 and 0 < structureOutputSize <= 16384 using zeroed
+  output + kIOReturnSuccess (`SWEET GPU: uc sel %u out %u -> zeroed
+  success (shim)`); anything carrying input stays refused and logged.
+- v1 (956dd59) was SILENTLY SKIPPED: its hunk context came from the 0107
+  artifact's packaged buildtree, whose IOLog line was corrupted (string
+  split across lines - that packaged source could never compile; the
+  kernel binary from that run is fine). CI's real source has the string
+  on one line, so the context did not match -> "patch failed at :155".
+  Diagnosis: read the CI build log (Applying/Skipping lines) + compare
+  tar members with `tar -xzf ... -O path | grep` (pipe preserved bytes;
+  redirect-to-file extraction on this host mangled them - use -O pipes).
+- v2 (308b5a4) applied but broke the parse: the python edit used
+  lines[a:b] = new with b pointing AT the base's closing brace - the
+  slice excludes b, so the base's brace survived next to the new block's
+  own -> externalMethod closed early ("expected unqualified-id" at the
+  fallback log, "extraneous closing brace" at function end).
+- v3 (b07f67d) GREEN, run 41185837788: kernel sha256
+  `a18c54292801390fc574bbb2914a841e5744719a4a0ab9e1dbccd6a05e186270`
+  (SHA256SUMS match); generalized string verified in the kernel binary
+  AND the buildtree (structureOutputSize <= 16384 present); brace
+  balance 25/25 in base and patched file.
+
+### 0108 image (action)
+
+- `research/merlin-boot/shim-boot-merlin-msdc-0108-gpu-uc-queries-cpus8-fbup-585.img`,
+  17,036,243 B, sha256
+  `0EA17BB38A846CA6BBAF96012230C86524BE8F81F94A428896CEC817F195F53C`.
+  Verified recipe; cmdline = 0104 + cpus=8 + `sweetgpuclient=1`; repack
+  reproduced bit-exact; the generalized zeroed-success string and the
+  cmdline verified in the packed image.
+
+### Next
+
+1. User: `fastboot boot research\merlin-boot\shim-boot-merlin-msdc-0108-gpu-uc-queries-cpus8-fbup-585.img`
+   (never flash). ~15 min is enough unless the log starts MOVING (new
+   sels/execs) - then let it run. Pull via TWRP
+   (mmcblk0p46, skip 12,710,135) -> research/logs/sweetlog-0108-*.
+2. Read the `SWEET GPU: uc sel` stream: with pure-output queries all
+   answered, the walk should get further - count how far, and look for
+   the first REFUSED selector WITH input (the first real command) or a
+   change in SpringBoard t0 (frozen reference pc 0x1C2611030) and new
+   execs. If a zeroed struct misleads backboardd into a panic, the
+   sampler/panic screen shows it and the next step is pulling the real
+   struct layouts from backboardd's binary instead of zeros.
+3. Watch for a SECOND user client open (IOAcceleratorES) - the services
+   may now be usable enough for backboardd to open more than AGX.
+
+### Process lessons (keep following these)
+
+- After every CI run, string-verify the NEW format string in the kernel
+  binary AND the buildtree before packing. Green CI does not mean the
+  patch applied (v1 0107, v1 0108 both built green without their change).
+- Read the CI build log's "Applying patch/Skipping patch" lines for any
+  patch that must apply.
+- Patch context must come from the NEWEST run's buildtree read via
+  `tar -xzf ... -O path | ...` (pipe), never redirect-to-file, never an
+  older artifact.
+- After scripted edits: brace-balance check, applied-content inspection,
+  and BOTH git apply and GNU patch --dry-run before pushing.
+
 ## Agent handoff / active work (2026-10-31 LATEST-90: 0106 LOG PULLED AND READ - GPU STUBS WORK, BACKBOARDD OPENED AGX AND WAS REFUSED ON ITS ONE QUERY (sel 2, 0/536); 0107 ANSWERS IT WITH ZEROED OUTPUT - image shim-boot-merlin-msdc-0107-gpu-uc-sel2-cpus8-fbup-585.img B209AE81 READY FOR THE NEXT BOOT)
 
 ### 0106 boot log (observation; research/logs/sweetlog-0106-20261030.{bin,txt}, 8,510 lines, 345 flushes, last 3,441 s, no wrap; user pulled via TWRP mmcblk0p46 skip 12,710,135)
