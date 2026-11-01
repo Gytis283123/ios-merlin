@@ -1,5 +1,45 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-11-02 LATEST-108: XNU SUCCESSFUL-RECEIVE TRACE PATCH ADDED; BUILD/DEVICE VERIFICATION PENDING)
+
+### XNU change (action; `xnu/patches/0107-merlin-mach-recv-result-trace.patch`)
+
+- The saved 0115 log remains the newest device evidence. It shows the
+  40232 request/reply is unresolved: the existing receive trace records
+  buffer capacity at trap entry, not a received message, and the 0115
+  send-result records do not name a failed send for 40232. No new recovery
+  log could be collected because neither ADB nor fastboot detected the
+  phone.
+- Added an XNU diagnostic patch at `mach_msg_receive_results_kevent()`.
+  On the `MACH_MSG_SUCCESS` path it logs the dequeued message ID and size
+  for SpringBoard, backboardd, mediaserverd, and mediaremoted; output is
+  capped at 4,000 lines. This observes the kernel receive before user copyout,
+  so it does not prove delivery to user space and does not change Mach IPC
+  behavior.
+- Validation: `git apply --check` passed against the exact public
+  XNU 8796.141.3 `osfmk/ipc/mach_msg.c`; the patch was then applied in a
+  disposable temp tree and the helper/call sites were verified. No kernel
+  build was run: this Windows host cannot perform the project's macOS XNU
+  build, and the local-only policy prohibits pushing this patch to CI.
+- This is instrumentation, not a proven behavioral kernel fix. Current
+  evidence points to the root tweak having suppressed Setup Assistant;
+  that preference fix is already in place, but the GUI userdata write and
+  subsequent device contents have not been independently read back. No
+  kernel boot or fresh SetupAssistant outcome is verified.
+
+### Next
+
+1. Keep the phone in recovery/fastboot and preserve userdata; do not boot
+   Android or flash any partition. Reconnect it so readback and boot testing
+   can be performed without writing protected partitions.
+2. When macOS build access is available (or the user authorizes publishing
+   the local branch for CI), build a kernel including 0107, then use a
+   temporary `fastboot boot` image and inspect the successful-receive lines
+   around the 40232 request. Do not claim the Setup issue is resolved until
+   SetupAssistant is observed on-device.
+3. Preserve the existing uncommitted `tools/mkpayload.py` change and
+   unrelated untracked build/image artifacts.
+
 
 ## Agent handoff / active work (2026-11-01 LATEST-107: MTK GUI REPORTS USERDATA WRITE DONE; IMAGE VERIFIED LOCALLY; DEVICE BOOT/READBACK PENDING)
 
