@@ -18,15 +18,19 @@ booted on the phone. Experimental iOS bring-up can fail to start or hang.
 - A bootloader-unlocked Redmi Note 9, with its important partition backups
   kept safe.
 
-The current verified local image is already available at:
+Per the current testing preference, use the CI-built image for the next
+device test:
 
 ```text
-research\merlin-boot\shim-boot-merlin-msdc-0117-linux-cpus8.img
+research\merlin-boot\shim-boot-merlin-msdc-0117-ci-41306087077-cpus8.img
 ```
 
-You can skip to **Temporarily boot the image** to try it. The separate CI-built
-image is
-`research\merlin-boot\shim-boot-merlin-msdc-0117-ci-41306087077-cpus8.img`.
+The local WSL cross-build also completed and its kernel was verified as an
+ARM64 Mach-O, but that is compile evidence only: neither 0117 image has been
+booted on the phone. The local and CI kernel artifacts differ. Keep the local
+image
+`research\merlin-boot\shim-boot-merlin-msdc-0117-linux-cpus8.img`
+for a later, separate comparison; it is not the next diagnostic image.
 
 ## 1. Build the kernel in WSL
 

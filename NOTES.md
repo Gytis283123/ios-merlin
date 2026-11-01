@@ -1,5 +1,65 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-11-01 LATEST-115: BOOT FAILURE TRIAGED; CI 0117 IMAGE IS NEXT TEST)
+
+### Diagnosis from the newest available device log
+
+- The newest evidence is `research/logs/sweetlog-live-20261101-140352.txt`
+  and its raw `.bin` capture, pulled read-only from recovery after an 0116
+  CI-kernel boot. The log reaches 920.346 seconds (flush #93). Its header
+  identifies Darwin Kernel Version 22.6.0 / XNU 8796.141.3.
+- XNU initializes VM/platform state and continues into `/sbin/launchd`;
+  this is not evidence of a kernel panic or failed kernel-to-userspace
+  handoff. No panic is established by this capture. The early
+  `gPanicBase is still not initialized` lines are logger initialization
+  complaints, not a panic report.
+- `backboardd` and SpringBoard both execute. Setup Assistant also executes
+  as `budd` (`exec budd`, around log line 32,790). Therefore the observed
+  failure is not that Setup Assistant is absent or never scheduled; the log
+  does not prove its UI appeared or onboarding completed.
+- The kernel receive tracer records a SpringBoard 40232 send, a
+  backboardd 40232 dequeue, a backboardd 40332 send, and a SpringBoard
+  40332 dequeue. This is evidence of a kernel-level request/reply transport
+  path, not proof the receiving processes handled the messages correctly.
+  The 0116 tracer reports every received size as zero and stops at 4,000
+  records, so later IPC is not covered.
+- SpringBoard has 39 signal-6 crash records across 40 starts; PosterBoard
+  has 13 signal-5 records. The log also contains repeated Mach send errors,
+  but they are correlations, not a proven cause of those crashes. The
+  supplied evidence does not yet distinguish a missing service endpoint,
+  userspace/framework incompatibility, or an initialization deadlock.
+- Graphics evidence is mixed: the kernel reports a 1080x2340 AppleCLCD
+  framebuffer presented as 1125x2436, but all three published accelerator
+  interfaces are explicitly stubs with “no renderer.” Scanout/framebuffer
+  setup is therefore observed; a functional compositor/accelerated UI is
+  not. This makes incomplete graphics/userspace support a leading
+  hypothesis, not a confirmed explanation for the SpringBoard aborts.
+
+### Timeline and next diagnostic
+
+1. XNU prints VM bootstrap and platform initialization, publishes device
+   stubs, and brings up CPUs.
+2. `launchd` and system daemons execute; BackBoard and SpringBoard start.
+3. Some traced Mach request/reply traffic crosses between SpringBoard and
+   backboardd. Other IPC errors occur, but their causal relationship is
+   unknown.
+4. Setup Assistant (`budd`) executes; SpringBoard continues to crash/restart.
+   The captured log has no display/UI confirmation and no symbolicated crash
+   report.
+5. 0117 fixes the receive-size trace and raises its cap to 30,000, but neither
+   0117 image has been booted. Next use the CI image
+   `research/merlin-boot/shim-boot-merlin-msdc-0117-ci-41306087077-cpus8.img`
+   with temporary `fastboot boot` only; collect the persisted log and
+   matching crash reports before changing service or graphics behavior.
+
+- Per user preference, continue testing with CI kernels/images. The local
+  WSL cross-build did complete for 0117 and produced a verified ARM64 Mach-O;
+  that proves compilation only. There is no device-boot result for that local
+  kernel, so do not equate “does not continue further” with a build failure
+  or use the local image as the next diagnostic.
+- Preserve the current logs and image artifacts. Do not flash or alter
+  partitions. For the retrieval commands, see `LOCAL_BUILD_AND_LOG_GUIDE.md`.
+
 ## Agent handoff / active work (2026-11-01 LATEST-114: LOCAL 0117 BUILD AND LOG GUIDE ADDED; PHONE BOOT PENDING)
 
 - Added `LOCAL_BUILD_AND_LOG_GUIDE.md` with the verified WSL kernel-only
