@@ -21,6 +21,8 @@
   disposable temp tree and the helper/call sites were verified. No kernel
   build was run: this Windows host cannot perform the project's macOS XNU
   build, and the local-only policy prohibits pushing this patch to CI.
+- The patch is committed locally as `82870db` (`xnu: trace received Mach
+  messages`); no push or CI dispatch was made.
 - This is instrumentation, not a proven behavioral kernel fix. Current
   evidence points to the root tweak having suppressed Setup Assistant;
   that preference fix is already in place, but the GUI userdata write and
