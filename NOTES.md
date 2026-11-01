@@ -1,6 +1,6 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
-## Agent handoff / active work (2026-11-01 LATEST-129 cont.: PATCH 0097 CI BUILD COMPLETE; KERNEL ARTIFACT DOWNLOADED)
+## Agent handoff / active work (2026-11-01 LATEST-129 cont.: PATCH 0097 CI BUILD COMPLETE; DEVICE BOOT LOOP)
 
 ## Main branch update (2026-11-01, build successful)
 
@@ -29,10 +29,12 @@
 
 - [ACTION] Pushed ios-merlin main (a500468..faede18) to fork remote https://github.com/Gytis283123/ios-sweet.git (fork/main). Includes patches 0094-0098: 0094 (vm_resident.c:2627 fix, CI run 40400128627 GREEN), 0095 (dropped early-jump), 0096 (HFS read dump), 0097 (exclusion window spans SCP+modem MPU regions; fixes data.kalloc.16384 panic; default window 0x9f900000-0xbe000000), 0098 (multi-block eMMC).
 - [OBSERVATION] CI run #100 (ID 41350305589) completed successfully on fork/main. Kernel artifact ID 13100973214 contains kernel.development.sweet (17,257,144 bytes; SHA256 23bdf760c94a5e6a8243d9a8deb1d1d4c8c4b06b4a9e7fa961670c9e2255109c). Downloaded to D:/things/Merlin/ios-merlin/research/kernel-ci/kernel.development.sweet. Kernel binary contains merlin_excl_start/len/enabled symbols confirming patch 0092/0094/0097 stack built in.
-- [OBSERVATION] CI macOS runner IS available now — successful xnu builds on GitHub main from 2026-11-01 (runs 41306087077, 41301563080).
-- [BLOCKER] Device not visible via fastboot devices/adb devices — USB connection may be lost. Cannot device-test or capture LATEST-128 panic.
-- [ACTION NEEDED] Device access to fastboot boot the CI-built kernel and test for LATEST-128 panic recurrence.
-- [ACTION NEEDED] Package kernel.development.sweet with existing shim/ADT/DTB into a bootable fastboot boot image once device is reachable.
+- [OBSERVATION] Boot image created: research/merlin-boot/shim-boot-merlin-msdc-0118-ci-41350305589-cpus8.img (17,373,904 bytes) via mkbootimg.py with kernel.development.sweet + merlin.dtb, cmdline "cpus=8".
+- [EVENT] `fastboot boot shim-boot-merlin-msdc-0118-ci-41350305589-cpus8.img` — image sent OK (16966 KB), but status read failed: "Status read failed (Too many links)". Device then entered boot loop. Not visible via fastboot devices or adb devices.
+- [EVIDENCE] `fastboot boot` loads to RAM only — does NOT write to flash. Boot partition should be intact per AGENTS.md. Must NOT flash.
+- [BLOCKER] Device in boot loop, not visible via fastboot/adb. User needs to put device into fastboot mode manually (merlin/Redmi Note 9: power off, hold Volume Down + Power).
+- [ACTION NEEDED] Once device is in fastboot mode: boot known-good image (e.g., shim-boot-merlin-msdc-0116-msgrecv-cpus8.img) via `fastboot boot` to recover, then retry CI kernel boot.
+- [ACTION NEEDED] If device recovers, investigate whether CI kernel panic (LATEST-128 / data.kalloc.16384) recurs with patch 0097.
 
 ## Agent handoff / active work (2026-11-01 LATEST-129: PATCH-SERIES RECONCILIATION COMPLETE; XNU/PATCHES NOW MATCHES IOS-SWEET-MSDC)
 
