@@ -1,0 +1,21 @@
+diff --git a/osfmk/ipc/mach_msg.c b/osfmk/ipc/mach_msg.c
+index 6331668..1b3d0a1 100644
+--- a/osfmk/ipc/mach_msg.c
++++ b/osfmk/ipc/mach_msg.c
+@@ -138,6 +138,6 @@ sweet_msgrecv_log(unsigned int id, unsigned int sz)
+ 		return;
+ 	}
+-	if (sweet_msgrecv_logged >= 4000) {
++	if (sweet_msgrecv_logged >= 30000) {
+ 		return;
+ 	}
+ 	sweet_msgrecv_logged++;
+@@ -345,5 +345,6 @@ mach_msg_receive_results_kevent(
+ #endif  /* IMPORTANCE_INHERITANCE */
+ 
+-	sweet_msgrecv_log(ikm_header(kmsg)->msgh_id, (unsigned int)msg_size);
++	sweet_msgrecv_log(ikm_header(kmsg)->msgh_id,
++	    (unsigned int)ikm_header(kmsg)->msgh_size);
+ 
+ 	/* auto redeem the voucher in the message */
+ 	ipc_voucher_receive_postprocessing(kmsg, (mach_msg_option_t)option64);
