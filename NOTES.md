@@ -1,6 +1,6 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
-## Agent handoff / active work (2026-11-01 LATEST-123: POST-FLASH LOG PULLED; BOOT REACHED SPRINGBOARD/SETUP BUT UI AND TERMINATION UNCONFIRMED)
+## Agent handoff / active work (2026-11-01 LATEST-124: FLUSH-49 RETAINED WINDOW INTERPRETED; NEXT CAPTURE NEEDS 16-MIB RING + SCREEN/RESET EVIDENCE)
 
 ### Direct review of the saved boot logs
 
@@ -218,6 +218,121 @@ fastboot, so no successful userspace boot or visible UI is confirmed.
   next evidence needed is the user's observation/photo of the display and,
   if a longer run is wanted, a fresh boot allowed to remain running for the
   full 15 minutes before returning to recovery and pulling another log.
+
+### Evidence-bounded interpretation and diagnostic ranking
+
+- [EVIDENCE] In the retained 17:04 window, `budd` executes once, SpringBoard
+  continues issuing logged Mach sends into the final retained records, and
+  BackBoard reports native-resolution surface swaps. The capture has no
+  retained SpringBoard crash or bounding-path exception.
+- [INFERENCE] This establishes that launch progressed far enough for
+  SpringBoard/Setup Assistant activity and that the framebuffer submission
+  path was being exercised. It does not establish that a Setup scene was
+  composed, scanned out, or visible to a person; `budd` exec and surface
+  swaps are not a screenshot.
+- [EVIDENCE] The capture includes 1,054 SpringBoard send timeouts within
+  1,163 total Mach errors, and the ring does not log the destination port or
+  its receiver. The 0107 checked-in patch logs receive IDs/sizes, not the
+  destination mapping needed to name the failed peer.
+- [INFERENCE] Rank IPC endpoint diagnosis first for the SpringBoard stall
+  hypothesis because the observed errors are frequent and attributed to
+  SpringBoard. This is a priority for testing, not proof that IPC causes the
+  visible symptom. Instrument the failing send with destination port name,
+  active/dead state, kobject type, receive-right owner task/PID where
+  available, message ID, return code, and monotonic timestamp; do not log
+  message bodies or port rights. Correlate failures with the receiver's
+  launch/exit/registration and successful sends to the same endpoint.
+- [EVIDENCE] There are 20,659 failed `AppleM2ScalerCSCDriver` lookups; the
+  project publishes accelerator interfaces explicitly marked “stub; no
+  renderer,” while BackBoard still submits swaps.
+- [INFERENCE] Rank graphics/provider availability second for the UI
+  visibility question. A failed IOKit match proves no matching provider was
+  returned at that query, not whether a device-tree node is absent, a
+  driver failed to load, or firmware is missing. In the next trace, record
+  one complete matching dictionary and enumerate registered matching
+  services/parents; separately capture driver load/probe and firmware errors.
+  A missing registered class with no probe error supports an unavailable
+  provider; a present provider with nonmatching properties points to
+  matching/configuration; a published driver followed by explicit firmware
+  load failure supports the firmware branch. Do not publish a fake provider.
+- [EVIDENCE] The retained log has one PosterBoard SIGTRAP followed by a
+  PosterBoard exec, and no retained SpringBoard crash. It has one
+  `driverkitd` SIGKILL record with exit-reason namespace 1/code 0x7, but
+  this project log does not decode that namespace/code.
+- [INFERENCE] Treat PosterBoard as a confirmed process crash/respawn, but
+  not as the Setup failure cause without a matching timestamped dependency
+  failure or evidence that its UI owns the displayed scene. Retrieve its
+  complete crash report/exception context and launchd restart status.
+- [INFERENCE] Treat the single `driverkitd` SIGKILL as lower-priority until
+  its exit reason is decoded against the exact runtime XNU definitions and
+  a corresponding launchd/DriverKit service event is found. Check a full
+  crash/jetsam report and service restart history; signal 9 alone does not
+  identify who sent the signal or why.
+- [EVIDENCE] The retained window reports 81 DMA spill-canary events. It
+  contains no read-verify mismatch; its wrapped-away beginning omits early
+  storage evidence. Checked-in patch 0088 describes a canary after a
+  512-byte target, but the exact CI driver implementation for this flashed
+  image is not in the repository.
+- [INFERENCE] Rank DMA below the direct UI/IPC questions, while still
+  validating it before calling storage healthy. The canary says bytes in
+  the inspected region differed from the sentinel; by itself it cannot
+  establish an out-of-bounds DMA write because the expected transfer length
+  and active multi-block implementation are not correlated to each report.
+  Instrument each transfer with LBA, sector count, programmed DMA length,
+  block count, buffer base/size, cache-sync points, DMA status, and exact
+  changed-byte interval. Compare only bytes beyond the expected transfer
+  span, then verify selected sectors against an independent image/hash
+  source. Descriptor starvation, oversized bursts, and bad length fields
+  remain hypotheses, not findings.
+
+### Next capture design and minimum experiments
+
+- [EVIDENCE] The SWEETLOG ring is 4 MiB; the saved header reports 4,240,704
+  total bytes by 480.281 s, with exactly 46,400 oldest bytes overwritten.
+  `tools/sweet-log-pull.sh` currently reads a fixed 1,025 4-KiB blocks.
+  Project notes for the 0099 logger describe a first flush on MSDC attach,
+  followed by `ufslogsecs` flushes (default 10 s); patch 0069 accepts values
+  from 1 through 60.
+- [INFERENCE] At the measured average output rate
+  (4,240,704 / 480.281 = about 8,830 bytes/s), 15 minutes requires about
+  7.58 MiB before headroom. Build the next CI kernel with a 16-MiB RAM ring
+  (about 31.7 minutes at this observed rate), preserve the first flush on
+  attach, and set `ufslogsecs=5` to reduce the unflushed tail to roughly
+  five seconds. This capacity estimate assumes similar log volume; it is
+  not a guaranteed retention duration.
+- [INFERENCE] Update the reader in the same change: a 16-MiB ring plus its
+  4-KiB header occupies 4,097 4-KiB blocks (16,781,312 bytes), so the current
+  hard-coded 1,025-block pull must not be used. Keep the decoder's ring-size
+  header handling and validate exact raw length before decoding. Verify that
+  reserving the larger tail region cannot overlap the HFS volume before
+  building/booting.
+- [INFERENCE] Keep full, timestamped crash/boot/exec/exit, first-occurrence,
+  and changed-result records. To control volume without hiding anomalies,
+  aggregate only repeated identical scaler-match failures and identical
+  `(process, message ID, destination, return code)` Mach failures: log the
+  first occurrence, every state change, and a 30-second count/first/last
+  summary. Preserve exact total counts. Do not globally suppress console
+  output or panic/error evidence.
+- [INFERENCE] Minimum visibility test: use an external camera to record
+  continuously from power-on through at least 15 minutes without touching
+  recovery controls. Mark when SpringBoard and Setup appear, whether the
+  screen is blank/static/transitions, and whether the device visibly resets.
+  A visible Setup frame proves presentation at that moment; a continuous
+  blank-screen recording through the single `budd` launch disproves visible
+  Setup for that interval but not necessarily all later intervals.
+- [INFERENCE] Minimum TWRP-cause test: first record whether entry to TWRP was
+  manual or spontaneous and the exact observed transition. If manual, TWRP
+  is not evidence that XNU returned to recovery. If spontaneous, record the
+  reset with the same external video and, before another reboot, read-only
+  inspect any reset-reason/pstore/last-kernel-log interface actually exposed
+  by TWRP/bootloader; availability and meaning are currently unknown. Pair
+  that with the enlarged SWEET ring's last panic/shutdown records. The
+  current flush-49 capture alone cannot determine why the device was in
+  recovery.
+- [SPECULATION] Until that observation distinguishes intentional recovery
+  entry from an automatic reset, a hardware reset, power loss, watchdog,
+  userspace failure, or manual button action are possible explanations,
+  none established by the retained log.
 
 ## Agent handoff / active work (2026-11-01 LATEST-119: M2 SCALER LOOKUP STORM IS NOT A CONFIRMED BOOT CAUSE; DO NOT FAKE THE APPLE DRIVER)
 
