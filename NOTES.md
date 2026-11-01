@@ -1,7 +1,7 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
-## Agent handoff / active work (2026-11-01 LATEST-103: SETUP PREFERENCE FIX APPLIED TO ISOLATED LEGACY-ROOT SMOKE TEST; NO DEVICE BOOT)
+## Agent handoff / active work (2026-11-01 LATEST-104: SETUP FIX APPLIED TO ISOLATED V2 ROOT COPY; READ-ONLY VERIFIED; NO DEVICE BOOT)
 
 ### 0115 boot log (observation; `research/logs/sweetlog-0115-20261101.{bin,txt}`)
 
@@ -81,18 +81,31 @@
   validation image; it verifies the preference change only. A read-only
   loop-size-limited mount of `iosroot-v2.img` was also attempted but HFS+
   rejected its backup volume header, matching the documented decoy-tail
-  limitation. No device boot was performed.
+  limitation. That legacy-root copy is only a preference smoke test.
+- Exact-v2 candidate now created at
+  `research/ipsw-x/iosroot-v2-setup-test.img` (17,226,006,528 bytes) by
+  copying `iosroot-v2.img`. On the copy only, the HFS+ volume was limited
+  to 16 GiB, `fsck.hfsplus -f -y` repaired its missing backup header, the
+  Setup tweaks were applied, the volume was unmounted, and its original
+  44-MiB all-`0xff` decoy tail was restored. The source `iosroot-v2.img`
+  was not modified. Verification: read-only loop mount succeeded;
+  `Setup.app/Setup` is present; neither PurpleBuddy preferences contain
+  Setup completion/mini-buddy suppression keys; candidate length and
+  44-MiB tail match the v2 layout. A read-only `fsck.hfsplus -f -n` on the
+  16-GiB volume reports only the known journaled-volume minor-header flag
+  `(1, 0)` (exit 8); read-only mount and filesystem reads succeed. This
+  is a prepared candidate, not a boot result.
 
 ### Next
 
-1. Make a separate copy of the exact `iosroot-v2.img` used by the 0115
-   boot, apply the Setup preference change using an HFS+ method that
-   preserves its decoy-tail layout, then verify the resulting image.
-2. The phone is not connected (`fastboot devices` was empty). Testing on
-   device will require a deployment plan; flashing userdata overwrites the
-   Android data volume and requires explicit user approval. Never flash
-   bootloader, recovery, modem, persist, or partition backups.
-3. If SetupAssistant still does not launch after a valid root-image test,
+1. The phone is not connected (`fastboot devices` was empty). Decide on
+   deployment when available; flashing userdata overwrites the Android
+   data volume and requires explicit user approval. Never flash bootloader,
+   recovery, modem, persist, or partition backups.
+2. Boot the verified v2 candidate only through an explicitly approved
+   safe deployment path and check for a SetupAssistant exec in the
+   persistent log.
+3. If SetupAssistant still does not launch after this root-state change,
    continue tracing `mediaremoted` and identify the receiver for message
    40232 before changing Mach behavior. The 0115 receive trace only reports
    buffer capacity.
