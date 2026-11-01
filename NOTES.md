@@ -18,6 +18,8 @@
   `D:\things\Merlin\ios-merlin\research\merlin-boot\shim-boot-merlin-msdc-0116-msgrecv-cpus8.img`
   (17,052,627 bytes; SHA256
   `e0e32a017828a7a3c27edf64855a03162f402f6d075cd37df7d6f8dfdef886d0`).
+  The standalone kernel is saved alongside it as
+  `kernel-0116-development.sweet` with the artifact SHA above.
   This image has not been booted on-device. No partition flashing was done
   or is planned; test only with temporary `fastboot boot`.
 
