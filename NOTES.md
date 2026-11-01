@@ -1,5 +1,14 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-11-01 LATEST-129 cont.: PATCH 0097 PUSHED TO LOCAL IOS-SWEET CLONE; CI BUILD BLOCKED BY LOCAL-ONLY)
+
+- [ACTION] Pushed ios-merlin main (a500468..1c29191) to origin/main (local ios-sweet clone at D:/things/Merlin/ios-sweet). Includes patches 0094-0098: 0094 (vm_resident.c:2627 fix, CI run 40400128627 GREEN), 0095 (dropped early-jump), 0096 (HFS read dump), 0097 (exclusion window spans SCP+modem MPU regions; fixes data.kalloc.16384 panic; default window 0x9f900000-0xbe000000), 0098 (multi-block eMMC).
+- [OBSERVATION] CI macOS runner IS available now — successful xnu builds on GitHub main from 2026-11-01 (runs 41306087077, 41301563080).
+- [BLOCKER] Patch 0097 is NOT in GitHub's ios-sweet repo — CI builds from GitHub, not from the local clone. Cannot build patch 0097 without pushing to GitHub, blocked by AGENTS.md LOCAL ONLY (user decision 2026-10-18: "do not push to GitHub without being asked").
+- [BLOCKER] Device not visible via fastboot devices/adb devices — USB connection may be lost. Cannot device-test or capture LATEST-128 panic.
+- [ACTION NEEDED] User authorization to push local ios-sweet clone to GitHub's ios-sweet repo (fork remote: https://github.com/Gytis283123/ios-sweet.git) so CI can build patch 0097.
+- [ACTION NEEDED] Device access to fastboot boot the CI-built kernel and test for LATEST-128 panic recurrence.
+
 ## Agent handoff / active work (2026-11-01 LATEST-129: PATCH-SERIES RECONCILIATION COMPLETE; XNU/PATCHES NOW MATCHES IOS-SWEET-MSDC)
 
 - [ACTION] Reconciled the tracked `xnu/patches` series in ios-merlin with
