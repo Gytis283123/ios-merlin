@@ -1,6 +1,6 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
-## Agent handoff / active work (2026-11-01 LATEST-121: CONSOLE-MUTED TEST IMAGE PREPARED; UI STILL UNVERIFIED)
+## Agent handoff / active work (2026-11-01 LATEST-122: CONSOLE-MUTED IMAGE FLASHED TO BOOT; UI RESULT NOT YET OBSERVED)
 
 ### Direct review of the saved boot logs
 
@@ -112,21 +112,18 @@ Preboot/data/device services or unresolved IPC dependencies. Storage
 corruption is not supported by the observed read/mount evidence, but is not
 ruled out by double-read verification alone.
 
-Next, make a separate derivative of the existing CI native-display image
-that changes only the command line by adding `sweetfb_noconsole=1`; preserve
-the existing image unchanged. This tests whether the console is obscuring
-an otherwise-present Setup UI without changing the kernel, storage path,
-Preboot, or GPU stubs. Use `fastboot boot` only (never flash), photograph
-the screen from SpringBoard startup through Setup Assistant and record
-whether it is blank, static, or transitions repeatedly. Then preserve the
-fresh raw and decoded SWEET log after about 180 s. If the UI becomes visible
-and remains stable, console overlay caused the visual misreading. If it is
-still blank while swaps continue and the same processes remain single-start,
-the next investigation should target layer composition/IPC endpoints; if
-the Setup page itself cycles, correlate those transitions with the existing
-SpringBoard/BackBoard message failures and missing volume/device lookups.
-Recover by rebooting to the existing bootloader/TWRP; this experiment must
-not write any partition.
+The console-muted derivative is now installed in the boot partition after
+the user explicitly requested `fastboot flash boot` instead of temporary
+`fastboot boot`. Photograph the screen from SpringBoard startup through Setup
+Assistant and record whether it is blank, static, or transitions repeatedly;
+then preserve a fresh raw and decoded SWEET log after about 180 s. If the UI
+becomes visible and remains stable, console overlay caused the visual
+misreading. If it is still blank while swaps continue and the same processes
+remain single-start, target layer composition/IPC endpoints next; if the Setup
+page cycles, correlate those transitions with existing SpringBoard/BackBoard
+message failures and missing volume/device lookups. The flash and reboot
+commands were accepted, but this host no longer sees the device in ADB or
+fastboot, so no successful userspace boot or visible UI is confirmed.
 
 ### Prepared console-muted image derivative
 
@@ -154,9 +151,23 @@ not write any partition.
   already removed the recorded SpringBoard crash, while visible UI rendering
   and the causal role of the logged IPC failures remain unproven. This
   derivative tests whether fbcon obscures the UI; it is not evidence that
-  graphics, IPC, or Setup Assistant is fixed. It has not been booted on the
-  device. Next, boot this exact artifact with `fastboot boot` only, record the
-  actual screen behavior, and preserve a fresh roughly 180-second SWEET log.
+  graphics, IPC, or Setup Assistant is fixed.
+- Before writing, `fastboot fetch` was unavailable on this bootloader. The
+  device was returned to installed TWRP, and the complete 64 MiB raw `boot`
+  partition was read via ADB from `/dev/block/mmcblk0p34` and structurally
+  verified as Android v2. Recovery backup:
+  `backup/merlin-boot-before-noconsole-test-20261101-twrp-raw.img`,
+  SHA256
+  `00A5688ABF9EE31152F3F8262571FC9519443349DAC4A2C9EB9E07017BE4E436`.
+  Fastboot identified product `merlin`, unlocked state, and `slot-count: 0`
+  (A-only); the 64 MiB boot partition exceeds the test image size.
+- On the user's explicit direction, ran
+  `fastboot -s <device> flash boot <test-image>` and got
+  `Sending 'boot' (16652 KB) OKAY`, `Writing 'boot' OKAY`, and `Finished`.
+  Then `fastboot reboot` returned `Rebooting OKAY`. This records successful
+  command completion, not a confirmed kernel/userspace/UI boot. A subsequent
+  host check found neither ADB nor fastboot enumeration. The target's screen
+  and a new log are still needed to establish the actual result.
 
 ## Agent handoff / active work (2026-11-01 LATEST-119: M2 SCALER LOOKUP STORM IS NOT A CONFIRMED BOOT CAUSE; DO NOT FAKE THE APPLE DRIVER)
 

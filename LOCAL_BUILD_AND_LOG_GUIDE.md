@@ -6,10 +6,13 @@ asset. A CI-0117-derived test image is prepared with the existing
 `sweetfb_native=1` boot arg to avoid that synthetic display geometry. This
 guide also records how the local WSL kernel was built and how to pull logs.
 
-**Nothing in this guide flashes a partition. Use `fastboot boot` only.** The
-CI-derived native-display test image has been booted temporarily and the
-specific SpringBoard bounding-path exception did not recur in the captured
-180-second log. The visual/setup state is still unconfirmed.
+The earlier CI-derived native-display test image was temporarily booted; the
+specific SpringBoard bounding-path exception did not recur in its captured
+180-second log. Its visual/setup state remained unconfirmed. For the later
+console-muted derivative, the user explicitly authorized flashing **only the
+boot partition**, after preserving a verified raw boot backup; no other
+partition was written. Do not flash other partitions or perform another
+destructive operation without explicit user authorization.
 
 ## What you need
 
@@ -68,17 +71,30 @@ payload bytes are unchanged. The Android boot ID was recomputed. The image
 is 17,052,627 bytes with SHA256
 `281A8D26A0F0A7AB68BC895C02BA97364AE19C0905397C985A99805A8A7CF0C1`.
 
-The derivative round-trips as Android boot v2 and has not yet been booted on
-the phone. This is a controlled visibility diagnostic, not a graphics or
-Setup Assistant fix. To test it, use:
+The derivative round-trips as Android boot v2. On 2026-11-01 the user
+explicitly requested installing it to `boot`, rather than using temporary
+`fastboot boot`. Before the write, the full 64 MiB current boot partition was
+read from TWRP and verified. The ignored backup is:
+
+```text
+backup\merlin-boot-before-noconsole-test-20261101-twrp-raw.img
+SHA256 00A5688ABF9EE31152F3F8262571FC9519443349DAC4A2C9EB9E07017BE4E436
+```
+
+The device reported product `merlin`, unlocked, and `slot-count: 0`. The
+following commands completed with `OKAY`:
 
 ```powershell
 fastboot devices
-fastboot boot D:\things\Merlin\ios-merlin\research\merlin-boot\shim-boot-merlin-msdc-0117-ci-nativefb-noconsole-cpus8.img
+fastboot flash boot D:\things\Merlin\ios-merlin\research\merlin-boot\shim-boot-merlin-msdc-0117-ci-nativefb-noconsole-cpus8.img
+fastboot reboot
 ```
 
-Do not flash it or overwrite the known-good base. Record the screen from
-SpringBoard startup through Setup Assistant and save a fresh SWEET log.
+This is a controlled visibility diagnostic, not a graphics or Setup
+Assistant fix. The host later saw neither ADB nor fastboot, so successful
+kernel/userspace startup and visible UI are not confirmed. Record the screen
+from SpringBoard startup through Setup Assistant and save a fresh SWEET log.
+The known-good base image was not modified.
 
 The local WSL cross-build also completed and its kernel was verified as an
 ARM64 Mach-O. The fresh log's receive-size trace is consistent with the 0117
