@@ -1,7 +1,7 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
-## Agent handoff / active work (2026-11-01 LATEST-104: SETUP FIX APPLIED TO ISOLATED V2 ROOT COPY; READ-ONLY VERIFIED; NO DEVICE BOOT)
+## Agent handoff / active work (2026-11-01 LATEST-105: MERLIN DETECTED IN FASTBOOTD; AWAITING EXPLICIT USERDATA-FLASH APPROVAL)
 
 ### 0115 boot log (observation; `research/logs/sweetlog-0115-20261101.{bin,txt}`)
 
@@ -95,13 +95,17 @@
   16-GiB volume reports only the known journaled-volume minor-header flag
   `(1, 0)` (exit 8); read-only mount and filesystem reads succeed. This
   is a prepared candidate, not a boot result.
+- Fastboot now detects product `merlin`, bootloader `unlocked: yes`, and
+  `is-userspace: yes` (fastbootd). No flash or boot command was issued
+  after detection. Explicit approval to overwrite userdata could not be
+  obtained, so the device was left untouched.
 
 ### Next
 
-1. The phone is not connected (`fastboot devices` was empty). Decide on
-   deployment when available; flashing userdata overwrites the Android
-   data volume and requires explicit user approval. Never flash bootloader,
-   recovery, modem, persist, or partition backups.
+1. Obtain explicit user approval before flashing
+   `iosroot-v2-setup-test.img` to userdata; this overwrites the Android
+   data volume. Never flash bootloader, recovery, modem, persist, or
+   partition backups.
 2. Boot the verified v2 candidate only through an explicitly approved
    safe deployment path and check for a SetupAssistant exec in the
    persistent log.
