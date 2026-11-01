@@ -1,5 +1,39 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-11-01 LATEST-113: 0117 LOCAL + CI BUILDS AND TWO IMAGES VERIFIED; DEVICE BOOT PENDING)
+
+- Commit `536f447fc9d64c179d1d2913289d6123c100751d` containing patch 0117
+  was pushed fast-forward to `Gytis283123/ios-sweet` `main`. CI run
+  `41306087077` completed successfully at 12:29:34Z. Kernel artifact
+  `xnu-kernel`, ID `13083970232`, is saved at
+  `research/art-0117-remote/kernel.development.sweet` (17,271,992 bytes,
+  SHA256 `45f4789b8a3088944cbbeb506befb709805b2c3252da68772c023d515591f4d6`).
+- The local Linux/WSL 0117 build also succeeded. Its kernel is saved at
+  `research/art-0117-linux/kernel.development.sweet` (19,476,064 bytes,
+  SHA256 `9ae24dc87e3b5e09d27aafda05c2ba437393e09d5c5f077374c8bb56c11a070f`).
+  Local and CI kernel files differ, so separate payloads and images were
+  built; both kernels are ARM64 Mach-O and contain the 0117 receive tracer.
+- Local temporary image:
+  `research/merlin-boot/shim-boot-merlin-msdc-0117-linux-cpus8.img`
+  (19,864,531 bytes; SHA256
+  `6c50893a61843b81c87692d078ab16d8b4355b8dbe23d870422e15a80a9a0e3c`).
+- CI temporary image:
+  `research/merlin-boot/shim-boot-merlin-msdc-0117-ci-41306087077-cpus8.img`
+  (17,052,627 bytes; SHA256
+  `40caf806e72607278c389fa2abaf3f02102da4ae0d111189ded0f0a446070dd7`).
+  Both images round-trip validated as Android boot v2, use the exact known
+  shim and DTB from the verified 0116 image and the exact 0115 ADT, preserve
+  the command line including `cpus=8` and `rd=msdcroot0`, and have all ten
+  file-backed Mach-O kernel segments matching their respective kernel.
+- `xnu-cross/scripts/build-linux.sh` now selects the 0105-0117 patch series
+  from the `ios-sweet-msdc` checkout; bash syntax and patch-file presence
+  checks passed. The full tree-reseed step was intentionally not run because
+  it replaces the existing WSL source/build directories. The prior 0112
+  kernel was preserved.
+- No device boot was performed, and no partition was flashed. When testing,
+  use `fastboot boot` only. Existing user `tools/mkpayload.py` edits and
+  untracked build artifacts remain untouched.
+
 ## Agent handoff / active work (2026-11-01 LATEST-112: 0117 LOCAL BUILD AND IMAGE VERIFIED; REMOTE CI RUNNING)
 
 - Patch 0117 fixes the receive trace to use the dequeued Mach header's
