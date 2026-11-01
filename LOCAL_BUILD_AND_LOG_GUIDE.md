@@ -1,9 +1,10 @@
-# Build and inspect the local 0117 image
+# Inspect the CI 0117 display-profile test
 
-This guide covers the experimental Redmi Note 9 (`merlin`) XNU 0117 image:
-build the kernel in Ubuntu on WSL, package it with the known-good shim and
-device tree, temporarily boot it, then retrieve and inspect the persistent
-kernel log.
+The newest TWRP log identified SpringBoard's crash: its synthetic iPhone X
+display profile requests a missing `BoundingPathBitmap-1125x2436-375x812-3.00x`
+asset. A CI-0117-derived test image is prepared with the existing
+`sweetfb_native=1` boot arg to avoid that synthetic display geometry. This
+guide also records how the local WSL kernel was built and how to pull logs.
 
 **Nothing in this guide flashes a partition. Use `fastboot boot` only.** The
 0117 image has been packaged and structurally verified, but has not yet been
@@ -26,19 +27,35 @@ that as a missing log or userdata device. A Windows-host `adb exec-out`
 capture must preserve binary output (for example, capture `subprocess` stdout
 in Python rather than redirecting native binary output through PowerShell).
 
-Per the current testing preference, use the CI-built image for the next
-device test:
+Use this CI-built native-display test image for the next device test:
 
 ```text
-research\merlin-boot\shim-boot-merlin-msdc-0117-ci-41306087077-cpus8.img
+research\merlin-boot\shim-boot-merlin-msdc-0117-ci-nativefb-cpus8.img
 ```
 
+It differs from the verified CI-0117 base only in the SWEETXNU command line,
+which adds `sweetfb_native=1`; no kernel compilation or partition write is
+involved. It has not been boot-tested yet, so verify that SpringBoard remains
+up and that the native display geometry resolves its bounding-path asset.
+From fastboot, use:
+
+```powershell
+fastboot devices
+fastboot boot D:\things\Merlin\ios-merlin\research\merlin-boot\shim-boot-merlin-msdc-0117-ci-nativefb-cpus8.img
+```
+
+Do not use `fastboot flash`. If SpringBoard reports another missing
+`BoundingPathBitmap` key, preserve that full exception and determine which
+asset the active iOS root image contains before changing the display profile
+again.
+
 The local WSL cross-build also completed and its kernel was verified as an
-ARM64 Mach-O, but that is compile evidence only: neither 0117 image has been
-booted on the phone. The local and CI kernel artifacts differ. Keep the local
-image
+ARM64 Mach-O. The fresh log's receive-size trace is consistent with the 0117
+fix, but does not identify whether that boot used the local or CI kernel.
+The local and CI kernel artifacts differ. Keep the local image
 `research\merlin-boot\shim-boot-merlin-msdc-0117-linux-cpus8.img`
-for a later, separate comparison; it is not the next diagnostic image.
+for a later, separate comparison; the CI-derived native-display variant is
+the current targeted test.
 
 ## 1. Build the kernel in WSL
 

@@ -1,6 +1,49 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-11-01 LATEST-117: SPRINGBOARD ABORT ROOT CAUSE IDENTIFIED; NATIVE-DISPLAY CI TEST IMAGE READY)
+
+### Confirmed failure and targeted remediation
+
+- The 16:00 TWRP capture includes more than kernel crash PCs: the existing
+  SpringBoard heap scanner printed the uncaught exception text. The repeated
+  fatal reason is:
+  `NSInternalInconsistencyException: Failed to load bounding path bitmap data
+  from the asset manager for asset name:
+  BoundingPathBitmap-1125x2436-375x812-3.00x`.
+- This matches the active `0061-sweet-iphone-x-display-size.patch`, which
+  makes `SweetFramebuffer` present a synthetic 1125x2436 iPhone X display.
+  SpringBoard requests the corresponding bounding-path bitmap and the active
+  asset manager cannot provide it. This is the confirmed immediate cause of
+  the repeated SpringBoard SIGABRTs; the repeated IPC timeouts were not the
+  root cause of this crash loop.
+- The kernel already supports the reversible `sweetfb_native=1` boot arg.
+  Packaged a CI-0117-derived temporary image with that arg added to the
+  existing XNU command line:
+  `research/merlin-boot/shim-boot-merlin-msdc-0117-ci-nativefb-cpus8.img`
+  (17,052,627 bytes, SHA256
+  `506dbe7f09f1c54ba4e1d20d36a1da81f3541f257491ada7a258c7f860f87e4a`). It is
+  the CI 0117 image with only the XNU command-line field changed; round-trip
+  verification confirms shim, DTB, CI kernel, Android command line, and all
+  other SWEETXNU payload bytes are unchanged. `cpus=8` and `rd=msdcroot0`
+  are preserved.
+- This is a targeted test image, not yet a confirmed fix: native geometry
+  should stop the `1125x2436` asset lookup, but the next log/display must
+  confirm the native-profile asset exists and SpringBoard stays up. No
+  partition was flashed or written.
+- At the attempted transition from TWRP to bootloader, ADB no longer listed
+  the phone; `adb reboot bootloader` consequently did not run and
+  `fastboot devices` returned no device. The native-display image has not
+  been booted. When the phone is available in fastboot, use:
+  `fastboot boot research/merlin-boot/shim-boot-merlin-msdc-0117-ci-nativefb-cpus8.img`
+  only. Expect the framebuffer line to report its native mode; then check
+  for the same SpringBoard exception or a new missing `BoundingPathBitmap`
+  name. If it persists with a different geometry, the next fix is to supply
+  the exact missing asset in the active asset catalog, not to stub IPC.
+
 ## Agent handoff / active work (2026-11-01 LATEST-116: TWRP LOG PULLED; REPEATED SPRINGBOARD ABORT CONFIRMED; CRASH SYMBOLICATION NEEDED)
+
+This earlier handoff is superseded by LATEST-117: the heap scan contains the
+uncaught-exception reason, and a native-display CI test image is prepared.
 
 ### New read-only device capture (2026-11-01 16:00)
 
