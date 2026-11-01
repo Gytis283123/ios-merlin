@@ -5,6 +5,10 @@ recovery/
 # third-party/Apple sources fetched for reading
 research/
 shim/out/
+shim/out-*/
 xnu/out/
 xnu/out-*/
 __pycache__/
+tools/*.o
+tools/*.elf
+sweetxnu-release-payload-*.bin

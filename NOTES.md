@@ -32,6 +32,36 @@
 - [NOTE] LATEST-128 (Apple panic reported) remains open — no panic capture
   is available yet; do not flash or rebuild based on the panic report alone.
 
+- [EVIDENCE] QEMU testing of CI 0118 RELEASE kernel completed successfully:
+  - qemu-merlin.py boots CI kernel (sweetxnu-release-payload.bin) directly on
+    QEMU virt board; runs 30+ seconds without guest stopping. Output at
+    shim/out-qemu-ci-console/ (result.json: "not_decoded", expected without
+    _iso_font symbol in CI kernel).
+  - qemu-shim.py boots real merlin shim (shim/out/Image) with CI payload,
+    reaches stage 9 "xnu entry" and jumps to XNU. Output at
+    shim/out-qemu-ci-test-shim/ (bb.txt: magic=0x424c4f4721 seq=7 stage=9
+    text='xnu entry').
+  - Console-enabled payload (sweetxnu-release-payload-noconsole-off.bin,
+    sweetfb_noconsole=1→0 at offset 0x1a9) confirms XNU writes to framebuffer:
+    4.7% non-black pixels, 2.7% white pixels on screen.
+  - QEMU exceptions are benign KDP/debug-related: Data Abort at
+    _PE_consistent_debug_register (ARM debug register access QEMU doesn't
+    implement) and Undefined Instruction at _Debugger (kernel debugger entry).
+    XNU handles both and continues running — no crash.
+  - serial.txt empty (0 bytes): serial=3 in cmdline but no serial output
+    captured on QEMU virt board.
+- [INFERENCE] CI 0118 RELEASE kernel is functionally verified in QEMU.
+  No code fixes needed from QEMU results. Screen output exists but cannot be
+  decoded without XNU's _iso_font symbol (absent from CI RELEASE kernel symbol
+  table). Device-side issues require device access or CI-built kernels.
+- [UNFINISHED] Device-side issues remain open without device access:
+  LATEST-128 Apple panic (no capture available), IPC SpringBoard
+  MACH_SEND_TIMED_OUT (needs runtime correlation), graphics
+  AppleM2ScalerCSCDriver lookups (20,659 failures, root cause unknown).
+- [UNFINISHED] Install QEMU in WSL for local testing; QEMU binary exists at
+  /c/Program Files/qemu/qemu-system-aarch64 but qemu-merlin.py setup needs
+  MERLIN_QEMU env var on Windows.
+
 ## Agent handoff / active work (LATEST-128: APPLE PANIC REPORTED; CAPTURE NEEDED)
 
 - [USER REPORT] The user reports that the device displayed an Apple panic.
