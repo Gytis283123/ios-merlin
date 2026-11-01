@@ -7,8 +7,9 @@ asset. A CI-0117-derived test image is prepared with the existing
 guide also records how the local WSL kernel was built and how to pull logs.
 
 **Nothing in this guide flashes a partition. Use `fastboot boot` only.** The
-0117 image has been packaged and structurally verified, but has not yet been
-booted on the phone. Experimental iOS bring-up can fail to start or hang.
+CI-derived native-display test image has been booted temporarily and the
+specific SpringBoard bounding-path exception did not recur in the captured
+180-second log. The visual/setup state is still unconfirmed.
 
 ## What you need
 
@@ -27,7 +28,7 @@ that as a missing log or userdata device. A Windows-host `adb exec-out`
 capture must preserve binary output (for example, capture `subprocess` stdout
 in Python rather than redirecting native binary output through PowerShell).
 
-Use this CI-built native-display test image for the next device test:
+The CI-built native-display test image used for this boot was:
 
 ```text
 research\merlin-boot\shim-boot-merlin-msdc-0117-ci-nativefb-cpus8.img
@@ -35,8 +36,11 @@ research\merlin-boot\shim-boot-merlin-msdc-0117-ci-nativefb-cpus8.img
 
 It differs from the verified CI-0117 base only in the SWEETXNU command line,
 which adds `sweetfb_native=1`; no kernel compilation or partition write is
-involved. It has not been boot-tested yet, so verify that SpringBoard remains
-up and that the native display geometry resolves its bounding-path asset.
+involved. It was temporarily booted and a 180-second log confirmed native
+1080x2340 geometry, one SpringBoard launch, and Setup Assistant execution
+with no recurrence of the 1125x2436 bounding-path exception. It does not
+confirm that the UI was visible or completed onboarding; obtain the latest
+screen observation and a fresh log if SpringBoard/Setup still appears to loop.
 From fastboot, use:
 
 ```powershell
@@ -44,10 +48,9 @@ fastboot devices
 fastboot boot D:\things\Merlin\ios-merlin\research\merlin-boot\shim-boot-merlin-msdc-0117-ci-nativefb-cpus8.img
 ```
 
-Do not use `fastboot flash`. If SpringBoard reports another missing
-`BoundingPathBitmap` key, preserve that full exception and determine which
-asset the active iOS root image contains before changing the display profile
-again.
+Do not use `fastboot flash`. If the visible UI still loops, record exactly
+what screen repeats and capture a photo plus a fresh SWEET log. Do not stub
+the scaler or GPU based only on service-match messages.
 
 The local WSL cross-build also completed and its kernel was verified as an
 ARM64 Mach-O. The fresh log's receive-size trace is consistent with the 0117

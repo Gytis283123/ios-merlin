@@ -1,6 +1,53 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-11-01 LATEST-118: NATIVE PROFILE BOOT CONFIRMED; OLD SPRINGBOARD ABORT GONE; USER STILL REPORTS VISUAL LOOP)
+
+### New capture after the user reported the loop (2026-11-01 16:15)
+
+- TWRP was available over Windows ADB. A fresh read-only capture of the
+  final 1,025 userdata blocks was saved as
+  `research/logs/sweetlog-twrp-20261101-1615.bin` (4,198,400 bytes,
+  SHA256 `60434b11a145140ad039fe9dd2d8ee116168425e13bb40cccbd80a9dc361b510`)
+  and decoded as `research/logs/sweetlog-twrp-20261101-1615.txt`
+  (SHA256 `88a63f65ef4d1c85b92afb861c5b3b0f5257116d08264b0c9161f0e513cb838e`).
+  Header: version 1, 4 MiB ring, 3,176,501 bytes, flush #19, not wrapped;
+  final recorded uptime is 180.128 s.
+- The log's launchd boot-args line confirms `sweetfb_native=1`, and the
+  framebuffer reports `presented as 1080x2340`; display-on events and
+  framebuffer surface swaps are recorded. This confirms the prepared
+  temporary test image was booted, without identifying more than the
+  matching command line and kernel behavior.
+- SpringBoard started once. Setup Assistant was exec'd as `budd`. There are
+  **zero SpringBoard crash records** and zero `BoundingPathBitmap`/
+  `NSInternalInconsistencyException` matches in this 180-second capture.
+  The specific synthetic 1125x2436 asset crash is therefore absent in this
+  boot. The retained log has one unrelated `driverkitd` signal-9 report.
+- The log does not show SpringBoard in a crash/restart loop. It also cannot
+  show what the user saw on the panel or whether Setup Assistant completed;
+  surface swaps and display-on are not proof that the intended UI rendered.
+  Thus the user's report of a visual loop is not yet resolved by this
+  evidence.
+- There are 5,034 `AppleM2ScalerCSCDriver` matching-failure lines and three
+  published GPU accelerator stubs explicitly marked “no renderer.” These
+  show incomplete graphics support, but the log does not prove that the
+  scaler match failures caused the visible loop. Do not stub the scaler
+  blindly. The last capture has no SpringBoard crash/exception to anchor
+  such a change.
+
+### Current diagnosis and next action
+
+The confirmed bounding-path crash is fixed for the tested native display
+profile. The remaining symptom is a visual/setup-state issue, not the same
+confirmed SpringBoard abort. Before changing the scaler/GPU stubs, obtain a
+photo or precise description of what repeats (Apple logo/reboot, blank
+screen, Setup page cycling, or another screen). If the device is still
+available, capture a screen photo while it is running and a second SWEET log
+after it repeats; preserve both. Do not flash or modify partitions.
+
 ## Agent handoff / active work (2026-11-01 LATEST-117: SPRINGBOARD ABORT ROOT CAUSE IDENTIFIED; NATIVE-DISPLAY CI TEST IMAGE READY)
+
+This earlier handoff is superseded by LATEST-118: native geometry was
+confirmed in a device boot and the prior bounding-path exception is absent.
 
 ### Confirmed failure and targeted remediation
 
