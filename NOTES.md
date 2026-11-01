@@ -1,5 +1,36 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-11-01 LATEST-112: 0117 LOCAL BUILD AND IMAGE VERIFIED; REMOTE CI RUNNING)
+
+- Patch 0117 fixes the receive trace to use the dequeued Mach header's
+  `msgh_size` and raises the trace cap to 30,000. Commit
+  `536f447fc9d64c179d1d2913289d6123c100751d` is on `ios-sweet` fork/main.
+  GitHub Actions run `41306087077` is still building at this handoff.
+- The Linux/WSL build succeeded after applying 0113-0117 in order to the
+  existing 0112 source tree and running `bash build-linux.sh kernel`; the log
+  contains `done building xnu`. Output:
+  `research/art-0117-linux/kernel.development.sweet` (19,476,064 bytes,
+  SHA256 `9ae24dc87e3b5e09d27aafda05c2ba437393e09d5c5f077374c8bb56c11a070f`).
+  It is an ARM64 Mach-O and contains the receive trace string. The 0112
+  kernel was preserved at `~/xnu-cross/sym/kernel.development.sweet.0112-preserved`.
+- Packaged
+  `research/merlin-boot/shim-boot-merlin-msdc-0117-linux-cpus8.img`
+  (19,864,531 bytes, SHA256
+  `6c50893a61843b81c87692d078ab16d8b4355b8dbe23d870422e15a80a9a0e3c`).
+  Round-trip validation passed: Android boot v2 header, exact shim and DTB
+  from the verified 0116 image, all 10 file-backed kernel segments match the
+  local 0117 Mach-O, and the 9,976-byte ADT is byte-identical to the known
+  0115 ADT (SHA256 `9f9e87c827997d7dd078901a6189186834c178db1baa1b60c6cf349e84990716`).
+  The payload retains `cpus=8` and `rd=msdcroot0`; its SHA256 is
+  `dae31b87f7b4d7de2c6682d42f7d37a04ac607cbefb807d0234ef2e73231c66d`.
+- Updated `xnu-cross/scripts/build-linux.sh` to take the 0105-0117 patch
+  series from the `ios-sweet-msdc` checkout. `bash -n` and patch-file
+  presence checks pass. The full tree-reseed phase was not run because it
+  replaces the existing WSL source/build directories.
+- This image has **not** been booted; no partitions were flashed. Use
+  `fastboot boot` only if/when testing is requested. Preserve the existing
+  dirty `tools/mkpayload.py` change and all untracked build artifacts.
+
 ## Agent handoff / active work (2026-11-01 LATEST-111: CURRENT 0116 BOOT LOG PULLED; SETUP PROCESS STARTED; RECEIVE SIZE FIELD NEEDS FIX)
 
 ### Current device log (observation; read-only pull at 2026-11-01 14:03:52)
