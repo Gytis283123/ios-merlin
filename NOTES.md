@@ -77,6 +77,12 @@
 - [EVIDENCE] The target has not run this image, so new IPC destinations,
   scaler service matches, DMA spill byte ranges, actual Setup visibility,
   and real retention remain unknown.
+- [EVIDENCE] User requested a GitHub Actions RELEASE build. Commit
+  `3a83354f7c96614e2b43a828226536367dfacd10` was pushed to the isolated fork
+  branch `ci/0118-release` (not `main`) and workflow run
+  `41328212983` was dispatched with macOS 13.5, `kernel_config=RELEASE`,
+  `machine_config=SWEET`, and `keep_going=false`. At handoff update time it
+  was queued; CI completion and artifact retrieval remain pending.
 
 ## Previous handoff (2026-11-02 LATEST-125: QA CROSS-CHECK + 16-MIB LOG PULLER; KERNEL BUILD BLOCKED BY PATCH-SERIES MISMATCH)
 
