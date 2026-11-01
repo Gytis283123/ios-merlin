@@ -1,6 +1,81 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
-## Agent handoff / active work (2026-11-02 LATEST-125: QA CROSS-CHECK + 16-MIB LOG PULLER; KERNEL BUILD BLOCKED BY PATCH-SERIES MISMATCH)
+## Agent handoff / active work (2026-11-02 LATEST-126: 0118 BYTE-PRECISE DIAGNOSTICS AND IMAGE BUILT)
+
+### Diagnostic patch and kernel build
+
+- [EVIDENCE] XNU patch `0118-merlin-expanded-diagnostics.patch` is committed
+  in the local `ios-sweet-msdc` checkout as
+  `3a83354f7c96614e2b43a828226536367dfacd10`. It expands the persistent log
+  ring from 4 MiB to 16 MiB; keeps the existing 10-second default while the
+  packaged `ufslogsecs=5` selects a 5-second cadence; and retains the
+  existing MSDC-attach flush.
+- [EVIDENCE] The patch rate-limits repeated scaler-match and identical Mach
+  error records to first/state-change records plus 30-second summaries.
+  Mach records include the destination name, lookup/state/kobject, receiver
+  PID when available, queue state/depth, message ID, result, and monotonic
+  times; they do not include message bodies or rights. Scaler records capture
+  the full matching dictionary and up to eight matched services with parent
+  details. Exec/exit and crash records gain monotonic timestamps, and jetsam
+  namespace 1/code 7 is labeled `JETSAM_REASON_MEMORY_PERPROCESSLIMIT`.
+- [EVIDENCE] MSDC spill instrumentation now counts changed canary bytes and
+  emits exact byte ranges only from the tail after the expected transfer
+  length. It records LBA, sector count, programmed DMA length/block count,
+  buffer and expected spans, canary-word and changed-byte counts, DMA/status
+  registers, and cache-sync state. The cache-sync field reports the pre-sync
+  length; post-scan synchronization remains deferred to the existing call.
+- [EVIDENCE] This patch does not implement Apple GPU/scaler support or directly
+  instrument proprietary driver probe/firmware loading. A changed canary is
+  not by itself evidence that requested storage data was corrupted.
+- [EVIDENCE] The WSL cross-build command
+  `bash /home/gycioc/xnu-cross/scripts/build-linux.sh kernel` completed with
+  exit code 0. The final kernel is 19,478,792 bytes, SHA256
+  `8C470F483CD8A974A90B5E306D17CE7F67F3AE3D18154D8AA2ECDEB7BA40A20C`.
+  The build log is preserved at
+  `research/art-0118-local-diagnostics/kernel-build-0118-byteprecise.log`.
+- [EVIDENCE] This was a local WSL build, not a CI build. The external
+  `D:\things\Merlin\xnu-cross\scripts\build-linux.sh` helper applies patches
+  through 0118 and now exits on a failed `make`; `xnu-cross` is not a Git
+  checkout. No push or remote CI dispatch was performed.
+
+### Packaged image and verification
+
+- [EVIDENCE] The preserved source image
+  `research/merlin-boot/shim-boot-merlin-msdc-0117-ci-nativefb-noconsole-cpus8.img`
+  remains unchanged at 17,052,627 bytes, SHA256
+  `281A8D26A0F0A7AB68BC895C02BA97364AE19C0905397C985A99805A8A7CF0C1`.
+- [EVIDENCE] Final candidate:
+  `research/art-0118-local-diagnostics/shim-boot-merlin-msdc-0118-local-diag-byteprecise-nativefb-noconsole-cpus8.img`
+  is an Android boot v2 image, page size 2,048, total size 19,866,579 bytes,
+  SHA256
+  `EB54A0036B62E3ABFDC433F4FDB0A8F4A57954E74351EDA52F05D77747446114`.
+  It packages the new local kernel with the existing 190,674-byte shim and
+  181,203-byte DTB, and uses `ufslogsecs=5` in the 385-byte XNU command line.
+- [EVIDENCE] The image unpacked successfully. Round-trip SHA256s match for
+  the shim, DTB, and SWEETXNU payload; the ADT matches the extracted base
+  ADT; a fresh `mkpayload.py` rebuild produced a byte-identical payload.
+  The unpacked header confirms Android boot v2, 2,048-byte pages, and the
+  intended addresses. The XNU args retain `cpus=8`, `rd=msdcroot0`,
+  `sweetfb_native=1`, and `sweetfb_noconsole=1`, plus `ufslogsecs=5`.
+- [INFERENCE] This is a package- and round-trip-verified local candidate,
+  not a target-boot-verified or CI-produced image. No device write, flash,
+  or boot was performed.
+
+### Next evidence to collect
+
+- [INFERENCE] The next useful test is to run the candidate only after device
+  operation is authorized; preserve the current boot image and use the
+  read-only TWRP log puller afterward. Keep continuous external-camera
+  recording through at least 15 minutes, and note whether recovery entry is
+  manual or spontaneous.
+- [INFERENCE] Pull the full 16-MiB ring plus header with the updated 4,097-block
+  reader. Measure the actual log growth/retention from that run; do not treat
+  the prior 8.5 KiB/s rate as a post-instrumentation measurement.
+- [EVIDENCE] The target has not run this image, so new IPC destinations,
+  scaler service matches, DMA spill byte ranges, actual Setup visibility,
+  and real retention remain unknown.
+
+## Previous handoff (2026-11-02 LATEST-125: QA CROSS-CHECK + 16-MIB LOG PULLER; KERNEL BUILD BLOCKED BY PATCH-SERIES MISMATCH)
 
 ### Round-2 QA corrections from the retained capture
 
