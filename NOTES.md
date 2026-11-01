@@ -1,7 +1,7 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
-## Agent handoff / active work (2026-11-01 LATEST-105: MERLIN DETECTED IN FASTBOOTD; AWAITING EXPLICIT USERDATA-FLASH APPROVAL)
+## Agent handoff / active work (2026-11-01 LATEST-106: USER CHOSE MTKCLIENT GUI FOR USERDATA WRITE; DEVICE CURRENTLY FASTBOOTD)
 
 ### 0115 boot log (observation; `research/logs/sweetlog-0115-20261101.{bin,txt}`)
 
@@ -101,19 +101,34 @@
   obtained, so the device was left untouched.
 - Read-only `fastboot getvar partition-size:userdata` returned
   `0xC1F4F8000` (52,064,911,360 bytes); the prepared test image is
-  17,226,006,528 bytes and therefore fits by reported capacity. This is
-  not authorization to write the partition. No image hash was captured:
-  hashing the 17-GB file did not complete in the available check window.
+  17,226,006,528 bytes and therefore fits by reported capacity. User
+  explicitly chose an MTK Client GUI userdata write and said they will
+  operate the GUI; assistant did not issue a device-write command. No
+  image hash was captured: hashing the 17-GB file did not complete in the
+  available check window.
+- Inspected
+  installed `mtkclient-2.1.4.1`: its Write partition(s) tab has an
+  individual checkbox/file picker per GPT partition; the separate Write
+  flash button targets the full user storage and must not be used. The GUI
+  connects to BROM/Preloader/DA, not fastbootd, so the phone must leave
+  fastbootd and be detected in the GUI before writing.
+- Important risk: the two earlier mtkclient CLI DA writes of the v2 image
+  both failed at the same offset `0x1600000` (~22 MiB) with
+  `USBError(5, 'Input/Output Error')`. GUI partition writing uses the same
+  DA handler path; success is not established and the same transport
+  failure may recur. If the GUI errors/disconnects, stop and retain its log;
+  do not select Write full flash, erase, or another partition.
 
 ### Next
 
-1. Obtain explicit user approval before flashing
-   `iosroot-v2-setup-test.img` to userdata; this overwrites the Android
-   data volume. Never flash bootloader, recovery, modem, persist, or
-   partition backups.
-2. Boot the verified v2 candidate only through an explicitly approved
-   safe deployment path and check for a SetupAssistant exec in the
-   persistent log.
+1. In MTK Client GUI, connect through BROM/Preloader/DA, open Write
+   partition(s), select only `userdata`, and choose
+   `research/ipsw-x/iosroot-v2-setup-test.img` for that row. Verify the
+   selected partition label and file path before starting. This replaces
+   Android userdata; do not select the full-flash writer or any other
+   partition.
+2. If the GUI reports success, verify the userdata contents before
+   booting. Never boot Android/recovery that may mount or format userdata.
 3. If SetupAssistant still does not launch after this root-state change,
    continue tracing `mediaremoted` and identify the receiver for message
    40232 before changing Mach behavior. The 0115 receive trace only reports
