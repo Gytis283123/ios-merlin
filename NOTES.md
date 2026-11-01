@@ -137,7 +137,8 @@ not write any partition.
   Prepared a separate target-test derivative:
   `research/merlin-boot/shim-boot-merlin-msdc-0117-ci-nativefb-noconsole-cpus8.img`
   (17,052,627 bytes, SHA256
-  `281A8D26A0F0A7AB68BC895C02BA97364AE19C0905397C985A99805A8A7CF0C1`).
+  `281A8D26A0F0A7AB68BC895C02BA97364AE19C0905397C985A99805A8A7CF0C1`,
+  registered artifact ID `72252e08-d442-4035-84c2-ea00adbf9d94`).
 - The only payload change is adding `sweetfb_noconsole=1` to the existing
   `sweetfb_native=1` XNU command line. The unchanged XNU implementation is
   in patch 0067: from the first framebuffer swap it stops drawing console
