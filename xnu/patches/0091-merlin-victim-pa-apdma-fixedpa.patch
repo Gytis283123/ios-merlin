@@ -1,0 +1,52 @@
+xnu: MERLIN 0091 victim PA + APDMA fixed-PA scan - boot #19 proved the kalloc island is a verbatim copy of SCP firmware bytes (scp.bin@0xa4a60) written into a freed element, so the panic replay now prints pa=kvtophys(elem) (the stale PA the 0092 reservation needs), and merlin_apdma_quiesce falls back to the fixed physical block 0x11000000+0x1000 when the curated runtime DT lacks the stock ap_dma node (every boot so far) so found/quiesced/map become real verdicts; diagnostics only
+
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1044,16 +1044,21 @@
+ 	uint64_t dl;
+ 
+ 	if (SecureDTLookupEntry(NULL, "/ap_dma@11000000", &node) != kSuccess ||
+ 	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
+ 	    size < 4 * sizeof(uintptr_t)) {
+-		printf("MERLIN MSDC: apdma: no /ap_dma@11000000 reg (skip)\n");
+-		return;
++		/* 0091: the runtime DT is a curated tree without the stock
++		 * ap_dma node (proven boot #16: the boot-image dtb has it,
++		 * the kernel's tree does not) — scan the block at its fixed
++		 * physical address instead of skipping. */
++		printf("MERLIN MSDC: apdma: no /ap_dma@11000000 reg (DT); "
++		    "using fixed PA 0x11000000+0x1000\n");
++		reg = NULL;
+ 	}
+ 	/* the stock node is two address + two size cells:
+ 	 * {0, 0x11000000, 0, 0x1000} */
+-	base = ml_io_map(reg[1], reg[3]);
++	base = ml_io_map(reg ? reg[1] : 0x11000000, reg ? reg[3] : 0x1000);
+ 	if (!base) {
+ 		printf("MERLIN MSDC: apdma: cannot map 0x%08x\n",
+ 		    (uint32_t)reg[1]);
+ 		return;
+ 	}
+--- a/osfmk/kern/zalloc.c
++++ b/osfmk/kern/zalloc.c
+@@ -3125,13 +3125,18 @@
+ 		struct merlin_uaf_note *n = &merlin_uaf_notes[i];
+ 
+ 		if (n->size == 0) {
+ 			continue;
+ 		}
++		/* 0091: pa= the element's physical address — boot #19's
++		 * island is a verbatim copy of SCP firmware bytes, so the
++		 * writer hits a fixed/stale PA; the next panic names it. */
+ 		printf("MERLIN FORENSICS: victim %s size=%u off=%u "
+-		    "val=0x%016llx elem=%p\n", n->zone, n->size, n->off,
+-		    (unsigned long long)n->val, (void *)(uintptr_t)n->elem);
++		    "val=0x%016llx elem=%p pa=0x%llx\n", n->zone, n->size, n->off,
++		    (unsigned long long)n->val, (void *)(uintptr_t)n->elem,
++		    (unsigned long long)kvtophys(
++		        (vm_offset_t)(uintptr_t)n->elem));
+ 		/* 0089: dump the first victim's bytes - an all-0xff fill
+ 		 * implicates a wire/DMA scribbler, a sparse pattern a stale
+ 		 * software poke.  First victim only (console line budget). */
+ 		if (dumped == 0 && n->size >= 16) {
+ 			const volatile uint8_t *b =

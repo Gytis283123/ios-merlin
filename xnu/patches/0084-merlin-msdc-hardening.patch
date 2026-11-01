@@ -1,0 +1,217 @@
+msdc: harden 0082 driver (DKIOCSYNCHRONIZE/GETFEATURES, MAXBLOCKCOUNTWRITE, DMA-stop timeout = EIO, msdc_readverify double-read) + console dump of zone-log element history at zalloc_uaf_panic (btlog_dump_element_history)
+
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -749,7 +749,7 @@
+ 
+ /* CMD17: one 512-byte sector of the user area into the bounce buffer. */
+ static int
+-msdc_read_sector(uint64_t lba)
++msdc_read_sector_once(uint64_t lba)
+ {
+ 	uint32_t sts;
+ 	int error;
+@@ -818,6 +818,12 @@
+ 	uint64_t dl = deadline_in(MSDC_DMA_STOP_NS);
+ 	while (msdc_rd(MSDC_DMA_CFG) & MSDC_DMA_CFG_STS) {
+ 		if (mach_absolute_time() > dl) {
++			printf("MERLIN MSDC: DMA did not stop after read %llu "
++			    "(dcfg 0x%08x)\n", (unsigned long long)lba,
++			    msdc_rd(MSDC_DMA_CFG));
++			if (error == 0) {
++				error = EIO;
++			}
+ 			break;
+ 		}
+ 	}
+@@ -826,6 +832,43 @@
+ 	return error;
+ }
+ 
++/* Optional double-read self-check (boot-arg msdc_readverify=1): every
++ * successfully read sector is read a second time and compared, to
++ * discriminate "the driver/DMA serves wrong bytes" (mismatches) from
++ * "the eMMC content differs from the flashed image" (stable reads). */
++static bool msdc_readverify;
++static uint32_t msdc_rv_mismatches;
++
++static int
++msdc_read_sector(uint64_t lba)
++{
++	int error = msdc_read_sector_once(lba);
++	if (error != 0 || !msdc_readverify) {
++		return error;
++	}
++
++	uint8_t first[MSDC_SECTOR];
++	memcpy(first, (const void *)mo.dma, MSDC_SECTOR);
++	int error2 = msdc_read_sector_once(lba);
++	if (error2 != 0) {
++		printf("MERLIN MSDC: readverify re-read failed lba %llu: %d\n",
++		    (unsigned long long)lba, error2);
++		return error;
++	}
++	const uint8_t *second = (const void *)mo.dma;
++	for (uint32_t i = 0; i < MSDC_SECTOR; i++) {
++		if (first[i] != second[i]) {
++			msdc_rv_mismatches++;
++			printf("MERLIN MSDC: READVERIFY MISMATCH lba %llu "
++			    "off %u: %02x vs %02x (total %u)\n",
++			    (unsigned long long)lba, i, first[i], second[i],
++			    msdc_rv_mismatches);
++			break;
++		}
++	}
++	return error;
++}
++
+ /* CMD24: one 512-byte sector at absolute lba, source = bounce buffer.
+  * Mirrors the read path; the SDC_CMD RW bit selects the write direction
+  * (stock: rawcmd |= (1 << 13) for MMC_DATA_WRITE) and the card R1b busy
+@@ -896,6 +939,12 @@
+ 	uint64_t dl = deadline_in(MSDC_DMA_STOP_NS);
+ 	while (msdc_rd(MSDC_DMA_CFG) & MSDC_DMA_CFG_STS) {
+ 		if (mach_absolute_time() > dl) {
++			printf("MERLIN MSDC: DMA did not stop after write %llu "
++			    "(dcfg 0x%08x)\n", (unsigned long long)lba,
++			    msdc_rd(MSDC_DMA_CFG));
++			if (error == 0) {
++				error = EIO;
++			}
+ 			break;
+ 		}
+ 	}
+@@ -1085,7 +1134,15 @@
+ 		*o = MSDC_BOUNCE_SIZE / mo.secsize;
+ 		return 0;
+ 	case DKIOCGETMAXBLOCKCOUNTWRITE:
+-		*o = 0;
++		*o = MSDC_BOUNCE_SIZE / mo.secsize;
++		return 0;
++	case DKIOCGETFEATURES:
++		*f = 0;             /* no F_BARRIER/F_FLUSH; see DKIOCSYNCHRONIZE */
++		return 0;
++	case DKIOCSYNCHRONIZE:
++		/* Writes are synchronous (polled CMD24, on media before
++		 * strategy returns), so a cache flush is a no-op.  The HFS
++		 * journal issues this before every journal-header write. */
+ 		return 0;
+ 	case DKIOCGETMAXSEGMENTCOUNTREAD:
+ 	case DKIOCGETMAXSEGMENTCOUNTWRITE:
+@@ -1169,6 +1226,11 @@
+ 		return ENXIO;
+ 	}
+ 	PE_parse_boot_argn("msdcroot", want, sizeof(want));
++	PE_parse_boot_argn("msdc_readverify", &msdc_readverify,
++	    sizeof(msdc_readverify));
++	if (msdc_readverify) {
++		printf("MERLIN MSDC: readverify enabled (double-read compare)\n");
++	}
+ 
+ 	mo.regs = ml_io_map(reg[0], reg[1]);
+ 	if (!mo.regs) {
+--- a/osfmk/kern/zalloc.c
++++ b/osfmk/kern/zalloc.c
+@@ -3090,6 +3090,15 @@
+ 		}
+ 	}
+ 
++	if (z->z_btlog != NULL) {
++		/* MERLIN: with "-zc zlog<n>=<zone>" this zone keeps an
++		 * alloc/free btlog; dump this element's history so the
++		 * corruption is attributable from the console alone. */
++		printf("MERLIN zone-log: element history (%s%s):\n",
++		    zone_heap_name(z), zone_name(z));
++		btlog_dump_element_history(z->z_btlog, elem);
++	}
++
+ 	(panic)("[%s%s]: element modified after free "
+ 	"(off:%d, val:0x%016lx, sz:%d, ptr:%p)%s",
+ 	zone_heap_name(z), zone_name(z),
+--- a/osfmk/kern/btlog.c
++++ b/osfmk/kern/btlog.c
+@@ -1926,3 +1926,61 @@
+ }
+ 
+ #endif /* DEBUG || DEVELOPMENT */
++
++/*
++ * MERLIN addition: console dump of the recorded history of a single
++ * element, called from zalloc_uaf_panic() so that zone corruption
++ * debugging ("-zc zlog<n>=<zone>") works without a kernel debugger.
++ * Operation numbers are the caller's namespace (zalloc: 1=ZOP_ALLOC,
++ * 0=ZOP_FREE).
++ */
++void
++btlog_dump_element_history(
++	btlog_t                 btlog,
++	vm_address_t            element)
++{
++	btlogu_t                btlu = { .btl = btlog };
++	mach_vm_address_t       bt[BTLOG_MAX_DEPTH];
++	uint32_t                j;
++
++	if (btlog == NULL) {
++		return;
++	}
++
++	__btlog_lock(btlu);
++	if (btlu.btl->btl_disabled) {
++		__btlog_unlock(btlu);
++		printf("zone-log: disabled\n");
++		return;
++	}
++
++	switch (btlu.btl->btl_type) {
++	case BTLOG_LOG:
++		for (uint32_t i = 0; i < btlu.btl->btl_count; i++) {
++			struct bt_log_entry *btle = &btlu.btll->btll_entries[i];
++			if (btle->btle_addr == 0) {
++				break;
++			}
++			if (btle->btle_addr != element) {
++				continue;
++			}
++			for (j = 0; j < BTLOG_MAX_DEPTH; j++) {
++				bt[j] = 0;
++			}
++			btref_decode_unslide(__bt_ref(btle->btle_where), bt);
++			printf("zone-log #%u: elem %p op %u bt:", i,
++			    (void *)btle->btle_addr,
++			    (unsigned)__bt_op(btle->btle_where));
++			for (j = 0; j < BTLOG_MAX_DEPTH && bt[j] != 0; j++) {
++				printf(" %p", (void *)(uintptr_t)bt[j]);
++			}
++			printf("\n");
++		}
++		break;
++	default:
++		printf("zone-log: element dumps need a BTLOG_LOG log "
++		    "(type %d)\n", (int)btlu.btl->btl_type);
++		break;
++	}
++	__btlog_unlock(btlu);
++}
+--- a/osfmk/kern/btlog.h
++++ b/osfmk/kern/btlog.h
+@@ -315,6 +315,20 @@
+ 	leak_site_proc          proc);
+ 
+ #endif /* DEBUG || DEVELOPMENT */
++
++/*!
++ * @function btlog_dump_element_history()
++ *
++ * @brief
++ * MERLIN addition: console-dump the recorded history of a single
++ * element (BTLOG_LOG logs), for zone corruption debugging without a
++ * kernel debugger.  Operation numbers are the caller's namespace
++ * (zalloc: 1=ZOP_ALLOC, 0=ZOP_FREE).
++ */
++extern void btlog_dump_element_history(
++	btlog_t                 btlog,
++	vm_address_t            element);
++
+ #pragma GCC visibility pop
+ 
+ __ASSUME_PTR_ABI_SINGLE_END __END_DECLS

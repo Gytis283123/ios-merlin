@@ -1,5 +1,16 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## Main branch update (2026-11-01, build pending)
+
+- The user's `Gytis283123/ios-sweet` main branch is being updated with the
+  tested merlin XNU patch stack through 0115, excluding 0080/0081 (the
+  main-line patches previously observed to hang on merlin), and with 0116,
+  which logs dequeued Mach message IDs/sizes for SpringBoard, backboardd,
+  mediaserverd, and mediaremoted.
+- The XNU workflow runner is set to macOS 15. Patch 0116 applies cleanly
+  to the successful 0115 build-tree source. CI build and boot-image pack
+  are pending; no device write is authorized or planned.
+
 ## Agent handoff / active work (2026-10-15, latest)
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<

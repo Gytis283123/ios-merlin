@@ -1,0 +1,47 @@
+diff --git a/osfmk/ipc/mach_msg.c b/osfmk/ipc/mach_msg.c
+index 803d9f7..54b9f64 100644
+--- a/osfmk/ipc/mach_msg.c
++++ b/osfmk/ipc/mach_msg.c
+@@ -612,6 +612,28 @@ sweet_msg_log(const char *dir, unsigned int id, unsigned int sz)
+ 		proc_pid(p), pname, dir, id, sz);
+ }
+ 
++static unsigned int sweet_msgerr_logged = 0;
++
++static void
++sweet_msg_log_err(unsigned int id, unsigned int sz, unsigned int kr)
++{
++	struct proc *p = current_proc();
++	char *pname = proc_name_address(p);
++
++	if (pname == NULL ||
++		(strcmp(pname, "SpringBoard") != 0 &&
++		strcmp(pname, "backboardd") != 0 &&
++		strcmp(pname, "mediaserverd") != 0)) {
++		return;
++	}
++	if (sweet_msgerr_logged >= 2000) {
++		return;
++	}
++	sweet_msgerr_logged++;
++	printf("SWEET MSGERR: pid %d (%s) id=%u sz=%u kr=0x%x\n",
++		proc_pid(p), pname, id, sz, kr);
++}
++
+ CA_EVENT(mach_msg_trap_event,
+     CA_INT, msgh_id,
+     CA_INT, sw_platform,
+@@ -1307,6 +1329,13 @@ mach_msg2_trap(
+ end:
+ 	/* unblock call is idempotent */
+ 	ipc_port_thread_group_unblocked();
++	/* 0115: a FAILED send names its error - MACH_SEND_INVALID_DEST
++	 * means the destination service was never registered.  Recv
++	 * results are not logged (rcv timeouts are normal polling). */
++	if ((option64 & MACH64_SEND_MSG) && mr != MACH_MSG_SUCCESS) {
++		sweet_msg_log_err((unsigned int)(mv_id >> 32),
++			(unsigned int)(mb_ss >> 32), (unsigned int)mr);
++	}
+ 	return mr;
+ }
+ 

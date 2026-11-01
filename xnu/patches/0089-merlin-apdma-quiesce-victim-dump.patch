@@ -1,0 +1,241 @@
+xnu: MERLIN 0089 APDMA quiesce + victim byte dumps - boot #14 exonerated the MSDC engine (dma spill=0 on both panic rounds, readverify clean), and the scribbler fills victims with all-0xff like an idle-high UART wire feed; scan the /ap_dma@11000000 UART VFF channel windows and stop armed ones with the stock terminate sequence (FLUSH=1 poll self-clear, STOP=1 poll EN==0, STOP=0, INT_EN=0, INT_FLAG=0x3, warm RST, zero ADDR/LEN/THRE), called at init before storage take-over; freeze the LK-inherited MSDC0 DMA state into non-static msdc_lk_* statics; the forensics replay prints lk dma ctrl=... and dumps the first victim head plus clobber-offset bytes (all-0xff vs sparse decides wire-feed vs software poke)
+
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -934,10 +934,16 @@
+ 
+ static uint8_t msdc_gpt[128 * 128];             /* one GPT entry table */
+ 
+ uint64_t msdc_spill_count;               /* 0088: DMA overshoot detections (non-static: zalloc replay reads it) */
+ 
++/* 0089: the MSDC0 registers as the bootloader left them, frozen at
++ * take-over so the panic-tail forensics line can report the state.
++ * Non-static: the zalloc replay reads these. */
++uint32_t msdc_lk_ctrl, msdc_lk_cfg, msdc_lk_sa, msdc_lk_ca,
++    msdc_lk_len;
++
+ static LCK_GRP_DECLARE(merlin_msdc_grp, "merlin_msdc");
+ static LCK_MTX_DECLARE(merlin_msdc_lock, &merlin_msdc_grp);
+ 
+ static inline uint32_t
+ msdc_rd(uint32_t off)
+@@ -990,10 +996,113 @@
+ 		if (mach_absolute_time() > dl) {
+ 			*out = msdc_rd(MSDC_INT);
+ 			return ETIMEDOUT;
+ 		}
+ 	}
++}
++
++/* MERLIN (0089): boot #14 exonerated the MSDC engine (dma spill=0 on
++ * both panic rounds, readverify clean), and the scribbler fills the
++ * victims with all-0xff, like an idle-high UART wire feed.  The MTK
++ * APDMA block (/ap_dma@11000000 in the stock DTB, #address-cells=2 so
++ * reg = {0, 0x11000000, 0, 0x1000}) holds the UART VFF DMA channels:
++ * the DT lists four 0x80-byte windows at 0x980/0xa00/0xa80/0xb00
++ * ("mediatek,mt6577-uart-dma").  If LK left a console RX channel armed
++ * at hand-off, its VFF engine keeps streaming the idle-high RX line
++ * (0xff bytes) into a stale ring buffer forever.  Scan every channel
++ * window, report any with live state (EN/INT_EN/ADDR/LEN/WPT/RPT), and
++ * stop the armed DT-declared ones with the stock terminate sequence
++ * (VFF_FLUSH=1 poll self-clear, VFF_STOP=1 poll VFF_EN==0, STOP=0,
++ * INT_EN=0, INT_FLAG=0x3, warm reset, zero ADDR/LEN/THRE). */
++#define MSDC_VFF_INT_FLAG	0x00
++#define MSDC_VFF_INT_EN		0x04
++#define MSDC_VFF_EN		0x08
++#define MSDC_VFF_RST		0x0c
++#define MSDC_VFF_STOP		0x10
++#define MSDC_VFF_FLUSH		0x14
++#define MSDC_VFF_ADDR		0x1c
++#define MSDC_VFF_LEN		0x24
++#define MSDC_VFF_THRE		0x28
++#define MSDC_VFF_WPT		0x2c
++#define MSDC_VFF_RPT		0x30
++#define MSDC_APDMA_WIN		0x80
++
++static void
++merlin_apdma_quiesce(void)
++{
++	DTEntry node;
++	uintptr_t const *reg = NULL;
++	unsigned int size = 0;
++	vm_offset_t base;
++	uint32_t w, armed = 0, quiesced = 0;
++	uint64_t dl;
++
++	if (SecureDTLookupEntry(NULL, "/ap_dma@11000000", &node) != kSuccess ||
++	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
++	    size < 4 * sizeof(uintptr_t)) {
++		printf("MERLIN MSDC: apdma: no /ap_dma@11000000 reg (skip)\n");
++		return;
++	}
++	/* the stock node is two address + two size cells:
++	 * {0, 0x11000000, 0, 0x1000} */
++	base = ml_io_map(reg[1], reg[3]);
++	if (!base) {
++		printf("MERLIN MSDC: apdma: cannot map 0x%08x\n",
++		    (uint32_t)reg[1]);
++		return;
++	}
++	for (w = 0; w < 0x1000; w += MSDC_APDMA_WIN) {
++		uint32_t en = *(volatile uint32_t *)(base + w + MSDC_VFF_EN);
++		uint32_t inten = *(volatile uint32_t *)(base + w + MSDC_VFF_INT_EN);
++		uint32_t addr = *(volatile uint32_t *)(base + w + MSDC_VFF_ADDR);
++		uint32_t len = *(volatile uint32_t *)(base + w + MSDC_VFF_LEN);
++		uint32_t wpt = *(volatile uint32_t *)(base + w + MSDC_VFF_WPT);
++		uint32_t rpt = *(volatile uint32_t *)(base + w + MSDC_VFF_RPT);
++
++		if (!en && !inten && !addr && !len && !wpt && !rpt) {
++			continue;
++		}
++		armed++;
++		printf("MERLIN MSDC: apdma win 0x%03x en 0x%x int_en 0x%x "
++		    "addr 0x%08x len 0x%x wpt 0x%x rpt 0x%x\n",
++		    w, en, inten, addr, len, wpt, rpt);
++		if (en == 0) {
++			continue;
++		}
++		if (w != 0x980 && w != 0xa00 && w != 0xa80 && w != 0xb00) {
++			printf("MERLIN MSDC: apdma armed window outside the DT "
++			    "channel windows (left alone)\n");
++			continue;
++		}
++		/* stock terminate sequence (linux mtk-uart-apdma.c) */
++		*(volatile uint32_t *)(base + w + MSDC_VFF_FLUSH) = 1;
++		dl = deadline_in(10ull * 1000 * 1000);
++		while (*(volatile uint32_t *)(base + w + MSDC_VFF_FLUSH) == 1) {
++			if (mach_absolute_time() > dl) {
++				printf("MERLIN MSDC: apdma flush did not clear\n");
++				break;
++			}
++		}
++		*(volatile uint32_t *)(base + w + MSDC_VFF_STOP) = 1;
++		dl = deadline_in(MSDC_DMA_STOP_NS);
++		while (*(volatile uint32_t *)(base + w + MSDC_VFF_EN) != 0) {
++			if (mach_absolute_time() > dl) {
++				printf("MERLIN MSDC: apdma channel would not stop\n");
++				break;
++			}
++		}
++		*(volatile uint32_t *)(base + w + MSDC_VFF_STOP) = 0;
++		*(volatile uint32_t *)(base + w + MSDC_VFF_INT_EN) = 0;
++		*(volatile uint32_t *)(base + w + MSDC_VFF_INT_FLAG) = 0x3u;
++		*(volatile uint32_t *)(base + w + MSDC_VFF_RST) = 1;
++		*(volatile uint32_t *)(base + w + MSDC_VFF_ADDR) = 0;
++		*(volatile uint32_t *)(base + w + MSDC_VFF_LEN) = 0;
++		*(volatile uint32_t *)(base + w + MSDC_VFF_THRE) = 0;
++		quiesced++;
++	}
++	printf("MERLIN MSDC: apdma %u window(s) with live state, %u armed "
++	    "window(s) quiesced\n", armed, quiesced);
+ }
+ 
+ static int
+ msdc_take_over(void)
+ {
+@@ -1012,10 +1121,17 @@
+ 	    "sa_hi 0x%08x ca 0x%08x len 0x%08x fifo 0x%08x\n",
+ 	    msdc_rd(MSDC_DMA_CTRL), msdc_rd(MSDC_DMA_CFG),
+ 	    msdc_rd(MSDC_DMA_SA), msdc_rd(MSDC_DMA_SA_HIGH),
+ 	    msdc_rd(MSDC_DMA_CA), msdc_rd(MSDC_DMA_LEN),
+ 	    msdc_rd(MSDC_FIFOCS));
++	/* 0089: freeze the bootloader's state for the panic-tail line (the
++	 * zalloc replay prints it on every panic). */
++	msdc_lk_ctrl = msdc_rd(MSDC_DMA_CTRL);
++	msdc_lk_cfg = msdc_rd(MSDC_DMA_CFG);
++	msdc_lk_sa = msdc_rd(MSDC_DMA_SA);
++	msdc_lk_ca = msdc_rd(MSDC_DMA_CA);
++	msdc_lk_len = msdc_rd(MSDC_DMA_LEN);
+ 	if (msdc_rd(MSDC_DMA_CFG) & MSDC_DMA_CFG_STS) {
+ 		msdc_wr(MSDC_DMA_CTRL, MSDC_DMA_CTRL_STOP);
+ 		uint64_t dl = deadline_in(MSDC_DMA_STOP_NS);
+ 		while (msdc_rd(MSDC_DMA_CFG) & MSDC_DMA_CFG_STS) {
+ 			if (mach_absolute_time() > dl) {
+@@ -1609,10 +1725,15 @@
+ 		for (w = 64; w < MSDC_BOUNCE_SIZE / 8; w++) {
+ 			memcpy((void *)(mo.dma + w * 8), &magic, sizeof(magic));
+ 		}
+ 	}
+ 
++	/* 0089: stop any UART APDMA channel the bootloader left armed
++	 * before the storage controller is taken over (and print what was
++	 * found, every boot). */
++	merlin_apdma_quiesce();
++
+ 	lck_mtx_lock(&merlin_msdc_lock);
+ 	error = msdc_take_over();
+ 	if (!error) {
+ 		error = msdc_find_partition(want);
+ 	}
+--- a/osfmk/kern/zalloc.c
++++ b/osfmk/kern/zalloc.c
+@@ -3074,10 +3074,12 @@
+  */
+ extern uint32_t msdc_rv_mismatches;
+ extern uint64_t msdc_rv_last_lba;
+ extern unsigned long msdc_strategy_reads;
+ extern uint64_t msdc_spill_count;
++extern uint32_t msdc_lk_ctrl, msdc_lk_cfg, msdc_lk_sa, msdc_lk_ca,
++    msdc_lk_len;
+ 
+ struct merlin_uaf_note {
+ 	uint64_t    elem;
+ 	uint64_t    val;
+ 	uint32_t    off, size;
+@@ -3107,20 +3109,56 @@
+ {
+ 	printf("MERLIN FORENSICS: msdc reads=%lu readverify mismatches=%u "
+ 	    "last lba=%llu dma spill=%llu\n", msdc_strategy_reads,
+ 	    msdc_rv_mismatches, (unsigned long long)msdc_rv_last_lba,
+ 	    (unsigned long long)msdc_spill_count);
++	printf("MERLIN FORENSICS: lk dma ctrl 0x%08x cfg 0x%08x sa 0x%08x "
++	    "ca 0x%08x len 0x%08x\n", msdc_lk_ctrl, msdc_lk_cfg, msdc_lk_sa,
++	    msdc_lk_ca, msdc_lk_len);
++	unsigned int dumped = 0;
++
+ 	for (unsigned int i = 0; i < sizeof(merlin_uaf_notes) /
+ 	    sizeof(merlin_uaf_notes[0]); i++) {
+ 		struct merlin_uaf_note *n = &merlin_uaf_notes[i];
+ 
+ 		if (n->size == 0) {
+ 			continue;
+ 		}
+ 		printf("MERLIN FORENSICS: victim %s size=%u off=%u "
+ 		    "val=0x%016llx elem=%p\n", n->zone, n->size, n->off,
+ 		    (unsigned long long)n->val, (void *)(uintptr_t)n->elem);
++		/* 0089: dump the first victim's bytes - an all-0xff fill
++		 * implicates a wire/DMA scribbler, a sparse pattern a stale
++		 * software poke.  First victim only (console line budget). */
++		if (dumped == 0 && n->size >= 16) {
++			const volatile uint8_t *b =
++			    (const volatile uint8_t *)(uintptr_t)n->elem;
++			char hex[49];
++			uint32_t k, s, pass;
++			uint32_t starts[2];
++			uint32_t segs = 1;
++
++			dumped = 1;
++			starts[0] = 0;
++			if (n->off != ~0u && n->off >= 16 &&
++			    n->off + 16 <= n->size) {
++				starts[segs++] = n->off;
++			}
++			for (pass = 0; pass < segs; pass++) {
++				s = starts[pass];
++				for (k = 0; k < 16; k++) {
++					uint8_t v = b[s + k];
++
++					hex[k * 3] = "0123456789abcdef"[v >> 4];
++					hex[k * 3 + 1] = "0123456789abcdef"[v & 0xf];
++					hex[k * 3 + 2] = ' ';
++				}
++				hex[48] = '\0';
++				printf("MERLIN FORENSICS: victim b[%u..%u] %s\n",
++				    s, s + 15, hex);
++			}
++		}
+ 	}
+ }
+ 
+ 
+ __abortlike

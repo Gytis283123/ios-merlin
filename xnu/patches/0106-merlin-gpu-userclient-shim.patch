@@ -1,0 +1,113 @@
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index e2e69c6..99ca8d7 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -9,6 +9,9 @@
+ #include <IOKit/IOPlatformExpert.h>
+ #include <IOKit/IODeviceTreeSupport.h>
+ #include <IOKit/IOLib.h>
++#include <IOKit/IOKitKeys.h>
++#include <IOKit/IOUserClient.h>
++#include <pexpert/pexpert.h>
+ 
+ class SweetPlatformExpert : public IODTPlatformExpert {
+ 	OSDeclareDefaultStructors(SweetPlatformExpert);
+@@ -88,6 +91,82 @@ SweetPlatformExpert::processTopLevel(IORegistryEntry *root)
+  * notifications succeed, IOServiceOpen returns kIOReturnUnsupported, and
+  * the compositor keeps using the software framebuffer path.
+  */
++/*
++ * Optional accelerator user-client shim (boot-arg sweetgpuclient=1). With the
++ * argument the stubs accept IOServiceOpen; every selector is logged and then
++ * refused, so one image can test both "no user client" (0105 default) and
++ * "client present" by changing only the cmdline. No renderer is claimed.
++ */
++class IOAcceleratorESUserClient : public IOUserClient {
++	OSDeclareDefaultStructors(IOAcceleratorESUserClient);
++
++	task_t fTask;
++
++public:
++	bool initWithTask(task_t owningTask, void *securityID, UInt32 type) APPLE_KEXT_OVERRIDE;
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++	IOReturn clientClose(void) APPLE_KEXT_OVERRIDE;
++	IOReturn clientDied(void) APPLE_KEXT_OVERRIDE;
++	IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++	    IOExternalMethodDispatch *dispatch, OSObject *target,
++	    void *reference) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(IOAcceleratorESUserClient, IOUserClient);
++
++static uint32_t sweet_gpu_uc_logged;
++
++bool
++IOAcceleratorESUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type)
++{
++	if (!IOUserClient::initWithTask(owningTask, securityID, type)) {
++		return false;
++	}
++	fTask = owningTask;
++	return true;
++}
++
++bool
++IOAcceleratorESUserClient::start(IOService *provider)
++{
++	if (!IOUserClient::start(provider)) {
++		return false;
++	}
++	IOLog("SWEET GPU: user client opened on %s (shim)\n",
++	    provider != NULL ? provider->getName() : "?");
++	return true;
++}
++
++IOReturn
++IOAcceleratorESUserClient::clientClose(void)
++{
++	terminate();
++	return kIOReturnSuccess;
++}
++
++IOReturn
++IOAcceleratorESUserClient::clientDied(void)
++{
++	return kIOReturnSuccess;
++}
++
++IOReturn
++IOAcceleratorESUserClient::externalMethod(uint32_t selector,
++    IOExternalMethodArguments *args, IOExternalMethodDispatch *dispatch __unused,
++    OSObject *target __unused, void *reference __unused)
++{
++	if (sweet_gpu_uc_logged < 200) {
++		sweet_gpu_uc_logged++;
++		IOLog("SWEET GPU: uc sel %u in %u/%u out %u/%u -> unsupported (shim)\n",
++		    selector,
++		    args != NULL ? args->scalarInputCount : 0,
++		    args != NULL ? args->structureInputSize : 0,
++		    args != NULL ? args->scalarOutputCount : 0,
++		    args != NULL ? args->structureOutputSize : 0);
++	}
++	return kIOReturnUnsupported;
++}
++
+ class IOAcceleratorES : public IOService {
+ 	OSDeclareDefaultStructors(IOAcceleratorES);
+ 
+@@ -101,10 +180,15 @@ bool
+ IOAcceleratorES::start(IOService *provider)
+ {
+ 	const char *name = getMetaClass()->getClassName();
++	uint32_t clientOn = 0;
+ 
+ 	if (!IOService::start(provider)) {
+ 		return false;
+ 	}
++	if (PE_parse_boot_argn("sweetgpuclient", &clientOn, sizeof(clientOn)) &&
++	    clientOn != 0) {
++		setProperty(kIOUserClientClassKey, "IOAcceleratorESUserClient");
++	}
+ 	setName(name);
+ 	registerService();
+ 	IOLog("SWEET GPU: %s published (stub; no renderer)\n", name);

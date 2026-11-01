@@ -1,0 +1,46 @@
+diff --git a/osfmk/ipc/mach_msg.c b/osfmk/ipc/mach_msg.c
+index 9771464..6331668 100644
+--- a/osfmk/ipc/mach_msg.c
++++ b/osfmk/ipc/mach_msg.c
+@@ -120,6 +120,32 @@
+ #define offsetof(type, member)  ((size_t)(&((type *)0)->member))
+ #endif /* offsetof */
+ 
++extern char *proc_name_address(struct proc *p);
++extern int proc_pid(struct proc *p);
++
++static unsigned int sweet_msgrecv_logged;
++
++static void
++sweet_msgrecv_log(unsigned int id, unsigned int sz)
++{
++	struct proc *p = current_proc();
++	char *pname = proc_name_address(p);
++
++	if (pname == NULL ||
++	    (strcmp(pname, "SpringBoard") != 0 &&
++	    strcmp(pname, "backboardd") != 0 &&
++	    strcmp(pname, "mediaserverd") != 0 &&
++	    strcmp(pname, "mediaremoted") != 0)) {
++		return;
++	}
++	if (sweet_msgrecv_logged >= 4000) {
++		return;
++	}
++	sweet_msgrecv_logged++;
++	printf("SWEET MSGRECV: pid %d (%s) id=%u sz=%u\n",
++	    proc_pid(p), pname, id, sz);
++}
++
+ /*
+  * Forward declarations - kernel internal routines
+  */
+@@ -316,6 +342,8 @@ mach_msg_receive_results_kevent(
+ 
+ #endif  /* IMPORTANCE_INHERITANCE */
+ 
++	sweet_msgrecv_log(ikm_header(kmsg)->msgh_id, (unsigned int)msg_size);
++
+ 	/* auto redeem the voucher in the message */
+ 	ipc_voucher_receive_postprocessing(kmsg, (mach_msg_option_t)option64);
+ 

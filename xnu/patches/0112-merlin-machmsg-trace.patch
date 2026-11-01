@@ -1,0 +1,65 @@
+diff --git a/osfmk/ipc/mach_msg.c b/osfmk/ipc/mach_msg.c
+index 9771464..7575f98 100644
+--- a/osfmk/ipc/mach_msg.c
++++ b/osfmk/ipc/mach_msg.c
+@@ -558,6 +558,37 @@ static TUNABLE(bool, allow_legacy_mach_msg, "allow_legacy_mach_msg", false);
+ 
+ extern char *proc_name_address(struct proc *p);
+ 
++/*
++ * SWEET MSG: one short line per mach_msg2 send/receive made by
++ * SpringBoard or backboardd, hard-capped at 4000 lines per boot
++ * (counted style of the 0042 exec log and the sweet_gpu_uc_logged
++ * counter).  Runs at mach_msg2_trap entry, before any copyin and in
++ * the documented "Nothing locked" region, so the console write below
++ * can never happen with an ipc/port lock held.
++ */
++extern int proc_pid(struct proc *p);
++
++static unsigned int sweet_msg_logged = 0;
++
++static void
++sweet_msg_log(const char *dir, unsigned int id, unsigned int sz)
++{
++	struct proc *p = current_proc();
++	char *pname = proc_name_address(p);
++
++	if (pname == NULL ||
++	    (strcmp(pname, "SpringBoard") != 0 &&
++	    strcmp(pname, "backboardd") != 0)) {
++		return;
++	}
++	if (sweet_msg_logged >= 4000) {
++		return;
++	}
++	sweet_msg_logged++;
++	printf("SWEET MSG: pid %d (%s) %s id=%u sz=%u\n",
++	    proc_pid(p), pname, dir, id, sz);
++}
++
+ CA_EVENT(mach_msg_trap_event,
+     CA_INT, msgh_id,
+     CA_INT, sw_platform,
+@@ -1118,6 +1149,22 @@ mach_msg2_trap(
+ 	option64 &= ~MACH64_SEND_FILTER_NONFATAL;
+ 	vector_msg = (option64 & MACH64_MSG_VECTOR);
+ 
++	/* SWEET MSG tracer: trap entry, before any copyin (the vector copyin
++	 * is further down) and in the "Conditions: Nothing locked" region of
++	 * this function.  Platform binaries such as SpringBoard and
++	 * backboardd only ever reach mach_msg2_trap() (legacy mach_msg_trap()
++	 * is refused for platform binaries), and msgh_id / send size arrive
++	 * here as packed scalar trap arguments, so no user memory is read.
++	 * A recv-only call has no knowable msgh_id at entry, so recv lines
++	 * log id=0; vector messages log sz=0 (size only known after copyin). */
++	if (option64 & MACH64_SEND_MSG) {
++		sweet_msg_log("send", (unsigned int)(mv_id >> 32),
++		    vector_msg ? 0 : (unsigned int)(mb_ss >> 32));
++	}
++	if (option64 & MACH64_RCV_MSG) {
++		sweet_msg_log("recv", 0, vector_msg ? 0 : (unsigned int)rs_pr);
++	}
++
+ 	KDBG(MACHDBG_CODE(DBG_MACH_IPC, MACH_IPC_KMSG_INFO) | DBG_FUNC_START);
+ 
+ 	/* kobject calls must be scalar calls (hence no aux data) */

@@ -1,0 +1,26 @@
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 99ca8d7..536de4b 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -155,6 +155,21 @@ IOAcceleratorESUserClient::externalMethod(uint32_t selector,
+     IOExternalMethodArguments *args, IOExternalMethodDispatch *dispatch __unused,
+     OSObject *target __unused, void *reference __unused)
+ {
++	/* 0107: the one query backboardd made in the 0106 boot: sel 2,
++	 * nothing in, 536 bytes out, asked once and abandoned after the
++	 * refusal.  Answer it with zeroed output; every other selector
++	 * stays refused so the next log names the next dependency. */
++	if (args != NULL && selector == 2 &&
++	    args->structureInputSize == 0 &&
++	    args->structureOutputSize == 536 &&
++	    args->structureOutput != NULL) {
++		memset(args->structureOutput, 0, args->structureOutputSize);
++		if (sweet_gpu_uc_logged < 200) {
++			sweet_gpu_uc_logged++;
++			IOLog("SWEET GPU: uc sel 2 out 536 -> zeroed success (shim)\n");
++		}
++		return kIOReturnSuccess;
++	}
+ 	if (sweet_gpu_uc_logged < 200) {
+ 		sweet_gpu_uc_logged++;
+ 		IOLog("SWEET GPU: uc sel %u in %u/%u out %u/%u -> unsupported (shim)\n",

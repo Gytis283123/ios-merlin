@@ -1,0 +1,118 @@
+xnu: MERLIN 0096 dump the HFS volume-header read at three stages
+
+The 0094 image boots to root mount but HFS rejects the volume header:
+"hfs_ValidateHFSPlusVolumeHeader: unknown Volume Signature : 60",
+"hfs_mount: hfs_mountfs returned error=22", then bsd_init loops on
+"cannot mount root, errno = 19".  iosroot-v2.img has 48 58 (HFSX) at
+byte offset 1024, so the kernel is reading (or copying) the wrong bytes.
+
+This patch prints the same sector at each stage of the path:
+
+  attach  - merlin_msdc_init() reads userdata LBA 2 directly through
+            msdc_read() before the buffer cache exists, and prints the
+            16 raw bytes plus the bounce-buffer bytes behind them.
+  strategy- merlin_msdc_strategy() prints the bounce buffer and the
+            caller's mapped buffer for the offset-1024 read.
+  hfs     - hfs_mountfs() prints mdb_offset/log_blksize/phys_blksize,
+            the raw buffer-cache bytes at 0 and at HFS_PRI_OFFSET, and
+            the first bytes after the bcopy into mdbp.
+
+Verdict table:
+  attach 48 58, strategy 48 58, hfs raw 48 58, mdbp 00 60
+      -> copy/buffer-cache corruption between strategy and HFS.
+  attach 48 58, strategy 00 60
+      -> strategy path (bounce/vaddr) corrupts it.
+  attach 00 60
+      -> the media itself serves 00 60 at that sector (or the DMA read
+         is consistently wrong); check userdata 1024 from BROM.
+
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1620,6 +1620,21 @@
+ 		done += want;
+ 		buf_setresid(bp, count - done);
+ 	}
++	/* MERLIN (0096): the HFS+ volume header read arrives here as byte
++	 * offset 1024 of the partition.  Print the bounce buffer the card
++	 * served and the bytes we just copied into the caller's buffer, so
++	 * a mismatch separates a bad read from a bad buffer-cache copy. */
++	if (error == 0 && !is_write && off == 1024 && count >= 512) {
++		const uint8_t *bb = (const uint8_t *)mo.dma;
++		const uint8_t *dst = (const uint8_t *)vaddr;
++
++		printf("MERLIN MSDC: strategy off 1024 bounce %02x %02x %02x "
++		    "%02x %02x %02x %02x %02x | vaddr %02x %02x %02x %02x "
++		    "%02x %02x %02x %02x\n",
++		    bb[0], bb[1], bb[2], bb[3], bb[4], bb[5], bb[6], bb[7],
++		    dst[0], dst[1], dst[2], dst[3], dst[4], dst[5], dst[6],
++		    dst[7]);
++	}
+ 	lck_mtx_unlock(&merlin_msdc_lock);
+ 	buf_unmap(bp);
+ 
+@@ -1797,6 +1812,29 @@
+ 	if (!error) {
+ 		error = msdc_find_partition(want);
+ 	}
++	if (!error) {
++		/* MERLIN (0096): the HFS+ volume header sits at byte offset
++		 * 1024 of the partition = userdata LBA 2.  Read it straight
++		 * from the driver, before the buffer cache or HFS exist,
++		 * and print it with the bounce bytes behind it. */
++		uint8_t vh[MSDC_SECTOR];
++
++		if (msdc_read(mo.first_block + 2, 1, vh) == 0) {
++			const uint8_t *bb = (const uint8_t *)mo.dma;
++
++			printf("MERLIN MSDC: attach LBA2 raw %02x %02x %02x "
++			    "%02x %02x %02x %02x %02x %02x %02x %02x %02x "
++			    "%02x %02x %02x %02x | bounce %02x %02x %02x "
++			    "%02x %02x %02x %02x %02x\n",
++			    vh[0], vh[1], vh[2], vh[3], vh[4], vh[5], vh[6],
++			    vh[7], vh[8], vh[9], vh[10], vh[11], vh[12],
++			    vh[13], vh[14], vh[15],
++			    bb[0], bb[1], bb[2], bb[3], bb[4], bb[5], bb[6],
++			    bb[7]);
++		} else {
++			printf("MERLIN MSDC: attach LBA2 read failed\n");
++		}
++	}
+ 	lck_mtx_unlock(&merlin_msdc_lock);
+ 	if (error) {
+ 		return error;
+--- a/bsd/sweet_hfs/core/hfs_vfsops.c
++++ b/bsd/sweet_hfs/core/hfs_vfsops.c
+@@ -1264,8 +1264,33 @@
+ 		}
+ 		goto error_exit;
+ 	}
++	/* MERLIN (0096): dump what the buffer cache handed HFS and what the
++	 * mdb copy holds.  If the raw bytes here are already 00 60, the
++	 * driver served them; if raw is 48 58 but mdbp is not, the copy or
++	 * the buffer went stale. */
++	{
++		const uint8_t *rb = (const uint8_t *)buf_dataptr(bp);
++		uint32_t po = HFS_PRI_OFFSET(phys_blksize);
++
++		printf("MERLIN HFS: mdb_offset %lld log_blksize %u "
++		    "phys_blksize %u pri %u count %u | raw %02x %02x %02x "
++		    "%02x %02x %02x %02x %02x | pri %02x %02x %02x %02x "
++		    "%02x %02x %02x %02x\n",
++		    (long long)mdb_offset, log_blksize, phys_blksize, po,
++		    buf_count(bp),
++		    rb[0], rb[1], rb[2], rb[3], rb[4], rb[5], rb[6], rb[7],
++		    rb[po + 0], rb[po + 1], rb[po + 2], rb[po + 3],
++		    rb[po + 4], rb[po + 5], rb[po + 6], rb[po + 7]);
++	}
+ 	mdbp = hfs_malloc_data(kMDBSize);
+ 	bcopy((char *)buf_dataptr(bp) + HFS_PRI_OFFSET(phys_blksize), mdbp, kMDBSize);
++	{
++		const uint8_t *mp = (const uint8_t *)mdbp;
++
++		printf("MERLIN HFS: mdbp %02x %02x %02x %02x %02x %02x %02x "
++		    "%02x\n", mp[0], mp[1], mp[2], mp[3], mp[4], mp[5], mp[6],
++		    mp[7]);
++	}
+ 	buf_brelse(bp);
+ 	bp = NULL;
+ 
