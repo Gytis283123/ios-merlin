@@ -1,0 +1,22 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -7419,6 +7419,15 @@ process_signature(proc_t p, struct image_params *imgp)
+ 			}
+ #endif /* DEBUG || DEVELOPMENT */
+ 			if (!no_sandbox_entitled) {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++				/*
++				 * MERLIN: bsd_init execs iOS launchd directly with no
++				 * posix_spawn attributes, and this board has no AMFI
++				 * entitlement provider. The binary's signature was
++				 * already validated during image activation
++				 * (ip_cs_error did not reach process_signature), so
++				 * accept the exec like the existing DEVELOPMENT
++				 * unentitled_ios_sim_launch boot-arg does.
++				 */
++				no_sandbox_entitled = TRUE;
++#endif
+ 				signature_failure_reason = os_reason_create(OS_REASON_EXEC,
+ 				    EXEC_EXIT_REASON_WRONG_PLATFORM);
+ 				error = EACCES;

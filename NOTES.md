@@ -2,6 +2,31 @@
 
 ## Agent handoff / active work (2026-11-01 LATEST-129 cont.: PATCH 0097 PUSHED TO LOCAL IOS-SWEET CLONE; CI BUILD BLOCKED BY LOCAL-ONLY)
 
+## Main branch update (2026-11-01, build successful)
+
+- Commit `4baaaecd4485b0f2dd9c081038708fb64663bb66` is on
+  `Gytis283123/ios-sweet` `main`. It carries the tested merlin XNU stack
+  through 0115, omits 0080/0081 (previously observed to hang on merlin),
+  and adds 0116, the successful Mach receive-result trace. The workflow
+  uses macOS 15.
+- XNU workflow run
+  [41301563080](https://github.com/Gytis283123/ios-sweet/actions/runs/41301563080)
+  completed successfully. Kernel artifact ID `13081757652` contains
+  `kernel.development.sweet` (17,288,376 bytes; SHA256
+  `7844aa089eb1fd97ce92916dac50ba8dc37e3940786e4336f1fa6aab040e3f11`).
+  Its binary contains the `SWEET MSGRECV` trace format string.
+- The kernel was packaged locally with the exact shim, ADT, and DTB from
+  the previously booted 0115 image. The verified image is
+  `D:\things\Merlin\ios-merlin\research\merlin-boot\shim-boot-merlin-msdc-0116-msgrecv-cpus8.img`
+  (17,052,627 bytes; SHA256
+  `e0e32a017828a7a3c27edf64855a03162f402f6d075cd37df7d6f8dfdef886d0`).
+  The standalone kernel is saved alongside it as
+  `kernel-0116-development.sweet` with the artifact SHA above.
+  This image has not been booted on-device. No partition flashing was done
+  or is planned; test only with temporary `fastboot boot`.
+
+## Agent handoff / active work (2026-10-15, latest)
+
 - [ACTION] Pushed ios-merlin main (a500468..1c29191) to origin/main (local ios-sweet clone at D:/things/Merlin/ios-sweet). Includes patches 0094-0098: 0094 (vm_resident.c:2627 fix, CI run 40400128627 GREEN), 0095 (dropped early-jump), 0096 (HFS read dump), 0097 (exclusion window spans SCP+modem MPU regions; fixes data.kalloc.16384 panic; default window 0x9f900000-0xbe000000), 0098 (multi-block eMMC).
 - [OBSERVATION] CI macOS runner IS available now — successful xnu builds on GitHub main from 2026-11-01 (runs 41306087077, 41301563080).
 - [BLOCKER] Patch 0097 is NOT in GitHub's ios-sweet repo — CI builds from GitHub, not from the local clone. Cannot build patch 0097 without pushing to GitHub, blocked by AGENTS.md LOCAL ONLY (user decision 2026-10-18: "do not push to GitHub without being asked").
@@ -10,6 +35,14 @@
 - [ACTION NEEDED] Device access to fastboot boot the CI-built kernel and test for LATEST-128 panic recurrence.
 
 ## Agent handoff / active work (2026-11-01 LATEST-129: PATCH-SERIES RECONCILIATION COMPLETE; XNU/PATCHES NOW MATCHES IOS-SWEET-MSDC)
+
+**STATE at end of 2026-10-18 (evening):**
+- On the phone: userdata = **image v15** (`/run/media/dipa/android/ios-sweet-ipsw/ios16-root-20H392-v15.img/.simg`; = v14 + `/private/var/preferences/SystemConfiguration/preferences.plist` with one network service "USB Ethernet": Interface DeviceName ue0 Type Ethernet, IPv4 Manual 192.168.7.2/24 router 192.168.7.1, DNS 1.1.1.1 8.8.8.8, set "Automatic" as CurrentSet). Fallback image v14 (v12/v13 deleted).
+- Kernels: **0078** = all 8 cores (`cpus=8`, cpu6/7 = A76, homogeneous SMP; mkadt now emits 8 CPU nodes; ADT `shim/out/sweet-0078hi.adt`); **0079** = display off/on via IOMFB selector 12 kern_RequestPowerChange(state) (fade over 6 vsyncs, then black; verified: power button gives "SWEET FB: display off/on"); **0080** = `SWEET NET: <proc> route add/delete/change ...` and `... add/delete address ...` trace (built, `shim/out/shim-boot-0080s.img`, NOT booted yet).
+- **Internet over USB: not working yet.** Host side is ready (temporary iptables: FORWARD accept for 192.168.7.0/24 + MASQUERADE, comment "ios-sweet"; lost on host reboot). With v15 the phone sent no DNS and no outbound traffic (only mDNS/ARP) -> configd probably did not apply the service (or did, without default route/DNS). Next: boot 0080s on v15, watch `SWEET NET` lines (does configd add 192.168.7.2 / default route on ue0?). If configd ignores ue0 (not an IOKit IONetworkInterface; configd 1241.140.6 source in `research/configd-1241`, SCNetworkInterface createInterface needs IONetworkInterface -> controller (IOMACAddress, SelfNamed) -> bus), add IOKit stand-ins and/or rename the ifnet to en*.
+- Live log listener (`nc -ukl 5140`) may still be running, writing `logs/live-0078s.txt`.
+
+**LIVE LOG over USB (0077, boot 0077s): no more recovery round-trips.** Boot an image with `sweetusb=2`, run `tools/sweet-usbnet.sh logs/live-NAME.txt` on the PC: it waits for the phone's CDC-ECM interface, sets 192.168.7.1/24 (sudo) and prints/saves the kernel console the phone streams every 100 ms as UDP to 192.168.7.1:5140 (starts with the last 64 KiB). `ping 192.168.7.2` checks the link. Current image: `shim/out/shim-boot-0077s.img` (kernel 0077, ADT sweet-0069hi, cpus=6, sweetfb_noconsole=1, sweetfb_hz=30, sweetusb=2). The recovery pull (`tools/sweet-log-pull.sh`) is still the way after a panic/hang before USB comes up.
 
 - [ACTION] Reconciled the tracked `xnu/patches` series in ios-merlin with
   `ios-sweet-msdc/xnu/patches/` to resolve the kernel patch/build blocker
