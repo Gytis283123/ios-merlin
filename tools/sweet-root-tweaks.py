@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Apply the SWEET bring-up changes to an iOS root made by tools/mkiosroot.sh.
 
-  sudo sweet-root-tweaks.py MOUNTED_ROOT
+  sudo sweet-root-tweaks.py MOUNTED_ROOT [--skip-setup-assistant]
 
 MOUNTED_ROOT is the HFS+ image mounted read-write (Linux: run
 `fsck.hfsplus -fy` on the image, then `mount -t hfsplus -o loop,force`).
-Run as root (it writes root/mobile owned files). Idempotent. This is what
-turned the plain mkiosroot.sh output into the images that reach the home
-screen (image versions v8-v14 in NOTES.md):
+Run as root (it writes root/mobile owned files). Idempotent. This produced
+the home-screen images v8-v14 in NOTES.md; Setup Assistant now runs by
+default, and `--skip-setup-assistant` retains that previous behavior:
 
   launchd.plist   _PanicOnCrash -> _PanicOnCrasX (a crashing daemon must not
                   panic the system); CommCenter jobs removed (no baseband: it
@@ -21,8 +21,9 @@ screen (image versions v8-v14 in NOTES.md):
                   NULL OpenGL function without a GPU -> mediaserverd crash loop)
   SpringBoard     BKNoWatchdogs (one slow CPU path, no scene-create watchdog
                   kills), no cloud-configuration UI
-  Setup           skipped: SetupDone, SetupFinishedAllSteps, SetupVersion 11,
-                  mini-buddy flags off
+  Setup           enabled by default (completion markers and mini-buddy
+                  suppression are removed); use --skip-setup-assistant to
+                  preserve the previous home-screen bring-up behavior
   activation      mobileactivationd data ark seeded; the actual Activated state
                   comes from its Hactivation branch, selected by the /chosen
                   security-status properties in tools/mkadt.py
@@ -52,6 +53,24 @@ def merge_pref(root, name, values):
     data.update(values)
     save(path, data, MOBILE, MOBILE, 0o600)
     print('pref', name, sorted(values))
+
+
+def remove_pref_keys(root, name, keys):
+    """Remove setup-state overrides while preserving unrelated preferences."""
+    path = os.path.join(root, 'private/var/mobile/Library/Preferences', name + '.plist')
+    if not os.path.exists(path):
+        print('pref', name, 'already absent')
+        return
+    data = load(path)
+    removed = sorted(set(data).intersection(keys))
+    if not removed:
+        print('pref', name, 'no setup overrides')
+        return
+    st = os.stat(path)
+    for key in removed:
+        del data[key]
+    save(path, data, st.st_uid, st.st_gid, st.st_mode & 0o7777)
+    print('pref', name, 'removed', removed)
 
 
 def launchd(root):
@@ -122,10 +141,35 @@ def audio(root):
         print('StartRecorderServer off', os.path.relpath(conf, root))
 
 
+def setup_preferences(root, skip_setup_assistant):
+    if skip_setup_assistant:
+        merge_pref(root, 'com.apple.purplebuddy', {
+            'SetupDone': True, 'SetupFinishedAllSteps': True, 'SetupVersion': 11,
+            'daemonizeNeedsToRun': False})
+        merge_pref(root, 'com.apple.purplebuddy.notbackedup', {
+            k: False for k in ('ShouldRunDiagnosticsMiniBuddy', 'ShouldRunHSA2MiniBuddy',
+                               'ShouldRunKeychainSyncMiniBuddy', 'ShouldRunMesaMiniBuddy',
+                               'ShouldRunPaymentMiniBuddy', 'ShouldRunStandardMiniBuddy',
+                               'SilentICDPUpgrade')})
+        return
+
+    remove_pref_keys(root, 'com.apple.purplebuddy', (
+        'SetupDone', 'SetupFinishedAllSteps', 'SetupVersion', 'daemonizeNeedsToRun'))
+    remove_pref_keys(root, 'com.apple.purplebuddy.notbackedup', (
+        'ShouldRunDiagnosticsMiniBuddy', 'ShouldRunHSA2MiniBuddy',
+        'ShouldRunKeychainSyncMiniBuddy', 'ShouldRunMesaMiniBuddy',
+        'ShouldRunPaymentMiniBuddy', 'ShouldRunStandardMiniBuddy',
+        'SilentICDPUpgrade'))
+
+
 def main():
-    if len(sys.argv) != 2 or not os.path.isdir(os.path.join(sys.argv[1], 'System/Library/xpc')):
+    if len(sys.argv) not in (2, 3) or (
+            len(sys.argv) == 3 and sys.argv[2] != '--skip-setup-assistant'):
+        sys.exit(__doc__)
+    if not os.path.isdir(os.path.join(sys.argv[1], 'System/Library/xpc')):
         sys.exit(__doc__)
     root = sys.argv[1]
+    skip_setup_assistant = len(sys.argv) == 3
     launchd(root)
     containers(root)
     activation(root)
@@ -137,14 +181,7 @@ def main():
         'BKNoWatchdogs': True,
         'FBLaunchWatchdogExceptions': {'com.apple.purplebuddy': 100.0},
         'MCForceShowCloudConfigurationUI': False})
-    merge_pref(root, 'com.apple.purplebuddy', {
-        'SetupDone': True, 'SetupFinishedAllSteps': True, 'SetupVersion': 11,
-        'daemonizeNeedsToRun': False})
-    merge_pref(root, 'com.apple.purplebuddy.notbackedup', {
-        k: False for k in ('ShouldRunDiagnosticsMiniBuddy', 'ShouldRunHSA2MiniBuddy',
-                           'ShouldRunKeychainSyncMiniBuddy', 'ShouldRunMesaMiniBuddy',
-                           'ShouldRunPaymentMiniBuddy', 'ShouldRunStandardMiniBuddy',
-                           'SilentICDPUpgrade')})
+    setup_preferences(root, skip_setup_assistant)
     merge_pref(root, 'com.apple.managedconfiguration.notbackedup', {
         'LockdownActivationIndicatesCloudConfigurationAvailable': False})
 

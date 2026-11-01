@@ -1,7 +1,7 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
-## Agent handoff / active work (2026-11-01 LATEST-101: SOURCE IPSW LISTING CONFIRMS SETUP.APP AND PURPLEBUDDY ASSETS; 0115 BOOT ROOT/LAUNCH GATE STILL UNVERIFIED; NO SAFE FUNCTIONAL FIX IDENTIFIED)
+## Agent handoff / active work (2026-11-01 LATEST-102: ROOT TWEAKS WERE MARKING SETUP COMPLETE; DEFAULT NOW ENABLES SETUP, DEVICE BOOT NOT YET VERIFIED)
 
 ### 0115 boot log (observation; `research/logs/sweetlog-0115-20261101.{bin,txt}`)
 
@@ -47,24 +47,34 @@
   launch daemon, SetupAssistant feature-flag and lifecycle-policy plists,
   the SetupAssistant framework defaults plist, and `private/var/buddy`.
   This confirms those assets exist in the source IPSW listing only; it
-  does not verify the exact 0115 boot-root contents or show why SpringBoard
-  does not launch Setup. No functional source change is justified yet.
+  does not verify the exact 0115 boot-root contents.
+- Source inspection then found a direct Setup suppression in
+  `tools/sweet-root-tweaks.py`: it unconditionally wrote
+  `SetupDone=true`, `SetupFinishedAllSteps=true`, a completed SetupVersion,
+  `daemonizeNeedsToRun=false`, and false mini-buddy flags. That script's
+  own documentation says it produced the home-screen images v8-v14 and
+  intentionally skipped Setup. The exact 0115 root image has not been
+  inspected, so whether those values were present in that boot remains
+  unverified.
+- Fix: the root tweak script now removes these completion/suppression keys
+  by default, allowing Setup Assistant and mini-buddy flows to run; the
+  former skip behavior remains available with `--skip-setup-assistant`.
+  A temporary-plist check passed for both modes and confirmed unrelated
+  preference keys are preserved; `python -m py_compile
+  tools/sweet-root-tweaks.py` passed. No root image was rebuilt and no
+  device boot was performed (`fastboot devices` returned no devices), so
+  hardware behavior is not yet verified.
 
 ### Next
 
-1. Trace `mediaremoted` and identify the receiver/service for message
-   40232, then determine why no 828-byte response is emitted. The current
-   tracer excludes `mediaremoted` and receive lines report buffer capacity
-   only. Prefer static mapping or a receive-side/port-owner trace over
-   guessing a synthetic reply.
-2. Verify the actual 0115 boot-root Setup.app and relevant PurpleBuddy
-   launchd/policy/setup-state inputs; the source IPSW listing alone is not
-   enough to establish the launch gate.
-3. Separately map backboardd id 78 and id `0x10000000` timeouts to their
-   service owners and determine whether they relate to first-run UI.
-4. Implement a targeted fix only when the missing service/response is
-   identified, then verify SetupAssistant execs in a new boot log.
-   Preserve the existing uncommitted `tools/mkpayload.py` change and
+1. Rebuild the HFS+ root with the updated tweak script and verify the
+   resulting PurpleBuddy preferences do not contain the completion keys.
+2. Boot the rebuilt image with `fastboot boot` only and check for a
+   SetupAssistant exec in the persistent log; never flash partitions.
+3. If SetupAssistant still does not launch, continue tracing `mediaremoted`
+   and identify the receiver for message 40232 before changing Mach behavior.
+   The existing 0115 receive trace only reports buffer capacity.
+4. Preserve the existing uncommitted `tools/mkpayload.py` change and
    unrelated files.
 
 ## Agent handoff / active work (2026-10-31 LATEST-99: 0115 PACKED - MACH SEND-RESULT LOGGING FOR THE TRACED TRIO (SWEET MSGERR: failed send -> error code, naming the missing service); image shim-boot-merlin-msdc-0115-msgerr-cpus8-fbup-585.img 3AF101BB READY)
