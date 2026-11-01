@@ -50,6 +50,11 @@ bash tools/merlin-qemu-test.sh
 QEMU boot-args (same as the ios-sweet QEMU tune): `debug=0xc serial=3 cpus=1
 keepsyms=1 -enable_kprintf_spam -noprogress rd=md0`.
 
+For the experimental Redmi Note 9 hardware image, see
+[LOCAL_BUILD_AND_LOG_GUIDE.md](./LOCAL_BUILD_AND_LOG_GUIDE.md). It documents
+the WSL kernel build, local image packaging, temporary `fastboot boot`, and
+read-only recovery log retrieval. Never flash a partition.
+
 ## merlin hardware facts (vs sweet)
 
 | Fact | sweet (SM7150) | merlin (MT6768 / Helio G85) |

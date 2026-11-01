@@ -1,5 +1,19 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-11-01 LATEST-114: LOCAL 0117 BUILD AND LOG GUIDE ADDED; PHONE BOOT PENDING)
+
+- Added `LOCAL_BUILD_AND_LOG_GUIDE.md` with the verified WSL kernel-only
+  build command, exact 0116-derived boot inputs and packaging parameters,
+  temporary `fastboot boot` instructions, and the read-only recovery log
+  pull/decode workflow.
+- The guide uses the already-configured WSL tree patched through 0117. It
+  explicitly warns that source/object reseed phases replace existing build
+  directories. Its image/log commands have not been run as part of this
+  documentation task.
+- Current verified local and CI 0117 kernels/images and their hashes are
+  recorded in the preceding LATEST-113 handoff. No device boot or flash has
+  occurred; the user can test with temporary boot only.
+
 ## Agent handoff / active work (2026-11-01 LATEST-113: 0117 LOCAL + CI BUILDS AND TWO IMAGES VERIFIED; DEVICE BOOT PENDING)
 
 - Commit `536f447fc9d64c179d1d2913289d6123c100751d` containing patch 0117
