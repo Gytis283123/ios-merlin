@@ -1,0 +1,20 @@
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 565f369..5bba47c 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -174,9 +174,12 @@ IOAcceleratorESUserClient::externalMethod(uint32_t selector,
+ 	if (args != NULL && args->structureOutputSize == 0) {
+ 		if (sweet_gpu_uc_logged < 200) {
+ 			sweet_gpu_uc_logged++;
+-			IOLog("SWEET GPU: uc sel %u in %u/%u -> no-op success (shim)\n",
+-				selector, args->scalarInputCount,
+-				args->structureInputSize);
++			IOLog("SWEET GPU: uc sel %u in %u/%u sc=%llx,%llx,%llx,%llx -> no-op success (shim)\n",
++				selector, args->scalarInputCount, args->structureInputSize,
++				args->scalarInputCount > 0 ? args->scalarInput[0] : 0,
++				args->scalarInputCount > 1 ? args->scalarInput[1] : 0,
++				args->scalarInputCount > 2 ? args->scalarInput[2] : 0,
++				args->scalarInputCount > 3 ? args->scalarInput[3] : 0);
+ 		}
+ 		return kIOReturnSuccess;
+ 	}

@@ -1,0 +1,22 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 68612db..0f45fc8 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -2312,6 +2312,17 @@ bad_notrans:
+ 	}
+ 	kfree_type(struct nameidata, ndp);
+ 
++	#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* 0109: 0042 logs the allow decision mid-exec; this logs the
++	 * OUTCOME of the whole attempt: the image either activated
++	 * (started) or the exec failed, with its errno. */
++	if (error == 0) {
++		printf("SWEET EXEC: %s started\n", p->p_name);
++	} else {
++		printf("SWEET EXEC: %s failed to start err=%d\n", p->p_name, error);
++	}
++	#endif
++
+ 	return error;
+ }
+ 

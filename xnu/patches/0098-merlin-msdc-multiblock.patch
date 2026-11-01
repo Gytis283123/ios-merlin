@@ -1,0 +1,568 @@
+xnu: MERLIN 0098 multi-block eMMC transfers (CMD18/CMD25) to cut boot time
+
+The merlin MSDC root driver issued one CMD17 per 512-byte sector and
+measured ~0.7 MB/s: an XNU boot reads ~267 MB of the root volume, i.e.
+~7 minutes of the "iOS is preparing" phase.
+
+Merge the read and write paths into msdc_transfer() and use the card's
+multi-block commands with the controller's auto CMD12, the same shape the
+stock ComboA driver programs for a DMA request (rawcmd dtype 2 << 11,
+autocmd12 1 << 28, SDC_BLK_NUM = blocks, MSDC_DMA_LEN = bytes):
+
+  - msdc_read()/the strategy loop move whole sectors in chunks of up to
+    128 sectors (64 KiB bounce buffer) through CMD18 reads (CMD25 for
+    writes), so an aligned 256 KiB read costs 4 commands instead of 512;
+  - single-sector requests, partial heads and tails keep the original
+    CMD17/CMD24 shape, including the read-modify-write tail on the write
+    side;
+  - auto CMD12 keeps the stop inside the data command; the ACMD ready /
+    timeout / CRC bits join the wait set and XFER_COMPL is required, as
+    the stock driver does ("Autocmd12 issued but error, data transfer
+    done INT won't set");
+  - the 0085 DMA-canary scan now starts at the requested transfer length
+    (a 64 KiB CMD18 legitimately fills the whole bounce buffer);
+  - the 0093 readverify double-read and pattern tripwire stay on the
+    single-sector path, so msdc_blocks=1 reproduces the old behaviour
+    for A/B runs; msdc_blocks=N (1..128) caps the chunk size, printed at
+    attach.
+
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -826,15 +826,18 @@
+  *
+  * The MTK MSDC0 controller is left enabled with the card selected by the
+  * bootloader, which loaded our boot image from it.  This driver reuses that
+- * state: it polls the controller, issues CMD17 single-block reads from the
+- * user area and finds one GPT partition by name (boot-arg msdcroot=, default
+- * "userdata"), exposing it as the BSD disk msdcroot0 (rmsdcroot0) with
+- * 512-byte logical sectors.  Root on it with rd=msdcroot0.
++ * state: it polls the controller and finds one GPT partition by name
++ * (boot-arg msdcroot=, default "userdata"), exposing it as the BSD disk
++ * msdcroot0 (rmsdcroot0) with 512-byte logical sectors.  Root on it with
++ * rd=msdcroot0.
+  *
+  * All DMA goes through one physically contiguous 64 KiB bounce buffer; the
+  * host is not assumed cache coherent, so caches are flushed around each
+- * command.  Writes go through CMD24 single-block writes with the same DMA
+- * shape (source = bounce buffer; direction is implied by the CMD RW bit).
++ * command.  Reads are CMD18 and writes CMD25 (multi-block, up to 128
++ * sectors = the whole bounce buffer, with the controller's auto CMD12);
++ * a single-sector request keeps the original CMD17/CMD24 shape.  The old
++ * one-CMD17-per-512-B loop measured ~0.7 MB/s, i.e. ~7 minutes for the
++ * ~267 MB an XNU boot reads.
+  *
+  * Register map from the stock kernel's ComboA driver
+  * (drivers/mmc/host/mediatek/ComboA/msdc_reg.h, MT6768).
+@@ -893,6 +896,9 @@
+ #define SDC_STS_SDCBUSY (1u << 0)
+ #define SDC_STS_CMDBUSY (1u << 1)
+ 
++#define MSDC_INT_ACMDRDY     (1u << 3)
++#define MSDC_INT_ACMDTMO     (1u << 4)
++#define MSDC_INT_ACMDCRCERR  (1u << 5)
+ #define MSDC_INT_CMDRDY      (1u << 8)
+ #define MSDC_INT_CMDTMO      (1u << 9)
+ #define MSDC_INT_RSPCRCERR   (1u << 10)
+@@ -913,8 +919,22 @@
+ #define MSDC_DMA_CTRL_BRUSTSZ (7u << 12)
+ #define MSDC_DMA_CFG_STS     (1u << 0)
+ 
++/* SDC_CMD (rawcmd) fields, from the stock ComboA driver (sd.c
++ * msdc_command_start): vol_swt<<30 | autocmd<<28 | blklen<<16 |
++ * go_irq<<15 | stop<<14 | rw<<13 | dtype<<11 | rsptyp<<7 | brk<<6 |
++ * opcode.  dtype 1 = single block (CMD17/24), 2 = multiple block
++ * (CMD18/25).  Multiple-block DMA in the stock driver always enables
++ * auto CMD12 (rawcmd bit 28) and puts the block count in SDC_BLK_NUM
++ * (msdc_do_request_prepare); the same shape is used here. */
++#define MSDC_CMD_RSP_R1      (1u << 7)
++#define MSDC_CMD_DTYPE_SGL   (1u << 11)
++#define MSDC_CMD_DTYPE_MLT   (2u << 11)
++#define MSDC_CMD_RW          (1u << 13)
++#define MSDC_CMD_AUTOCMD12   (1u << 28)
++
+ #define MSDC_SECTOR          512u
+ #define MSDC_BOUNCE_SIZE     (64u << 10)
++#define MSDC_BOUNCE_SECTORS  (MSDC_BOUNCE_SIZE / MSDC_SECTOR)
+ #define MSDC_CMD_TIMEOUT_NS  (2ull * NSEC_PER_SEC)
+ #define MSDC_DATA_TIMEOUT_NS (5ull * NSEC_PER_SEC)
+ #define MSDC_DMA_STOP_NS     (2ull * NSEC_PER_SEC)
+@@ -933,6 +953,10 @@
+ } mo;
+ 
+ static uint8_t msdc_gpt[128 * 128];             /* one GPT entry table */
++
++/* 0098: sectors per CMD18/CMD25 data command (boot arg msdc_blocks=N
++ * lowers it for A/B runs).  Capped by the 64 KiB bounce buffer. */
++static uint32_t msdc_max_blocks = MSDC_BOUNCE_SECTORS;
+ 
+ uint64_t msdc_spill_count;               /* 0088: DMA overshoot detections (non-static: zalloc replay reads it) */
+ 
+@@ -1196,79 +1220,120 @@
+ 	return 0;
+ }
+ 
+-/* CMD17: one 512-byte sector of the user area into the bounce buffer. */
+-static int
+-msdc_read_sector_once(uint64_t lba)
++/* 0098: one data command covering nblk 512-byte sectors at absolute lba,
++ * bounce buffer as the DMA target/source.  nblk == 1 keeps the original
++ * CMD17/CMD24 shape byte for byte.  nblk > 1 uses CMD18/CMD25 with the
++ * controller's auto CMD12, exactly what the stock ComboA driver programs
++ * for a DMA request (sd.c msdc_command_start + msdc_do_request_prepare:
++ * rawcmd |= 2 << 11, | 1 << 28 for the stop, SDC_BLK_NUM = blocks).
++ * Command overhead dominated the old one-sector loop: ~0.7 MB/s measured,
++ * ~7 min of XNU boot for the ~267 MB the kernel and userspace read. */
++static int
++msdc_transfer(uint64_t lba, uint32_t nblk, bool is_write)
+ {
+ 	uint32_t sts;
+ 	int error;
++	uint32_t len = nblk * MSDC_SECTOR;
++	bool multi = (nblk > 1);
+ 	uint32_t cmd_int = MSDC_INT_CMDRDY | MSDC_INT_CMDTMO | MSDC_INT_RSPCRCERR;
+ 	uint32_t dat_int = MSDC_INT_XFER_COMPL | MSDC_INT_DATTMO | MSDC_INT_DATCRCERR |
+ 	    MSDC_INT_BDCSERR | MSDC_INT_GPDCSERR | MSDC_INT_AXI_RESP_ERR;
+-	uint32_t raw = 17u | (1u << 7) | (MSDC_SECTOR << 16) | (1u << 11);
++	uint32_t acmd_int = MSDC_INT_ACMDRDY | MSDC_INT_ACMDTMO |
++	    MSDC_INT_ACMDCRCERR;
++	uint32_t opcode = is_write ? (multi ? 25u : 24u) : (multi ? 18u : 17u);
++	uint32_t raw = opcode | MSDC_CMD_RSP_R1 |
++	    (multi ? MSDC_CMD_DTYPE_MLT : MSDC_CMD_DTYPE_SGL) |
++	    (MSDC_SECTOR << 16) | (is_write ? MSDC_CMD_RW : 0) |
++	    (multi ? MSDC_CMD_AUTOCMD12 : 0);
++
++	if (nblk == 0 || len > MSDC_BOUNCE_SIZE) {
++		return EINVAL;
++	}
+ 
+ 	error = msdc_wait_idle(MSDC_CMD_TIMEOUT_NS);
+ 	if (error) {
+ 		return error;
+ 	}
+ 	msdc_wr(MSDC_INT, 0xffffffffu);
+-	msdc_dma_sync(MSDC_SECTOR);
++	msdc_dma_sync(len);
+ 
+ 	/* The data engine's block count lives in SDC_BLK_NUM; the stock
+ 	 * driver writes it before every data command (sd.c,
+ 	 * msdc_do_request_prepare). LK left a multi-block count here from
+ 	 * its boot-image reads, which would stream far more than our
+ 	 * 512-byte buffer and fail the data phase. */
+-	msdc_wr(SDC_BLK_NUM, 1);
++	msdc_wr(SDC_BLK_NUM, nblk);
+ 	msdc_wr(SDC_ARG, (uint32_t)lba);
+ 	msdc_wr(SDC_CMD, raw);
+ 
+ 	error = msdc_wait_int(cmd_int, MSDC_CMD_TIMEOUT_NS, &sts);
+ 	if (error || (sts & (MSDC_INT_CMDTMO | MSDC_INT_RSPCRCERR))) {
+ 		msdc_wr(MSDC_INT, sts & cmd_int);
+-		printf("MERLIN MSDC: CMD17(%llu) failed: int 0x%08x\n",
+-		    (unsigned long long)lba, sts);
++		printf("MERLIN MSDC: CMD%u(%llu,%u) failed: int 0x%08x\n",
++		    opcode, (unsigned long long)lba, nblk, sts);
+ 		return EIO;
+ 	}
+ 	msdc_wr(MSDC_INT, sts & cmd_int);
+ 
+ 	uint32_t resp = msdc_rd(SDC_RESP0);
+ 	if (resp & MSDC_R1_OUT_OF_RANGE) {
+-		printf("MERLIN MSDC: CMD17(%llu) out of range (status 0x%08x)\n",
+-		    (unsigned long long)lba, resp);
++		printf("MERLIN MSDC: CMD%u(%llu,%u) out of range "
++		    "(status 0x%08x)\n", opcode, (unsigned long long)lba,
++		    nblk, resp);
+ 		return EIO;
+ 	}
+ 
+ 	msdc_wr(MSDC_DMA_SA_HIGH, 0);
+ 	msdc_wr(MSDC_DMA_SA, (uint32_t)mo.dma_pa);
+-	msdc_wr(MSDC_DMA_LEN, MSDC_SECTOR);
+-	uint32_t ctrl = 0;    /* decl kept for the STOP below */
++	msdc_wr(MSDC_DMA_LEN, len);
+ 	/* MERLIN (0085): DMA_CTRL is written ABSOLUTELY so no bit
+ 	 * inherited from earlier state can survive to the START. */
+ 	msdc_wr(MSDC_DMA_CTRL, MSDC_DMA_CTRL_LASTBUF | (6u << 12) |
+ 	    MSDC_DMA_CTRL_START);
+ 
+-	error = msdc_wait_int(dat_int, MSDC_DATA_TIMEOUT_NS, &sts);
+-	if (error || (sts & (MSDC_INT_DATTMO | MSDC_INT_DATCRCERR | MSDC_INT_BDCSERR |
+-	    MSDC_INT_GPDCSERR | MSDC_INT_AXI_RESP_ERR))) {
+-		printf("MERLIN MSDC: CMD17(%llu) data failed: int 0x%08x "
++	/* Wait for the data phase.  With auto CMD12 the stop runs after
++	 * the last block, so ACMDRDY can be raised before XFER_COMPL;
++	 * conversely an ACMD error suppresses XFER_COMPL entirely
++	 * (sd.c: "Autocmd12 issued but error, data transfer done INT
++	 * won't set").  Completion or an error bit therefore ends the
++	 * wait; ACMD ready alone does not. */
++	uint32_t dat_bad = MSDC_INT_DATTMO | MSDC_INT_DATCRCERR |
++	    MSDC_INT_BDCSERR | MSDC_INT_GPDCSERR | MSDC_INT_AXI_RESP_ERR;
++	if (multi) {
++		dat_bad |= MSDC_INT_ACMDTMO | MSDC_INT_ACMDCRCERR;
++	}
++	uint64_t dat_dl = deadline_in(MSDC_DATA_TIMEOUT_NS);
++	error = ETIMEDOUT;
++	for (;;) {
++		sts = msdc_rd(MSDC_INT);
++		if (sts & (MSDC_INT_XFER_COMPL | dat_bad)) {
++			error = 0;
++			break;
++		}
++		if (mach_absolute_time() > dat_dl) {
++			break;
++		}
++	}
++	if (error || (sts & dat_bad) || !(sts & MSDC_INT_XFER_COMPL)) {
++		printf("MERLIN MSDC: CMD%u(%llu,%u) data failed: int 0x%08x "
+ 		    "sts 0x%08x dcfg 0x%08x ca 0x%08x fifocs 0x%08x\n",
+-		    (unsigned long long)lba, sts, msdc_rd(SDC_STS),
+-		    msdc_rd(MSDC_DMA_CFG), msdc_rd(MSDC_DMA_CA),
+-		    msdc_rd(MSDC_FIFOCS));
++		    opcode, (unsigned long long)lba, nblk, sts,
++		    msdc_rd(SDC_STS), msdc_rd(MSDC_DMA_CFG),
++		    msdc_rd(MSDC_DMA_CA), msdc_rd(MSDC_FIFOCS));
+ 		error = EIO;
+ 	} else {
+ 		error = 0;
+ 	}
+-	msdc_wr(MSDC_INT, sts & dat_int);
+-
+-	ctrl = msdc_rd(MSDC_DMA_CTRL);
++	msdc_wr(MSDC_INT, sts & (dat_int | acmd_int));
++
++	uint32_t ctrl = msdc_rd(MSDC_DMA_CTRL);
+ 	msdc_wr(MSDC_DMA_CTRL, ctrl | MSDC_DMA_CTRL_STOP);
+ 	uint64_t dl = deadline_in(MSDC_DMA_STOP_NS);
+ 	while (msdc_rd(MSDC_DMA_CFG) & MSDC_DMA_CFG_STS) {
+ 		if (mach_absolute_time() > dl) {
+-			printf("MERLIN MSDC: DMA did not stop after read %llu "
+-			    "(dcfg 0x%08x)\n", (unsigned long long)lba,
++			printf("MERLIN MSDC: DMA did not stop after %s %llu+%u "
++			    "(dcfg 0x%08x)\n", is_write ? "write" : "read",
++			    (unsigned long long)lba, nblk,
+ 			    msdc_rd(MSDC_DMA_CFG));
+ 			if (error == 0) {
+ 				error = EIO;
+@@ -1276,40 +1341,60 @@
+ 			break;
+ 		}
+ 	}
+-	/* MERLIN (0085): spill canaries behind the 512-byte transfer
+-	 * target.  Any DMA streaming past its requested length (ours or
+-	 * one inherited from the bootloader) clobbers these first. */
+-	{
++	if (is_write || multi) {
++		/* CMD24 R1b / auto CMD12: leave the data state before the
++		 * next command is issued. */
++		int idle_error = msdc_wait_idle(MSDC_DATA_TIMEOUT_NS);
++		if (idle_error) {
++			printf("MERLIN MSDC: CMD%u(%llu,%u) idle busy after %s\n",
++			    opcode, (unsigned long long)lba, nblk,
++			    is_write ? "write" : "read");
++			if (error == 0) {
++				error = idle_error;
++			}
++		}
++	}
++	/* MERLIN (0085/0098): spill canaries behind the transfer target.
++	 * Any DMA streaming past the requested length clobbers the first
++	 * canary word after it.  The window starts at len because a 64 KiB
++	 * CMD18 legitimately fills the whole bounce buffer. */
++	if (!is_write && len < MSDC_BOUNCE_SIZE) {
+ 		const volatile uint64_t *c = (const volatile uint64_t *)mo.dma;
+-		if (c[64] != 0x4d45524c494e2041ULL ||
+-		    c[256] != 0x4d45524c494e2041ULL ||
+-		    c[2048] != 0x4d45524c494e2041ULL) {
+-			uint32_t first = 0;
+-			uint32_t last = 0;
+-			uint32_t bad = 0;
+-			uint32_t w;
+-			for (w = 64; w < MSDC_BOUNCE_SIZE / 8; w++) {
+-				if (c[w] == 0x4d45524c494e2041ULL) {
+-					continue;
+-				}
+-				if (bad == 0) {
+-					first = w;
+-				}
+-				last = w;
+-				bad++;
+-			}
++		uint32_t firstw = len / 8;
++		uint32_t first = 0;
++		uint32_t last = 0;
++		uint32_t bad = 0;
++		uint32_t w;
++		for (w = firstw; w < MSDC_BOUNCE_SIZE / 8; w++) {
++			if (c[w] == 0x4d45524c494e2041ULL) {
++				continue;
++			}
++			if (bad == 0) {
++				first = w;
++			}
++			last = w;
++			bad++;
++		}
++		if (bad != 0) {
+ 			msdc_spill_count++;
+ 			if (msdc_spill_count == 1 ||
+ 			    (msdc_spill_count % 1000) == 0) {
+-				printf("MERLIN MSDC: DMA SPILL count %llu words bad %u first %u (off %u) last %u\n",
++				printf("MERLIN MSDC: DMA SPILL count %llu words bad %u first %u (off %u) last %u len %u\n",
+ 				    (unsigned long long)msdc_spill_count, bad, first,
+-				    first * 8, last);
++				    first * 8, last, len);
+ 			}
+ 		}
+ 	}
+ 	msdc_wr(MSDC_INT, 0xffffffffu);
+-	msdc_dma_sync(MSDC_SECTOR);
++	msdc_dma_sync(len);
+ 	return error;
++}
++
++/* CMD17: one 512-byte sector of the user area into the bounce buffer. */
++static int
++msdc_read_sector_once(uint64_t lba)
++{
++	return msdc_transfer(lba, 1, false);
+ }
+ 
+ /* Optional double-read self-check (boot-arg msdc_readverify=1): every
+@@ -1399,103 +1484,41 @@
+ }
+ 
+ /* CMD24: one 512-byte sector at absolute lba, source = bounce buffer.
+- * Mirrors the read path; the SDC_CMD RW bit selects the write direction
+- * (stock: rawcmd |= (1 << 13) for MMC_DATA_WRITE) and the card R1b busy
++ * The SDC_CMD RW bit selects the write direction and the card R1b busy
+  * is consumed by the trailing wait_idle. */
+ static int
+ msdc_write_sector(uint64_t lba)
+ {
+-	uint32_t sts;
+-	int error;
+-	uint32_t cmd_int = MSDC_INT_CMDRDY | MSDC_INT_CMDTMO | MSDC_INT_RSPCRCERR;
+-	uint32_t dat_int = MSDC_INT_XFER_COMPL | MSDC_INT_DATTMO | MSDC_INT_DATCRCERR |
+-	    MSDC_INT_BDCSERR | MSDC_INT_GPDCSERR | MSDC_INT_AXI_RESP_ERR;
+-	uint32_t raw = 24u | (1u << 7) | (1u << 13) |
+-	    (MSDC_SECTOR << 16) | (1u << 11);
+-
+-	error = msdc_wait_idle(MSDC_CMD_TIMEOUT_NS);
+-	if (error) {
+-		return error;
+-	}
+-	msdc_wr(MSDC_INT, 0xffffffffu);
+-	msdc_dma_sync(MSDC_SECTOR);
+-
+-	msdc_wr(SDC_BLK_NUM, 1);
+-	msdc_wr(SDC_ARG, (uint32_t)lba);
+-	msdc_wr(SDC_CMD, raw);
+-
+-	error = msdc_wait_int(cmd_int, MSDC_CMD_TIMEOUT_NS, &sts);
+-	if (error || (sts & (MSDC_INT_CMDTMO | MSDC_INT_RSPCRCERR))) {
+-		msdc_wr(MSDC_INT, sts & cmd_int);
+-		printf("MERLIN MSDC: CMD24(%llu) failed: int 0x%08x\n",
+-		    (unsigned long long)lba, sts);
+-		return EIO;
+-	}
+-	msdc_wr(MSDC_INT, sts & cmd_int);
+-
+-	uint32_t resp = msdc_rd(SDC_RESP0);
+-	if (resp & MSDC_R1_OUT_OF_RANGE) {
+-		printf("MERLIN MSDC: CMD24(%llu) out of range (status 0x%08x)\n",
+-		    (unsigned long long)lba, resp);
+-		return EIO;
+-	}
+-
+-	msdc_wr(MSDC_DMA_SA_HIGH, 0);
+-	msdc_wr(MSDC_DMA_SA, (uint32_t)mo.dma_pa);
+-	msdc_wr(MSDC_DMA_LEN, MSDC_SECTOR);
+-	uint32_t ctrl = 0;    /* decl kept for the STOP below */
+-	/* MERLIN (0085): DMA_CTRL is written ABSOLUTELY so no bit
+-	 * inherited from earlier state can survive to the START. */
+-	msdc_wr(MSDC_DMA_CTRL, MSDC_DMA_CTRL_LASTBUF | (6u << 12) |
+-	    MSDC_DMA_CTRL_START);
+-
+-	error = msdc_wait_int(dat_int, MSDC_DATA_TIMEOUT_NS, &sts);
+-	if (error || (sts & (MSDC_INT_DATTMO | MSDC_INT_DATCRCERR | MSDC_INT_BDCSERR |
+-	    MSDC_INT_GPDCSERR | MSDC_INT_AXI_RESP_ERR))) {
+-		printf("MERLIN MSDC: CMD24(%llu) data failed: int 0x%08x "
+-		    "sts 0x%08x dcfg 0x%08x ca 0x%08x fifocs 0x%08x\n",
+-		    (unsigned long long)lba, sts, msdc_rd(SDC_STS),
+-		    msdc_rd(MSDC_DMA_CFG), msdc_rd(MSDC_DMA_CA),
+-		    msdc_rd(MSDC_FIFOCS));
+-		error = EIO;
+-	} else {
+-		error = 0;
+-	}
+-	msdc_wr(MSDC_INT, sts & dat_int);
+-
+-	ctrl = msdc_rd(MSDC_DMA_CTRL);
+-	msdc_wr(MSDC_DMA_CTRL, ctrl | MSDC_DMA_CTRL_STOP);
+-	uint64_t dl = deadline_in(MSDC_DMA_STOP_NS);
+-	while (msdc_rd(MSDC_DMA_CFG) & MSDC_DMA_CFG_STS) {
+-		if (mach_absolute_time() > dl) {
+-			printf("MERLIN MSDC: DMA did not stop after write %llu "
+-			    "(dcfg 0x%08x)\n", (unsigned long long)lba,
+-			    msdc_rd(MSDC_DMA_CFG));
+-			if (error == 0) {
+-				error = EIO;
+-			}
+-			break;
+-		}
+-	}
+-	error = error ? error : msdc_wait_idle(MSDC_DATA_TIMEOUT_NS);
+-	if (error) {
+-		printf("MERLIN MSDC: CMD24(%llu) idle busy after write\n",
+-		    (unsigned long long)lba);
+-	}
+-	msdc_wr(MSDC_INT, 0xffffffffu);
+-	return error;
++	return msdc_transfer(lba, 1, true);
++}
++
++/* CMD18/CMD25: nblk (<= MSDC_BOUNCE_SECTORS) sectors through the
++ * bounce buffer. */
++static int
++msdc_read_blocks(uint64_t lba, uint32_t nblk)
++{
++	return msdc_transfer(lba, nblk, false);
++}
++
++static int
++msdc_write_blocks(uint64_t lba, uint32_t nblk)
++{
++	return msdc_transfer(lba, nblk, true);
+ }
+ 
+ /* Read nsec 512-byte sectors at absolute lba into dst. */
+ static int
+ msdc_read(uint64_t lba, uint32_t nsec, void *dst)
+ {
+-	for (uint32_t i = 0; i < nsec; i++) {
+-		int error = msdc_read_sector(lba + i);
++	for (uint32_t done = 0; done < nsec;) {
++		uint32_t nblk = MIN(nsec - done, msdc_max_blocks);
++		int error = msdc_read_blocks(lba + done, nblk);
+ 		if (error) {
+ 			return error;
+ 		}
+-		memcpy((uint8_t *)dst + i * MSDC_SECTOR, (const void *)mo.dma, MSDC_SECTOR);
++		memcpy((uint8_t *)dst + (size_t)done * MSDC_SECTOR,
++		    (const void *)mo.dma, (size_t)nblk * MSDC_SECTOR);
++		done += nblk;
+ 	}
+ 	return 0;
+ }
+@@ -1592,26 +1615,87 @@
+ 		goto done;
+ 	}
+ 
++	uint32_t done = 0;
++
+ 	lck_mtx_lock(&merlin_msdc_lock);
+-	for (uint32_t done = 0; done < count;) {
++	while (done < count) {
+ 		uint64_t pos = off + done;
+ 		uint64_t lba = pos / MSDC_SECTOR;
+ 		uint32_t skip = (uint32_t)(pos % MSDC_SECTOR);
+-		uint32_t want = MIN(count - done, MSDC_SECTOR - skip);
+-		if (is_write) {
+-			/* read-modify-write for partial sectors */
+-			if (skip != 0 || want != MSDC_SECTOR) {
++		uint32_t avail = count - done;
++		uint32_t want;
++
++		if (skip != 0) {
++			/* partial head: one sector, read-modify-write on the
++			 * write side */
++			want = MIN(avail, MSDC_SECTOR - skip);
++			if (is_write) {
+ 				error = msdc_read_sector(mo.first_block + lba);
+ 				if (error) {
+ 					break;
+ 				}
+-			}
+-			memcpy((void *)(mo.dma + skip), vaddr + done, want);
++				memcpy((void *)(mo.dma + skip), vaddr + done, want);
++				error = msdc_write_sector(mo.first_block + lba);
++			} else {
++				error = msdc_read_sector(mo.first_block + lba);
++				if (error == 0) {
++					memcpy(vaddr + done,
++					    (const void *)(mo.dma + skip), want);
++				}
++			}
++			if (error) {
++				break;
++			}
++			done += want;
++			buf_setresid(bp, count - done);
++			continue;
++		}
++
++		/* 0098: whole sectors go through one CMD18/CMD25, up to the
++		 * 64 KiB bounce buffer.  This is the boot-time bottleneck:
++		 * one CMD17 per 512 B sector ran at ~0.7 MB/s (~7 min for
++		 * the ~267 MB an XNU boot reads). */
++		if (avail >= MSDC_SECTOR) {
++			uint32_t nblk = MIN(avail / MSDC_SECTOR, msdc_max_blocks);
++			if (nblk > 1) {
++				if (is_write) {
++					memcpy((void *)mo.dma, vaddr + done,
++					    (size_t)nblk * MSDC_SECTOR);
++					error = msdc_write_blocks(
++					    mo.first_block + lba, nblk);
++				} else {
++					error = msdc_read_blocks(
++					    mo.first_block + lba, nblk);
++					if (error == 0) {
++						memcpy(vaddr + done,
++						    (const void *)mo.dma,
++						    (size_t)nblk * MSDC_SECTOR);
++					}
++				}
++				if (error) {
++					break;
++				}
++				done += nblk * MSDC_SECTOR;
++				buf_setresid(bp, count - done);
++				continue;
++			}
++		}
++
++		/* one sector, or a partial tail */
++		want = MIN(avail, MSDC_SECTOR);
++		if (is_write) {
++			if (want != MSDC_SECTOR) {
++				error = msdc_read_sector(mo.first_block + lba);
++				if (error) {
++					break;
++				}
++			}
++			memcpy((void *)mo.dma, vaddr + done, want);
+ 			error = msdc_write_sector(mo.first_block + lba);
+ 		} else {
+ 			error = msdc_read_sector(mo.first_block + lba);
+ 			if (error == 0) {
+-				memcpy(vaddr + done, (const void *)(mo.dma + skip), want);
++				memcpy(vaddr + done, (const void *)mo.dma, want);
+ 			}
+ 		}
+ 		if (error) {
+@@ -1775,6 +1859,16 @@
+ 	if (msdc_readverify) {
+ 		printf("MERLIN MSDC: readverify enabled (double-read compare)\n");
+ 	}
++	{
++		uint32_t blocks = msdc_max_blocks;
++
++		if (PE_parse_boot_argn("msdc_blocks", &blocks,
++		    sizeof(blocks)) && blocks != 0) {
++			msdc_max_blocks = MIN(blocks, MSDC_BOUNCE_SECTORS);
++		}
++	}
++	printf("MERLIN MSDC: %u sector(s) per data command (CMD18/CMD25), "
++	    "bounce %u KiB\n", msdc_max_blocks, MSDC_BOUNCE_SIZE >> 10);
+ 
+ 	mo.regs = ml_io_map(reg[0], reg[1]);
+ 	if (!mo.regs) {

@@ -1,0 +1,142 @@
+--- a/iokit/Kernel/arm/SweetKeyStore.cpp
++++ b/iokit/Kernel/arm/SweetKeyStore.cpp
+@@ -170,6 +170,118 @@ sweet_aks_struct_out_size(IOExternalMethodArguments *args)
+ 	       (uint32_t)args->structureOutputDescriptor->getLength() : args->structureOutputSize;
+ }
+ 
++/*
++ * 0101: securityd wraps its class keys with kAKSWrapKey and reads them back
++ * with kAKSUnwrapKey.  The 0100 boot log shows securityd retrying WrapKey
++ * forever (228 x kIOReturnUnsupported) while the boot never reaches a
++ * rendered frame, so answer it.  No corecrypto is available in the SWEET
++ * kernel (see 0013), so this is not real AES-KWP: the blob keeps the RFC
++ * 5649 header (0xA65959A6 + 4-byte big-endian plaintext length) and the
++ * payload is XORed with the fixed pad below.  wrap/unwrap are therefore
++ * self-consistent and stable across reboots, which is all securityd needs
++ * to round-trip its own blobs.  This protects no secrets; the device has
++ * no passcode and no keybag.
++ */
++static const uint8_t sweet_aks_wrap_pad[32] = {
++	0x5e, 0x17, 0xda, 0xa2, 0x60, 0xd3, 0x93, 0xf1,
++	0x11, 0x9e, 0x68, 0x4c, 0xb7, 0x25, 0x0a, 0xdc,
++	0x3f, 0x8e, 0xc1, 0x54, 0x79, 0x2b, 0xe6, 0x90,
++	0xa8, 0x07, 0x4d, 0xf3, 0x1c, 0x62, 0xb0, 0xd9,
++};
++
++/* Read the in-band or descriptor-backed input structure into buf. */
++static IOReturn
++sweet_aks_struct_in(IOExternalMethodArguments *args, void *buf, uint32_t len)
++{
++	if (args->structureInputDescriptor != NULL) {
++		if (len > args->structureInputDescriptor->getLength()) {
++			return kIOReturnNoSpace;
++		}
++		args->structureInputDescriptor->readBytes(0, buf, len);
++		return kIOReturnSuccess;
++	}
++	if (args->structureInput == NULL || len > args->structureInputSize) {
++		return kIOReturnNoSpace;
++	}
++	memcpy(buf, args->structureInput, len);
++	return kIOReturnSuccess;
++}
++
++/* kAKSWrapKey: in 2 scalars (bag handle, key class) + key, out 1 scalar
++ * (wrapped length) + RFC 5649-shaped blob.  The 0100 log measured
++ * in 2/32 out 1/40 from securityd, i.e. 32-byte keys. */
++static IOReturn
++sweet_aks_wrap_key(IOExternalMethodArguments *args)
++{
++	uint8_t key[32];
++	uint8_t out[40];
++	uint32_t len = args->structureInputDescriptor != NULL ?
++	    (uint32_t)args->structureInputDescriptor->getLength() :
++	    args->structureInputSize;
++	IOReturn ret;
++
++	if (len == 0 || len > sizeof(key)) {
++		return kIOReturnBadArgument;
++	}
++	ret = sweet_aks_struct_in(args, key, len);
++	if (ret != kIOReturnSuccess) {
++		return ret;
++	}
++	out[0] = 0xa6;
++	out[1] = 0x59;
++	out[2] = 0x59;
++	out[3] = 0xa6;
++	out[4] = (uint8_t)(len >> 24);
++	out[5] = (uint8_t)(len >> 16);
++	out[6] = (uint8_t)(len >> 8);
++	out[7] = (uint8_t)len;
++	for (uint32_t i = 0; i < len; i++) {
++		out[8 + i] = key[i] ^
++		    sweet_aks_wrap_pad[i % sizeof(sweet_aks_wrap_pad)];
++	}
++	args->scalarOutput[0] = 8 + len;
++	args->scalarOutputCount = 1;
++	return sweet_aks_struct_out(args, out, 8 + len);
++}
++
++/* kAKSUnwrapKey: in 2 scalars + wrapped blob, out 1 scalar (key length)
++ * + key.  The blob shape is whatever sweet_aks_wrap_key produced. */
++static IOReturn
++sweet_aks_unwrap_key(IOExternalMethodArguments *args)
++{
++	uint8_t wrapped[40];
++	uint8_t key[32];
++	uint32_t len = args->structureInputDescriptor != NULL ?
++	    (uint32_t)args->structureInputDescriptor->getLength() :
++	    args->structureInputSize;
++	uint32_t wlen;
++	IOReturn ret;
++
++	if (len < 8 || len > sizeof(wrapped)) {
++		return kIOReturnBadArgument;
++	}
++	ret = sweet_aks_struct_in(args, wrapped, len);
++	if (ret != kIOReturnSuccess) {
++		return ret;
++	}
++	if (wrapped[0] != 0xa6 || wrapped[1] != 0x59 ||
++	    wrapped[2] != 0x59 || wrapped[3] != 0xa6) {
++		return kIOReturnBadArgument;
++	}
++	wlen = ((uint32_t)wrapped[4] << 24) | ((uint32_t)wrapped[5] << 16) |
++	    ((uint32_t)wrapped[6] << 8) | (uint32_t)wrapped[7];
++	if (wlen == 0 || wlen > sizeof(key) || wlen != len - 8) {
++		return kIOReturnBadArgument;
++	}
++	for (uint32_t i = 0; i < wlen; i++) {
++		key[i] = wrapped[8 + i] ^
++		    sweet_aks_wrap_pad[i % sizeof(sweet_aks_wrap_pad)];
++	}
++	args->scalarOutput[0] = wlen;
++	args->scalarOutputCount = 1;
++	return sweet_aks_struct_out(args, key, wlen);
++}
++
+ IOReturn
+ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
+     __unused IOExternalMethodDispatch *dispatch, __unused OSObject *target,
+@@ -227,6 +339,20 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 		args->scalarOutputCount = 0;
+ 		ret = sweet_aks_device_state(args);
+ 		break;
++	case kAKSWrapKey:
++		if (out_scalars < 1) {
++			ret = kIOReturnBadArgument;
++			break;
++		}
++		ret = sweet_aks_wrap_key(args);
++		break;
++	case kAKSUnwrapKey:
++		if (out_scalars < 1) {
++			ret = kIOReturnBadArgument;
++			break;
++		}
++		ret = sweet_aks_unwrap_key(args);
++		break;
+ 	default:
+ 		ret = kIOReturnUnsupported;
+ 		break;

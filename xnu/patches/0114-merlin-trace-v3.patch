@@ -1,0 +1,58 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 0f45fc8..a1abc3c 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -2304,6 +2304,21 @@ bad:
+ 	proc_transend(p, 0);
+ 
+ bad_notrans:
++	#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* 0114: 0042 logs the allow decision mid-exec; this logs the
++	 * OUTCOME of the whole attempt, BEFORE the argv strings are
++	 * freed, with the name taken from argv[0] of the new image
++	 * (p_name is stale here in the posix-spawn-in-place path, which
++	 * is why 0109 logged every daemon as "xpcproxy"). */
++	if (error == 0) {
++		printf("SWEET EXEC: %.40s started\n",
++			imgp->ip_startargv != NULL ? imgp->ip_startargv : "?");
++	} else {
++		printf("SWEET EXEC: %.40s failed to start err=%d\n",
++			imgp->ip_startargv != NULL ? imgp->ip_startargv : "?", error);
++	}
++	#endif
++
+ 	if (imgp->ip_strings) {
+ 		execargs_free(imgp);
+ 	}
+@@ -2312,17 +2327,6 @@ bad_notrans:
+ 	}
+ 	kfree_type(struct nameidata, ndp);
+ 
+-	#if defined(ARM64_BOARD_CONFIG_SWEET)
+-	/* 0109: 0042 logs the allow decision mid-exec; this logs the
+-	 * OUTCOME of the whole attempt: the image either activated
+-	 * (started) or the exec failed, with its errno. */
+-	if (error == 0) {
+-		printf("SWEET EXEC: %s started\n", p->p_name);
+-	} else {
+-		printf("SWEET EXEC: %s failed to start err=%d\n", p->p_name, error);
+-	}
+-	#endif
+-
+ 	return error;
+ }
+ 
+diff --git a/osfmk/ipc/mach_msg.c b/osfmk/ipc/mach_msg.c
+index 1824a82..803d9f7 100644
+--- a/osfmk/ipc/mach_msg.c
++++ b/osfmk/ipc/mach_msg.c
+@@ -597,7 +597,8 @@ sweet_msg_log(const char *dir, unsigned int id, unsigned int sz)
+ 	 * backboardd idle recv waits (1914 of 4000 lines in 0112) no
+ 	 * longer log.  Cap raised 4000 -> 20000. */
+ 	if (strcmp(pname, "SpringBoard") != 0 &&
+-		strcmp(pname, "backboardd") != 0) {
++	strcmp(pname, "backboardd") != 0 &&
++	strcmp(pname, "mediaserverd") != 0) {
+ 		return;
+ 	}
+ 	if (strcmp(pname, "backboardd") == 0 && !is_send) {

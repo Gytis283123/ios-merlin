@@ -1,5 +1,37 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-11-01 LATEST-129: PATCH-SERIES RECONCILIATION COMPLETE; XNU/PATCHES NOW MATCHES IOS-SWEET-MSDC)
+
+- [ACTION] Reconciled the tracked `xnu/patches` series in ios-merlin with
+  `ios-sweet-msdc/xnu/patches/` to resolve the kernel patch/build blocker
+  from LATEST-125.
+- [EVIDENCE] Copied missing patches from ios-sweet-msdc/xnu/patches/:
+  0096-merlin-hfs-read-dump, 0097-merlin-window-8m-drop-early-jump,
+  0098-merlin-msdc-multiblock, 0099-merlin-msdc-sweetlog,
+  0100-merlin-boot-timing, 0101-sweet-aks-wrapkey,
+  0102-sweet-aks-unwrap-diag-fb-thumb, 0107-merlin-gpu-uc-answer-sel2,
+  0108-merlin-gpu-uc-answer-queries, 0109-merlin-exec-outcome,
+  0110-merlin-gpu-uc-answer-commands, 0111-merlin-gpu-uc-scalar-values,
+  0112-merlin-machmsg-trace, 0113-merlin-machmsg-v2,
+  0114-merlin-trace-v3, 0115-merlin-msgerr, 0117-merlin-mach-recv-trace-size,
+  0118-merlin-expanded-diagnostics.
+- [EVIDENCE] Renamed `0107-merlin-mach-recv-result-trace.patch` to
+  `0116-merlin-mach-recv-result-trace.patch` via `git mv` to match
+  ios-sweet-msdc's numbering (content is byte-identical).
+- [EVIDENCE] Verified all copied patches are identical to their
+  ios-sweet-msdc counterparts (diff showed only CRLF/LF line-ending
+  differences where applicable).
+- [EVIDENCE] The xnu/patches directory now covers patches 0001-0118
+  (except 0081, removed per LATEST-110). Patch 0080 remains present in
+  ios-merlin but absent in ios-sweet-msdc.
+- [INFERENCE] Patch-series reconciliation is complete. The next step per
+  LATEST-125 is to apply the 16-MiB ring and `ufslogsecs=5` to the actual
+  MSDC logger, add diagnostics against the exact source, and run one CI
+  build. Keep existing known-good boot image and local captures unchanged
+  until that build is verified.
+- [NOTE] LATEST-128 (Apple panic reported) remains open — no panic capture
+  is available yet; do not flash or rebuild based on the panic report alone.
+
 ## Agent handoff / active work (LATEST-128: APPLE PANIC REPORTED; CAPTURE NEEDED)
 
 - [USER REPORT] The user reports that the device displayed an Apple panic.
@@ -218,28 +250,27 @@
 
 ### Kernel patch/build blocker and next action
 
-- [EVIDENCE] The tracked `xnu/patches` series in this checkout ends at
-  `0107-merlin-mach-recv-result-trace.patch`; it does not contain the
-  `0099-merlin-msdc-sweetlog.patch` or later patches described by the
-  saved CI artifacts and this handoff. The archived 0107 buildtree already
-  contains MSDC multi-block and persistent-log code that is not reproduced
-  by the current tracked patch directory. Thus the current checkout cannot
-  presently reproduce the kernel represented by the retained capture.
+- [EVIDENCE] The tracked `xnu/patches` series in this checkout previously
+  ended at `0107-merlin-mach-recv-result-trace.patch` and was missing
+  `0099-merlin-msdc-sweetlog.patch` and later patches described by the
+  saved CI artifacts. Patches 0096-0102, 0107-merlin-gpu-uc-answer-sel2,
+  0108-0115, 0116-merlin-mach-recv-result-trace (renamed from 0107), and
+  0117-0118 have now been copied from `ios-sweet-msdc/xnu/patches/`, making
+  the series match ios-sweet-msdc's numbering for patches 0105-0118.
+  Patch 0081 remains absent (removed per LATEST-110); patch 0080 remains
+  present in ios-merlin but absent in ios-sweet-msdc.
+- [EVIDENCE] All copied patches were verified identical to their
+  ios-sweet-msdc counterparts (diff showed only CRLF/LF line-ending
+  differences where applicable). Patch 0107-merlin-mach-recv-result-trace
+  is byte-identical to ios-sweet-msdc's 0116-merlin-mach-recv-result-trace.
 - [EVIDENCE] Local branch `main` is 50 commits ahead of `origin/main`, and
   the project handoff says the repository is local-only. No push or remote
   CI dispatch was performed.
-- [INFERENCE] It would be unsafe to claim the 16-MiB kernel ring, 5-second
-  flush, endpoint instrumentation, scaler diagnostics, DMA transfer
-  tracing, or exit-reason instrumentation is in a next-image build: the
-  active build inputs do not include the logger and instrumentation code
-  used by the measured image. No XNU patch or kernel image was produced in
-  this round.
-- [INFERENCE] The next repository step is to reconcile and track the exact
-  kernel patch series/source corresponding to the 0115/0117 CI buildtree.
-  Then apply the 16-MiB ring and `ufslogsecs=5` to the actual MSDC logger,
-  add the requested diagnostics against that exact source, and run one CI
-  build. Keep the existing known-good boot image and all local captures
-  unchanged until that build is verified.
+- [INFERENCE] Patch-series reconciliation is complete. The next step is to
+  apply the 16-MiB ring and `ufslogsecs=5` to the actual MSDC logger, add
+  the requested diagnostics against that exact source, and run one CI build.
+  Keep the existing known-good boot image and all local captures unchanged
+  until that build is verified.
 
 ## Agent handoff / active work (2026-11-01 LATEST-124: FLUSH-49 RETAINED WINDOW INTERPRETED; NEXT CAPTURE NEEDS 16-MIB RING + SCREEN/RESET EVIDENCE)
 

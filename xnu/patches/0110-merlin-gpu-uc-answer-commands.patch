@@ -1,0 +1,41 @@
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 21ec7ed..565f369 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -155,14 +155,12 @@ IOAcceleratorESUserClient::externalMethod(uint32_t selector,
+     IOExternalMethodArguments *args, IOExternalMethodDispatch *dispatch __unused,
+     OSObject *target __unused, void *reference __unused)
+ {
+-	/* 0108: 0107 answered sel 2 (0/536) and backboardd immediately asked
+-	 * sel 0 (0/64), which this shim refused - the pattern is a walk
+-	 * through pure get-info methods.  Answer every query that carries
+-	 * NO input with zeroed output; anything with input stays refused
+-	 * (those are commands, not questions) so the log keeps naming what
+-	 * is left. */
+-	if (args != NULL && args->structureInputSize == 0 &&
+-	    args->structureOutput != NULL &&
++	/* 0110: 0108 answered the pure queries and backboardd then hammered
++	 * sel 33 (2 scalar inputs, no output) 197 times - a command it
++	 * requires.  From here on EVERYTHING is answered: queries get
++	 * zeroed output, commands get a no-op success.  Every call is
++	 * still logged. */
++	if (args != NULL && args->structureOutput != NULL &&
+ 	    args->structureOutputSize != 0 &&
+ 	    args->structureOutputSize <= 16384) {
+ 		memset(args->structureOutput, 0, args->structureOutputSize);
+@@ -173,6 +171,15 @@ IOAcceleratorESUserClient::externalMethod(uint32_t selector,
+ 		}
+ 		return kIOReturnSuccess;
+ 	}
++	if (args != NULL && args->structureOutputSize == 0) {
++		if (sweet_gpu_uc_logged < 200) {
++			sweet_gpu_uc_logged++;
++			IOLog("SWEET GPU: uc sel %u in %u/%u -> no-op success (shim)\n",
++				selector, args->scalarInputCount,
++				args->structureInputSize);
++		}
++		return kIOReturnSuccess;
++	}
+ 	if (sweet_gpu_uc_logged < 200) {
+ 		sweet_gpu_uc_logged++;
+ 		IOLog("SWEET GPU: uc sel %u in %u/%u out %u/%u -> unsupported (shim)\n",

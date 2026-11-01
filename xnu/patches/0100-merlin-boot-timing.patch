@@ -1,0 +1,203 @@
+xnu: MERLIN 0100 boot-speed instrumentation (CPU clock, MSDC throughput, log clock)
+
+The 0098 multi-block boot still takes tens of minutes to reach the
+userspace loop, far beyond the ~7 min of the old one-sector kernel.
+Before changing the driver again, measure:
+
+  - the arch counter value at attach in ms (mach_absolute_time, 13 MHz):
+    if the SoC counter starts at zero this is the time from power-on to
+    the MSDC driver, which says whether the slow part is LK/shim/kernel
+    init before the driver or the card path after it;
+  - a CPU probe at attach (boot-arg msdcprobe=0 disables it): 4 M
+    dependent adds timed by the 13 MHz arch counter, printed as ~MHz
+    core assuming 2 cycles/iteration.  A core left at 100 MHz by the
+    bootloader would explain a slow kernel and a slow userspace boot;
+    a ~2 GHz reading means the CPU is not the problem;
+  - msdc_transfer() now times every data command (failures included):
+    the first five print their own latency and every 16 MiB a line
+    gives commands, KiB, elapsed ms, KiB/s and the last command size.
+    A per-command timeout stall reads as ~64 KiB/s, a healthy CMD18
+    path as tens of MiB/s;
+  - the 0099 log thread prints "MERLIN LOG: flush N at S.mmm s" before
+    each flush, so the on-disk log carries a 10 s timeline of the boot
+    (the marker is part of the flush it dates);
+  - merlin_msdc_init() prints its own elapsed time.
+
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1220,6 +1220,61 @@ msdc_take_over(void)
+ 	return 0;
+ }
+ 
++/* 0100: boot-speed instrumentation.
++ *
++ * The 0098 boot still takes tens of minutes, so measure instead of guessing:
++ *  - the arch counter at attach in ms: if the SoC counter starts at zero this
++ *    is the time from power-on to the MSDC driver, which separates a slow
++ *    pre-driver boot (LK/shim/kernel init) from a slow card path;
++ *  - one CPU probe at attach: a dependent-add loop timed by the 13 MHz arch
++ *    counter gives the core clock to ~10% (assuming 2 cycles/iteration);
++ *  - command/sector/time counters in msdc_transfer(), printed every 16 MiB,
++ *    so a per-command stall (timeout) shows up as a low KiB/s at once;
++ *  - the first few commands print their own latency;
++ *  - every log flush carries the ms since the log thread started.
++ * msdcprobe=0 skips the CPU probe.
++ */
++static uint64_t msdc_stat_cmds, msdc_stat_sectors, msdc_stat_ticks;
++static uint64_t msdc_stat_next = 16ull * 1024 * 1024 / MSDC_SECTOR;
++static bool msdc_stat_on = true;
++
++static uint64_t
++merlin_cpu_probe(uint32_t iters)
++{
++	uint64_t n = iters;
++	uint64_t t0 = mach_absolute_time();
++
++	__asm__ volatile(
++	    "1:\n\t"
++	    "subs %0, %0, #1\n\t"
++	    "b.ne 1b\n\t"
++	    : "+r"(n) : : "cc");
++
++	return mach_absolute_time() - t0;
++}
++
++static void
++merlin_cpu_report(void)
++{
++	uint32_t on = 1;
++	uint64_t ns = 0;
++	uint64_t frq;
++	uint64_t now = mach_absolute_time();
++
++	__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(frq));
++	absolutetime_to_nanoseconds(now, &ns);
++	printf("MERLIN CLK: cntfrq %llu Hz, hz %d, counter now %llu ms\n",
++	    (unsigned long long)frq, hz, (unsigned long long)(ns / 1000000));
++	PE_parse_boot_argn("msdcprobe", &on, sizeof(on));
++	if (!on) {
++		return;
++	}
++	absolutetime_to_nanoseconds(merlin_cpu_probe(4u << 20), &ns);
++	printf("MERLIN CLK: %u dependent adds in %llu us -> ~%llu MHz core "
++	    "(2 cycles/iter)\n", 4u << 20, (unsigned long long)(ns / 1000),
++	    (unsigned long long)(ns ? (2ull * (4u << 20) * 1000) / ns : 0));
++}
++
+ /* 0098: one data command covering nblk 512-byte sectors at absolute lba,
+  * bounce buffer as the DMA target/source.  nblk == 1 keeps the original
+  * CMD17/CMD24 shape byte for byte.  nblk > 1 uses CMD18/CMD25 with the
+@@ -1229,7 +1284,7 @@ msdc_take_over(void)
+  * Command overhead dominated the old one-sector loop: ~0.7 MB/s measured,
+  * ~7 min of XNU boot for the ~267 MB the kernel and userspace read. */
+ static int
+-msdc_transfer(uint64_t lba, uint32_t nblk, bool is_write)
++msdc_transfer_once(uint64_t lba, uint32_t nblk, bool is_write)
+ {
+ 	uint32_t sts;
+ 	int error;
+@@ -1390,6 +1445,47 @@ msdc_transfer(uint64_t lba, uint32_t nblk, bool is_write)
+ 	return error;
+ }
+ 
++/* 0100: time every data command (failures included) and print a throughput
++ * line per 16 MiB.  A 1 s timeout per CMD18 would read as ~64 KiB/s; healthy
++ * multi-block reads should be tens of MiB/s. */
++static int
++msdc_transfer(uint64_t lba, uint32_t nblk, bool is_write)
++{
++	uint64_t t0 = mach_absolute_time();
++	int error = msdc_transfer_once(lba, nblk, is_write);
++	uint64_t dt = mach_absolute_time() - t0;
++
++	msdc_stat_cmds++;
++	msdc_stat_sectors += nblk;
++	msdc_stat_ticks += dt;
++	if (msdc_stat_on && msdc_stat_cmds <= 5) {
++		uint64_t ns = 0;
++
++		absolutetime_to_nanoseconds(dt, &ns);
++		printf("MERLIN MSDC: cmd %llu %s x%u took %llu us\n",
++		    (unsigned long long)msdc_stat_cmds,
++		    is_write ? "write" : "read", nblk,
++		    (unsigned long long)(ns / 1000));
++	}
++	if (msdc_stat_on && msdc_stat_sectors >= msdc_stat_next) {
++		uint64_t total_ns = 0, last_ns = 0;
++
++		absolutetime_to_nanoseconds(msdc_stat_ticks, &total_ns);
++		absolutetime_to_nanoseconds(dt, &last_ns);
++		printf("MERLIN MSDC: %llu cmds %llu KiB in %llu ms -> %llu KiB/s"
++		    " (last CMD%u x%u %llu us)\n",
++		    (unsigned long long)msdc_stat_cmds,
++		    (unsigned long long)(msdc_stat_sectors / 2),
++		    (unsigned long long)(total_ns / 1000000),
++		    (unsigned long long)(total_ns ?
++		    (msdc_stat_sectors / 2) * 1000000000ull / total_ns : 0),
++		    is_write ? 25u : 18u, nblk,
++		    (unsigned long long)(last_ns / 1000));
++		msdc_stat_next += 16ull * 1024 * 1024 / MSDC_SECTOR;
++	}
++	return error;
++}
++
+ /* CMD17: one 512-byte sector of the user area into the bounce buffer. */
+ static int
+ msdc_read_sector_once(uint64_t lba)
+@@ -1527,6 +1623,7 @@ merlin_msdc_log_thread(__unused void *arg, __unused wait_result_t wr)
+ {
+ 	uint64_t base = mo.first_block + mo.nblocks - MSDC_LOG_SECTORS;
+ 	uint64_t flushed = 0, seq = 0;
++	uint64_t t0 = mach_absolute_time();
+ 	/* 4 KiB blocks per command, capped by msdc_blocks (and the bounce) */
+ 	uint32_t per = msdc_max_blocks / MSDC_LOG_SECS_PER_BLOCK;
+ 
+@@ -1537,7 +1634,17 @@ merlin_msdc_log_thread(__unused void *arg, __unused wait_result_t wr)
+ 	    "(sector 0x%llx), every %u s\n",
+ 	    MSDC_LOG_SECTORS / 2, base, sweet_log_secs);
+ 	for (;;) {
+-		uint64_t total = os_atomic_load(&sweet_log_total, relaxed);
++		uint64_t total;
++		uint64_t up_ns = 0;
++
++		/* 0100: the marker is printed before the snapshot, so it is
++		 * part of this flush and dates every 10 s of the log. */
++		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &up_ns);
++		printf("MERLIN LOG: flush %llu at %llu.%03llu s\n",
++		    (unsigned long long)(seq + 1),
++		    (unsigned long long)(up_ns / 1000000000ull),
++		    (unsigned long long)((up_ns / 1000000) % 1000));
++		total = os_atomic_load(&sweet_log_total, relaxed);
+ 
+ 		if (total != flushed) {
+ 			uint64_t pos = total - flushed >= SWEET_LOG_SIZE ?
+@@ -1947,6 +2054,7 @@ merlin_msdc_init(void)
+ 	unsigned int size = 0;
+ 	char want[64] = "userdata";
+ 	int error;
++	uint64_t t_init = mach_absolute_time();
+ 
+ 	if (SecureDTLookupEntry(NULL, "/merlin-msdc", &node) != kSuccess ||
+ 	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
+@@ -1970,6 +2078,7 @@ merlin_msdc_init(void)
+ 	}
+ 	printf("MERLIN MSDC: %u sector(s) per data command (CMD18/CMD25), "
+ 	    "bounce %u KiB\n", msdc_max_blocks, MSDC_BOUNCE_SIZE >> 10);
++	merlin_cpu_report();
+ 
+ 	mo.regs = ml_io_map(reg[0], reg[1]);
+ 	if (!mo.regs) {
+@@ -2052,6 +2161,13 @@ merlin_msdc_init(void)
+ 	    (unsigned long long)(mo.nblocks * MSDC_SECTOR >> 20));
+ 	/* 0099: keep the 0047 console ring on disk for post-mortem boots */
+ 	merlin_msdc_log_start();
++	{
++		uint64_t ns = 0;
++
++		absolutetime_to_nanoseconds(mach_absolute_time() - t_init, &ns);
++		printf("MERLIN MSDC: init took %llu ms\n",
++		    (unsigned long long)(ns / 1000000));
++	}
+ 	return 0;
+ }
+ 

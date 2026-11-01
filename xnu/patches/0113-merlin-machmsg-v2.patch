@@ -1,0 +1,55 @@
+diff --git a/osfmk/ipc/mach_msg.c b/osfmk/ipc/mach_msg.c
+index 7575f98..1824a82 100644
+--- a/osfmk/ipc/mach_msg.c
++++ b/osfmk/ipc/mach_msg.c
+@@ -570,23 +570,45 @@ extern int proc_pid(struct proc *p);
+ 
+ static unsigned int sweet_msg_logged = 0;
+ 
++	/* 0113 v2 */
+ static void
+ sweet_msg_log(const char *dir, unsigned int id, unsigned int sz)
+ {
+ 	struct proc *p = current_proc();
+ 	char *pname = proc_name_address(p);
++	int is_send = (dir[0] == 's');
+ 
+-	if (pname == NULL ||
+-	    (strcmp(pname, "SpringBoard") != 0 &&
+-	    strcmp(pname, "backboardd") != 0)) {
++	if (pname == NULL) {
+ 		return;
+ 	}
+-	if (sweet_msg_logged >= 4000) {
++	/* 0113: the missing 828-byte reply is a SEND from an unknown
++	 * process (SpringBoard AND backboardd both send id 40232 and wait
++	 * for it) - watch every process sends in the 700..900 window. */
++	if (is_send && sz >= 700 && sz <= 900) {
++		if (sweet_msg_logged >= 20000) {
++			return;
++		}
++		sweet_msg_logged++;
++		printf("SWEET MSG828: pid %d (%s) send id=%u sz=%u\n",
++			proc_pid(p), pname, id, sz);
++		return;
++	}
++	/* 0113: only the two traced processes beyond that, and
++	 * backboardd idle recv waits (1914 of 4000 lines in 0112) no
++	 * longer log.  Cap raised 4000 -> 20000. */
++	if (strcmp(pname, "SpringBoard") != 0 &&
++		strcmp(pname, "backboardd") != 0) {
++		return;
++	}
++	if (strcmp(pname, "backboardd") == 0 && !is_send) {
++		return;
++	}
++	if (sweet_msg_logged >= 20000) {
+ 		return;
+ 	}
+ 	sweet_msg_logged++;
+ 	printf("SWEET MSG: pid %d (%s) %s id=%u sz=%u\n",
+-	    proc_pid(p), pname, dir, id, sz);
++		proc_pid(p), pname, dir, id, sz);
+ }
+ 
+ CA_EVENT(mach_msg_trap_event,
