@@ -1,5 +1,87 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-11-02 LATEST-125: QA CROSS-CHECK + 16-MIB LOG PULLER; KERNEL BUILD BLOCKED BY PATCH-SERIES MISMATCH)
+
+### Round-2 QA corrections from the retained capture
+
+- [EVIDENCE] Re-read `research/logs/sweetlog-console-muted-20261101-1704.txt`
+  (75,542 lines). It contains 1,163 `SWEET MSGERR` records: 1,142
+  `0x10000004`, 17 `0x10000003`, and four `0x10004003`. Exactly 1,054 of
+  the timeout records are from SpringBoard. The capture ends at
+  `MERLIN LOG: flush 49 at 480.281 s`.
+- [EVIDENCE] The capture has one
+  `SWEET EXEC: /Applications/Setup.app/Setup started` record. I did not
+  find a second literal `exec Setup` record in this file, so these must not
+  be counted as two distinct Setup launches. The PosterBoard SIGTRAP is
+  present in both this text file and a fresh decode of its paired raw ring;
+  the two outputs match after CRLF normalization. This conflicts with the
+  handoff caveat that the console-muted capture omits the trap, so confirm
+  whether that caveat refers to a different lossy console source before
+  assigning provenance.
+- [EVIDENCE] `research/art-0115/buildtree.tgz` contains XNU `message.h`,
+  `reason.h`, and `kern_memorystatus.h` byte-identical to the corresponding
+  files under `research/xnu-full`. XNU defines
+  `MACH_RCV_TIMED_OUT` as `0x10004003`; this is a receive timeout, not an
+  invalid-destination result with an added flag. `MACH_SEND_INVALID_DEST`
+  remains `0x10000003`.
+- [EVIDENCE] XNU defines namespace 1 as `OS_REASON_JETSAM`, and code 7 in
+  that namespace as `JETSAM_REASON_MEMORY_PERPROCESSLIMIT`. The retained
+  `driverkitd` record (`sig 9`, namespace 1, code `0x7`) therefore records
+  a jetsam per-process-memory-limit termination. It does not by itself
+  establish system-wide memory pressure or connect the termination to the
+  Setup display symptom.
+- [INFERENCE] Keep the four `0x10004003` records separate from send
+  failures when analyzing IPC; they are receive-side timeouts. The log
+  still lacks the destination port and receiver identity, so message IDs
+  alone do not identify the missing endpoint.
+
+### 16-MiB capture-tail safety and reader update
+
+- [EVIDENCE] Parsed local `research/gpt-restore/device-gpt-primary.img`:
+  userdata spans LBA `20,332,544..122,021,823` (101,689,280 512-byte
+  sectors, 52,064,911,360 bytes). The local HFS image
+  `research/ipsw-x/iosroot-v2.img` is 17,226,006,528 bytes and is placed
+  at the beginning of userdata per the project image layout.
+- [EVIDENCE] A 16-MiB ring plus its 4-KiB header occupies 16,781,312 bytes
+  at the userdata partition end. With the verified partition/image sizes,
+  this leaves 34,822,123,520 bytes between the HFS image end and log tail;
+  the larger reserved tail does not overlap this HFS image.
+- [ACTION] `tools/sweet-log-pull.sh` now reads the last 4,097 blocks,
+  validates the exact 16,781,312-byte read, and refuses to overwrite an
+  existing raw or decoded capture. `tools/sweet-log.py` validates block
+  alignment and the version/ring-size/header-to-EOF relationship. It
+  locates a 4-MiB legacy ring inside the larger read area as well as a
+  16-MiB ring, and preserves LF bytes when writing output on Windows.
+- [VALIDATION] The decoder passed against the actual retained 4-MiB raw
+  capture and synthetic 4-MiB-in-16-MiB-tail and 16-MiB-ring inputs; an
+  appended trailing block was rejected. `bash -n` and `git diff --check`
+  both passed.
+
+### Kernel patch/build blocker and next action
+
+- [EVIDENCE] The tracked `xnu/patches` series in this checkout ends at
+  `0107-merlin-mach-recv-result-trace.patch`; it does not contain the
+  `0099-merlin-msdc-sweetlog.patch` or later patches described by the
+  saved CI artifacts and this handoff. The archived 0107 buildtree already
+  contains MSDC multi-block and persistent-log code that is not reproduced
+  by the current tracked patch directory. Thus the current checkout cannot
+  presently reproduce the kernel represented by the retained capture.
+- [EVIDENCE] Local branch `main` is 50 commits ahead of `origin/main`, and
+  the project handoff says the repository is local-only. No push or remote
+  CI dispatch was performed.
+- [INFERENCE] It would be unsafe to claim the 16-MiB kernel ring, 5-second
+  flush, endpoint instrumentation, scaler diagnostics, DMA transfer
+  tracing, or exit-reason instrumentation is in a next-image build: the
+  active build inputs do not include the logger and instrumentation code
+  used by the measured image. No XNU patch or kernel image was produced in
+  this round.
+- [INFERENCE] The next repository step is to reconcile and track the exact
+  kernel patch series/source corresponding to the 0115/0117 CI buildtree.
+  Then apply the 16-MiB ring and `ufslogsecs=5` to the actual MSDC logger,
+  add the requested diagnostics against that exact source, and run one CI
+  build. Keep the existing known-good boot image and all local captures
+  unchanged until that build is verified.
+
 ## Agent handoff / active work (2026-11-01 LATEST-124: FLUSH-49 RETAINED WINDOW INTERPRETED; NEXT CAPTURE NEEDS 16-MIB RING + SCREEN/RESET EVIDENCE)
 
 ### Direct review of the saved boot logs
