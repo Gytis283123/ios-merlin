@@ -1,7 +1,7 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
-## Agent handoff / active work (2026-11-01 LATEST-100: 0115 LOG PULLED; 40232 AND mediaserverd 0x20000000 SENDS SUCCEED, BUT NO 828-BYTE SERVICE REPLY; SETUPASSISTANT STILL NEVER EXEC'D)
+## Agent handoff / active work (2026-11-01 LATEST-101: SOURCE IPSW LISTING CONFIRMS SETUP.APP AND PURPLEBUDDY ASSETS; 0115 BOOT ROOT/LAUNCH GATE STILL UNVERIFIED; NO SAFE FUNCTIONAL FIX IDENTIFIED)
 
 ### 0115 boot log (observation; `research/logs/sweetlog-0115-20261101.{bin,txt}`)
 
@@ -42,6 +42,13 @@
   sends above use other message IDs and do not identify that producer.
   This is the current evidence-backed blocker for SetupAssistant, not yet
   a proven root cause.
+- Static source inventory (`research/tmp-re2/dmg2.list`) lists
+  `Applications/Setup.app/Setup`, the `com.apple.purplebuddy.budd`
+  launch daemon, SetupAssistant feature-flag and lifecycle-policy plists,
+  the SetupAssistant framework defaults plist, and `private/var/buddy`.
+  This confirms those assets exist in the source IPSW listing only; it
+  does not verify the exact 0115 boot-root contents or show why SpringBoard
+  does not launch Setup. No functional source change is justified yet.
 
 ### Next
 
@@ -50,9 +57,12 @@
    tracer excludes `mediaremoted` and receive lines report buffer capacity
    only. Prefer static mapping or a receive-side/port-owner trace over
    guessing a synthetic reply.
-2. Separately map backboardd id 78 and id `0x10000000` timeouts to their
+2. Verify the actual 0115 boot-root Setup.app and relevant PurpleBuddy
+   launchd/policy/setup-state inputs; the source IPSW listing alone is not
+   enough to establish the launch gate.
+3. Separately map backboardd id 78 and id `0x10000000` timeouts to their
    service owners and determine whether they relate to first-run UI.
-3. Implement a targeted fix only when the missing service/response is
+4. Implement a targeted fix only when the missing service/response is
    identified, then verify SetupAssistant execs in a new boot log.
    Preserve the existing uncommitted `tools/mkpayload.py` change and
    unrelated files.
