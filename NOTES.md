@@ -1,15 +1,25 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Main branch update (2026-11-01, build pending)
+## Main branch update (2026-11-01, build successful)
 
-- The user's `Gytis283123/ios-sweet` main branch is being updated with the
-  tested merlin XNU patch stack through 0115, excluding 0080/0081 (the
-  main-line patches previously observed to hang on merlin), and with 0116,
-  which logs dequeued Mach message IDs/sizes for SpringBoard, backboardd,
-  mediaserverd, and mediaremoted.
-- The XNU workflow runner is set to macOS 15. Patch 0116 applies cleanly
-  to the successful 0115 build-tree source. CI build and boot-image pack
-  are pending; no device write is authorized or planned.
+- Commit `4baaaecd4485b0f2dd9c081038708fb64663bb66` is on
+  `Gytis283123/ios-sweet` `main`. It carries the tested merlin XNU stack
+  through 0115, omits 0080/0081 (previously observed to hang on merlin),
+  and adds 0116, the successful Mach receive-result trace. The workflow
+  uses macOS 15.
+- XNU workflow run
+  [41301563080](https://github.com/Gytis283123/ios-sweet/actions/runs/41301563080)
+  completed successfully. Kernel artifact ID `13081757652` contains
+  `kernel.development.sweet` (17,288,376 bytes; SHA256
+  `7844aa089eb1fd97ce92916dac50ba8dc37e3940786e4336f1fa6aab040e3f11`).
+  Its binary contains the `SWEET MSGRECV` trace format string.
+- The kernel was packaged locally with the exact shim, ADT, and DTB from
+  the previously booted 0115 image. The verified image is
+  `D:\things\Merlin\ios-merlin\research\merlin-boot\shim-boot-merlin-msdc-0116-msgrecv-cpus8.img`
+  (17,052,627 bytes; SHA256
+  `e0e32a017828a7a3c27edf64855a03162f402f6d075cd37df7d6f8dfdef886d0`).
+  This image has not been booted on-device. No partition flashing was done
+  or is planned; test only with temporary `fastboot boot`.
 
 ## Agent handoff / active work (2026-10-15, latest)
 
