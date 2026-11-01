@@ -1,16 +1,74 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
+## Agent handoff / active work (2026-11-01 LATEST-100: 0115 LOG PULLED; 40232 AND mediaserverd 0x20000000 SENDS SUCCEED, BUT NO 828-BYTE SERVICE REPLY; SETUPASSISTANT STILL NEVER EXEC'D)
+
+### 0115 boot log (observation; `research/logs/sweetlog-0115-20261101.{bin,txt}`)
+
+- Image 0115 was sent with `fastboot boot` (never flashed). The command
+  reported `Status read failed (Too many links)` after sending 16,652 KiB.
+  The phone reappeared in fastboot after the 15-minute window; `fastboot
+  reboot recovery` returned it to the existing recovery. No partition was
+  written. The pulled ring confirms that the 0115 kernel booted.
+- Read-only pull: 4,198,400 bytes from the final 1,025 userdata blocks;
+  SWEETLOG header reports 1,368,900 log bytes, flush #74. SpringBoard
+  started once (line 597); no SetupAssistant exec outcome.
+- `mediaremoted` also execs (`exec mediaremoted`, line 909), so the
+  suspected reply service is not simply absent from launch. Its Mach
+  traffic is not in the current tracer filter; whether it owns or services
+  40232 remains unproven.
+- The 40232 sends from SpringBoard/backboardd have no corresponding
+  `SWEET MSGERR`. SpringBoard's following `recv ... sz=828` lines show
+  receive-buffer capacity, not a received message. The only five
+  `SWEET MSG828` sends are from coreduetd and com.apple.migrat; no matching
+  reply from the suspected MediaRemote service was observed.
+- No `SWEET MSGERR` has id `536870912` (`0x20000000`): the repeated
+  mediaserverd sends succeed. Do not stub that destination based on the
+  0114 send-loop observation.
+- There are 384 `SWEET MSGERR` lines: 373 with `kr=0x10000004`
+  (`MACH_SEND_TIMED_OUT`), 9 with `kr=0x10000003`
+  (`MACH_SEND_INVALID_DEST`), and 2 with `kr=0x10004003`
+  (`MACH_RCV_TIMED_OUT`). The two receive-timeout returns are associated
+  with send-enabled traps and are not send failures. Most send timeouts
+  are backboardd id 78 (345); mediaserverd id `0x10000000` has 18, and
+  backboardd id `0x10000000` has 6. The nine invalid destinations are
+  backboardd ids 2865 (6) and 2871 (1), and mediaserverd ids 100060 (1)
+  and 100007 (1).
+- Status names/values verified against XNU 8796.141.3
+  `osfmk/mach/message.h`: `MACH_SEND_INVALID_DEST=0x10000003`,
+  `MACH_SEND_TIMED_OUT=0x10000004`, `MACH_RCV_TIMED_OUT=0x10004003`.
+  This corrects the reversed mapping in the previous LATEST-99 notes.
+- The `40232` sender still has no observed reply producer; the failed
+  sends above use other message IDs and do not identify that producer.
+  This is the current evidence-backed blocker for SetupAssistant, not yet
+  a proven root cause.
+
+### Next
+
+1. Trace `mediaremoted` and identify the receiver/service for message
+   40232, then determine why no 828-byte response is emitted. The current
+   tracer excludes `mediaremoted` and receive lines report buffer capacity
+   only. Prefer static mapping or a receive-side/port-owner trace over
+   guessing a synthetic reply.
+2. Separately map backboardd id 78 and id `0x10000000` timeouts to their
+   service owners and determine whether they relate to first-run UI.
+3. Implement a targeted fix only when the missing service/response is
+   identified, then verify SetupAssistant execs in a new boot log.
+   Preserve the existing uncommitted `tools/mkpayload.py` change and
+   unrelated files.
+
 ## Agent handoff / active work (2026-10-31 LATEST-99: 0115 PACKED - MACH SEND-RESULT LOGGING FOR THE TRACED TRIO (SWEET MSGERR: failed send -> error code, naming the missing service); image shim-boot-merlin-msdc-0115-msgerr-cpus8-fbup-585.img 3AF101BB READY)
 
 ### 0115 (action; msdc-0115 @ `1f1f88e`, CI run 41242503655 SUCCESS)
 
 - `xnu/patches/0115-merlin-msgerr.patch`: at mach_msg2_trap's tail (after
   `ipc_port_thread_group_unblocked()`, before `return mr;` - same
-  lock-safety region as the 0112 entry tracer), a failed SEND from
-  SpringBoard/backboardd/mediaserverd logs
+  lock-safety region as the 0112 entry tracer), a non-success result from
+  a SEND-enabled call by SpringBoard/backboardd/mediaserverd logs
   `SWEET MSGERR: pid %d (%s) id=%u sz=%u kr=0x%x`. Recv results are not
-  logged (rcv timeouts are normal polling). Helper capped at 2000 lines.
+  separately traced, but a combined send+receive can report a receive
+  status here; 0115 includes two `MACH_RCV_TIMED_OUT` results. The helper
+  is capped at 2000 lines.
 - v1 (bda9c6f3) died on two edit-toolchain bugs, both instructive:
   single-quote strcmp constants ('SpringBoard' is a C int, not a string
   - chr(39) vs chr(34) in the edit script), and the call-site anchor
@@ -34,10 +92,10 @@
 
 1. User: `fastboot boot research/merlin-boot/shim-boot-merlin-msdc-0115-msgerr-cpus8-fbup-585.img`
    (never flash), **~15 min only**, TWRP pull -> research/logs/sweetlog-0115-*.
-2. Grep `SWEET MSGERR`: mediaserverd's 0x20000000 send-loop error codes.
-   `kr=0x10000004` (MACH_SEND_INVALID_DEST) = the destination service was
-   never registered -> 0116 stubs that service. `kr=0x1000000b`
-   (MACH_SEND_TIMED_OUT) = it exists but never answers -> different fix.
+2. Read `SWEET MSGERR` against the XNU definitions:
+   `kr=0x10000003` (`MACH_SEND_INVALID_DEST`) means the send right is
+   invalid; `kr=0x10000004` (`MACH_SEND_TIMED_OUT`) means the send timed
+   out. Do not infer the destination service solely from either return.
    SpringBoard/backboardd failures around the 40232 window are equally
    interesting (the 828-byte reply producer may show as a failed send
    FROM mediaserverd).
