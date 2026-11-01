@@ -1,6 +1,50 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
-## Agent handoff / active work (2026-11-02 LATEST-126: 0118 BYTE-PRECISE DIAGNOSTICS AND IMAGE BUILT)
+## Agent handoff / active work (2026-11-02 LATEST-127: 0118 CI RELEASE BUILD AND IMAGE VERIFIED)
+
+### GitHub Actions RELEASE build
+
+- [EVIDENCE] The successful workflow-dispatch run is
+  `https://github.com/Gytis283123/ios-sweet/actions/runs/41329525537`.
+  It built commit `5bd311ce916be43ac70aca11ee2f9a914a53c75b` from branch
+  `ci/0118-release` with `macos_version=13.5`, `kernel_config=RELEASE`,
+  `machine_config=SWEET`, and `keep_going=false`. The build step logged
+  `TARGET_CONFIGS="RELEASE ARM64 SWEET"` and `done building xnu`; the job
+  concluded success in 10m03s.
+- [EVIDENCE] The CI artifact
+  `research/art-0118-local-diagnostics/ci-release-41329525537/kernel.release.sweet`
+  is 12,295,800 bytes, SHA256
+  `13F79A2F317F158819CA98634792706EA76F54F91D8CE5908EBBB9B11EA379BD`.
+  It is an ARM64 Mach-O and contains the expected byte-range DMA, scaler,
+  Mach receiver, and jetsam diagnostic strings.
+- [EVIDENCE] The first RELEASE run (`41328212983`) exposed a C label/declaration
+  error and a RELEASE-only missing `z_btlog` field reference. Follow-up patch
+  commit `5bd311c` scopes the exec diagnostic in a compound statement and
+  gates the btlog dump with the same feature condition as the zone fields.
+  The local DEVELOPMENT regression build passed before the successful CI
+  retry.
+
+### CI RELEASE image
+
+- [EVIDENCE] The packaged CI candidate is
+  `research/art-0118-local-diagnostics/ci-release-41329525537/package/shim-boot-merlin-msdc-0118-ci-release-nativefb-noconsole-cpus8.img`,
+  Android boot v2, 12,127,187 bytes, SHA256
+  `2FF0A93C33F590C194821BFC23EBD87689AEE1F87AA1DEEE5C607368FDA2A403`.
+  It contains the 0118 RELEASE kernel, the preserved 190,674-byte shim and
+  181,203-byte DTB, and `ufslogsecs=5` in its XNU command line.
+- [EVIDENCE] Its 385-byte XNU command line retains `cpus=8`,
+  `rd=msdcroot0`, `sweetfb_native=1`, and `sweetfb_noconsole=1`.
+- [EVIDENCE] Android boot v2 unpack/round-trip passed. Shim, DTB, and payload
+  hashes match; the ADT hash matches the extracted base ADT; a fresh payload
+  rebuild was byte-identical; and all ten file-backed kernel segments match
+  the CI RELEASE Mach-O byte-for-byte.
+- [EVIDENCE] Registered artifacts: RELEASE kernel
+  `6a68df02-78b5-433c-9420-3709670dbbf2`; RELEASE boot image
+  `adb53079-f3a3-49b0-a368-8797b225a9f3`.
+- [INFERENCE] The CI artifact and packaged image are build- and
+  round-trip-verified, but not device-boot-verified. No fastboot operation
+  was performed. The separate local DEVELOPMENT image and known-good 0117
+  base image remain preserved.
 
 ### Diagnostic patch and kernel build
 
@@ -90,8 +134,9 @@
   DEVELOPMENT kernel regression build passed.
 - [EVIDENCE] The follow-up was pushed to the isolated fork branch
   `ci/0118-release` (not `main`). Retry run `41329525537` was dispatched
-  with the same RELEASE/SWEET inputs and is pending; its CI result and
-  artifact retrieval remain unfinished.
+  with the same RELEASE/SWEET inputs and completed successfully. Its kernel
+  artifact was downloaded, checksum-verified, and packaged into the separate
+  CI RELEASE image recorded above.
 
 ## Previous handoff (2026-11-02 LATEST-125: QA CROSS-CHECK + 16-MIB LOG PULLER; KERNEL BUILD BLOCKED BY PATCH-SERIES MISMATCH)
 
