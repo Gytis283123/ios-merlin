@@ -1,6 +1,6 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
-## Agent handoff / active work (2026-11-01 LATEST-122: CONSOLE-MUTED IMAGE FLASHED TO BOOT; UI RESULT NOT YET OBSERVED)
+## Agent handoff / active work (2026-11-01 LATEST-123: POST-FLASH LOG PULLED; BOOT REACHED SPRINGBOARD/SETUP BUT UI AND TERMINATION UNCONFIRMED)
 
 ### Direct review of the saved boot logs
 
@@ -168,6 +168,56 @@ fastboot, so no successful userspace boot or visible UI is confirmed.
   command completion, not a confirmed kernel/userspace/UI boot. A subsequent
   host check found neither ADB nor fastboot enumeration. The target's screen
   and a new log are still needed to establish the actual result.
+
+### Post-flash recovery capture (2026-11-01 17:04 local)
+
+- TWRP ADB became available as serial `204719200409`; shell uid is root.
+  Read only the final 1,025 4 KiB blocks of userdata
+  (`/dev/block/mmcblk0p46`, 52,064,911,360 bytes; blocks
+  12,710,135..12,711,159). The raw ring is
+  `research/logs/sweetlog-console-muted-20261101-1704.bin` (4,198,400 bytes,
+  SHA256 `7e63b3b855443004db31341ecf48738c052b662db9c2a6e8e2225432574edba3`,
+  artifact ID `9a26ee53-48bf-46e7-8fe4-390dfcabe4fc`); decoded text is
+  `research/logs/sweetlog-console-muted-20261101-1704.txt` (4,269,846 bytes,
+  SHA256 `4ccf5a63cdeb72c8b0975f7f091f10dc19b547b6808c5a43ed673bb9a7b130ad`,
+  artifact ID `acd0c68e-2655-47df-936f-f262a4435e39`). Logs remain local and
+  are not committed.
+- The raw SWEETLOG header reports version 1, 4 MiB ring, total 4,240,704
+  bytes, flush #49, wrapped (46,400 oldest bytes lost). The last recorded
+  kernel uptime is only 480.281 s (flush 49); this capture does **not**
+  contain 15 minutes of system uptime. It cannot establish whether the user
+  entered TWRP before 15 minutes elapsed, or why the running image stopped.
+  No panic or reboot/shutdown record is present in the retained portion.
+- The current `boot` partition was then read back from TWRP without writes.
+  Its first 17,052,627 bytes match the flashed console-muted image exactly;
+  verified SHA256
+  `281a8d26a0f0a7ab68bc895c02ba97364ae19c0905397c985a99805a8a7cf0c1`.
+  Thus this log follows the intended image, not merely an accepted flash
+  command.
+- In the retained log, `budd` is exec'd once (line 37,813, about the
+  70-second interval); SpringBoard pid 27 remains active enough to emit
+  messages through the final portion. There is no retained SpringBoard
+  crash or `BoundingPathBitmap` exception. BackBoard records continuing
+  native 1080x2340 surface swaps (sampled up to swap 1,444); this is not
+  proof of visible Setup UI. The launch/console-mute argument and earliest
+  kernel/root-mount/launchd records fall in the wrapped-away beginning, so
+  this capture alone cannot independently confirm their exact startup
+  messages.
+- Confirmed retained failures: 1,163 Mach `MSGERR`s, including 1,054
+  SpringBoard `MACH_SEND_TIMED_OUT` results; 20,659 failed
+  `AppleM2ScalerCSCDriver` lookups; one `driverkitd` SIGKILL report; and one
+  PosterBoard SIGTRAP report followed by a PosterBoard exec. The sampled
+  framebuffer swaps continue after these events. There are 81 DMA spill
+  canary reports and no read-verify mismatch in this capture; the wrapped
+  start omits the root mount and early storage checks. Do not treat these
+  counts as a proven cause of the displayed state.
+- Verdict: the installed image produced a substantial userspace run with
+  SpringBoard/Setup activity and no recorded SpringBoard crash in retained
+  data, but the log ended at about 8 minutes and does not establish visible
+  Setup, a 15-minute stable run, or the reason the phone was in TWRP. The
+  next evidence needed is the user's observation/photo of the display and,
+  if a longer run is wanted, a fresh boot allowed to remain running for the
+  full 15 minutes before returning to recovery and pulling another log.
 
 ## Agent handoff / active work (2026-11-01 LATEST-119: M2 SCALER LOOKUP STORM IS NOT A CONFIRMED BOOT CAUSE; DO NOT FAKE THE APPLE DRIVER)
 
