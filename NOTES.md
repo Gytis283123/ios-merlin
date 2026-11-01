@@ -77,12 +77,21 @@
 - [EVIDENCE] The target has not run this image, so new IPC destinations,
   scaler service matches, DMA spill byte ranges, actual Setup visibility,
   and real retention remain unknown.
-- [EVIDENCE] User requested a GitHub Actions RELEASE build. Commit
-  `3a83354f7c96614e2b43a828226536367dfacd10` was pushed to the isolated fork
-  branch `ci/0118-release` (not `main`) and workflow run
-  `41328212983` was dispatched with macOS 13.5, `kernel_config=RELEASE`,
-  `machine_config=SWEET`, and `keep_going=false`. At handoff update time it
-  was queued; CI completion and artifact retrieval remain pending.
+- [EVIDENCE] The first requested GitHub Actions run,
+  `41328212983` (macOS 13.5, `kernel_config=RELEASE`,
+  `machine_config=SWEET`, `keep_going=false`), failed compiling
+  `kern_exec.c`: a C declaration followed a label. It also exposed a
+  RELEASE-only compile error in the existing UAF btlog dump: `z_btlog` is
+  absent when `ZONE_ENABLE_LOGGING || CONFIG_ZLEAKS || KASAN_TBI` is false.
+- [ACTION] Patch follow-up commit
+  `5bd311ce916be43ac70aca11ee2f9a914a53c75b` wraps the exec diagnostic in a
+  compound statement after the label and gates the UAF btlog diagnostic with
+  the same feature condition as the `struct zone` fields. The local
+  DEVELOPMENT kernel regression build passed.
+- [EVIDENCE] The follow-up was pushed to the isolated fork branch
+  `ci/0118-release` (not `main`). Retry run `41329525537` was dispatched
+  with the same RELEASE/SWEET inputs and is pending; its CI result and
+  artifact retrieval remain unfinished.
 
 ## Previous handoff (2026-11-02 LATEST-125: QA CROSS-CHECK + 16-MIB LOG PULLER; KERNEL BUILD BLOCKED BY PATCH-SERIES MISMATCH)
 
