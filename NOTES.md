@@ -1,5 +1,45 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-11-01 LATEST-110: 0116 BUILD AND TEMP BOOT IMAGE VERIFIED; DEVICE BOOT PENDING)
+
+- Commit `4baaaecd4485b0f2dd9c081038708fb64663bb66` was pushed as a
+  fast-forward to `Gytis283123/ios-sweet` `main`. It brings the tested merlin
+  patch series through 0115 onto main, removes 0080/0081 (previously observed
+  to hang on merlin), adds 0116, and selects macOS 15. The primary
+  `ios-sweet` worktree was untouched.
+- Workflow run `41301563080` completed successfully for that SHA. Kernel
+  artifact `xnu-kernel`, ID `13081757652`, contains
+  `kernel.development.sweet` (17,288,376 bytes; SHA256
+  `7844aa089eb1fd97ce92916dac50ba8dc37e3940786e4336f1fa6aab040e3f11`).
+  Verified the artifact checksum, ARM64 Mach-O, and
+  `SWEET MSGRECV: pid %d (%s) id=%u sz=%u` trace string.
+- Built payload
+  `C:\Users\gycioc\AppData\Local\Temp\merlin-0116-payload.bin`
+  (16,676,784 bytes; SHA256
+  `2c261c1eb42fc0587c669efa7b17fb50bf511b577400bc1447dee6647dabea36`)
+  using the existing local `tools/mkpayload.py` change, the exact 0115 ADT
+  (SHA256 `9f9e87c827997d7dd078901a6189186834c178db1baa1b60c6cf349e84990716`),
+  and the known `cpus=8` command line. The exact 0115 DTB
+  (SHA256 `9ad2ab9c84b4079051f3e9d8898361c888e7de5470bb3d2b7eb26f13d38f21fb`)
+  and previously booted shim (190,674 bytes; SHA256
+  `e3cc2933d8d690203bc6be5cd845c4a4c89770273b69128741c94b7133aa31c1`)
+  were reused; same-named local outputs did not match.
+- Temporary image:
+  `research/merlin-boot/shim-boot-merlin-msdc-0116-msgrecv-cpus8.img`
+  (17,052,627 bytes; SHA256
+  `e0e32a017828a7a3c27edf64855a03162f402f6d075cd37df7d6f8dfdef886d0`).
+  It was unpacked and verified: Android boot v2 header/offsets, exact shim
+  and DTB, SWEETXNU payload, `cpus=8`, `rd=msdcroot0`, matching embedded
+  ADT, and the 0116 trace string all pass. `tools/mkbootimg.py` now leaves
+  the final DTB unpadded; its round-trip of 0115 matches the original size
+  and every byte except the image ID.
+- The optional fbcon 1x post-patch was deliberately omitted: its hardcoded
+  VAs/globals and first-word guards belong to another kernel build and do
+  not match this artifact. No device boot of this new image is verified.
+  Next: use temporary `fastboot boot` only, collect the new receive trace,
+  and inspect Setup Assistant behavior. Never flash. Preserve the existing
+  dirty `tools/mkpayload.py` change and untracked build/image artifacts.
+
 ## Agent handoff / active work (2026-11-01 LATEST-108: XNU SUCCESSFUL-RECEIVE TRACE PATCH ADDED; BUILD/DEVICE VERIFICATION PENDING)
 
 ### XNU change (action; `xnu/patches/0107-merlin-mach-recv-result-trace.patch`)

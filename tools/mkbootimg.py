@@ -85,7 +85,7 @@ def main():
     if second:
         img += pad(second, a.page_size)
     if dtb:
-        img += pad(dtb, a.page_size)
+        img += dtb
 
     # id = sha1 over the unpadded sections, in AOSP order (kernel, ramdisk,
     # second, recovery_dtbo, dtb); stored as the RAW 20-byte digest (not hex).
