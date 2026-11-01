@@ -1,7 +1,7 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
-## Agent handoff / active work (2026-11-01 LATEST-106: USER CHOSE MTKCLIENT GUI FOR USERDATA WRITE; DEVICE CURRENTLY FASTBOOTD)
+## Agent handoff / active work (2026-11-01 LATEST-107: MTK GUI REPORTS USERDATA WRITE DONE; IMAGE VERIFIED LOCALLY; DEVICE BOOT/READBACK PENDING)
 
 ### 0115 boot log (observation; `research/logs/sweetlog-0115-20261101.{bin,txt}`)
 
@@ -118,22 +118,31 @@
   DA handler path; success is not established and the same transport
   failure may recur. If the GUI errors/disconnects, stop and retain its log;
   do not select Write full flash, erase, or another partition.
+- User-provided MTK Client screenshot shows the Write partition(s) tab,
+  only `userdata (48.49 GB)` checked, selected input path
+  `research/ipsw-x/iosroot-v2-setup-test.bin`, and status `Done.` with both
+  progress bars at 100%. The selected `.bin` exists locally at
+  17,226,006,528 bytes; it is the v2 test image with a 44-MiB all-`0xff`
+  tail. Read-only mount of this `.bin` confirmed Setup.app exists and
+  Setup/PurpleBuddy suppression keys are absent. This validates the input
+  file, not the contents written to the phone; no device readback was
+  performed. The screenshot's `.bin` extension differs from the earlier
+  `.img` path in this handoff; the selected `.bin` itself was inspected.
+- `fastboot devices` currently returns no device after the GUI operation.
+  Do not boot Android or recovery because they may format userdata. The
+  0115 temporary boot image remains available for `fastboot boot` once
+  the device is returned to fastboot; this writes no partition.
 
 ### Next
 
-1. In MTK Client GUI, connect through BROM/Preloader/DA, open Write
-   partition(s), select only `userdata`, and choose
-   `research/ipsw-x/iosroot-v2-setup-test.img` for that row. Verify the
-   selected partition label and file path before starting. This replaces
-   Android userdata; do not select the full-flash writer or any other
-   partition.
-2. If the GUI reports success, verify the userdata contents before
-   booting. Never boot Android/recovery that may mount or format userdata.
-3. If SetupAssistant still does not launch after this root-state change,
-   continue tracing `mediaremoted` and identify the receiver for message
-   40232 before changing Mach behavior. The 0115 receive trace only reports
-   buffer capacity.
-4. Preserve the existing uncommitted `tools/mkpayload.py` change and
+1. Return the phone to fastboot with the hardware key sequence; avoid
+   Android/recovery. Then temporarily boot the existing 0115 image (do
+   not flash it) and inspect the new persistent log for a SetupAssistant
+   exec.
+2. If the boot fails or SetupAssistant still does not launch, get a
+   readback of userdata or continue tracing `mediaremoted` and identify
+   the receiver for message 40232 before changing Mach behavior.
+3. Preserve the existing uncommitted `tools/mkpayload.py` change and
    unrelated files.
 
 ## Agent handoff / active work (2026-10-31 LATEST-99: 0115 PACKED - MACH SEND-RESULT LOGGING FOR THE TRACED TRIO (SWEET MSGERR: failed send -> error code, naming the missing service); image shim-boot-merlin-msdc-0115-msgerr-cpus8-fbup-585.img 3AF101BB READY)
