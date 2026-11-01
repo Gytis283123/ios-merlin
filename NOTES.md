@@ -25,7 +25,8 @@
   the CI 0117 image with only the XNU command-line field changed; round-trip
   verification confirms shim, DTB, CI kernel, Android command line, and all
   other SWEETXNU payload bytes are unchanged. `cpus=8` and `rd=msdcroot0`
-  are preserved.
+  are preserved. Session artifact ID:
+  `ee74c3e5-48c9-4e71-8df6-a631bbe2f92d`.
 - This is a targeted test image, not yet a confirmed fix: native geometry
   should stop the `1125x2436` asset lookup, but the next log/display must
   confirm the native-profile asset exists and SpringBoard stays up. No
