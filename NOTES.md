@@ -1,5 +1,133 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-11-01 LATEST-120: NATIVE PROFILE STOPS THE OLD SPRINGBOARD CRASH; UI STILL UNVERIFIED; 726 MACH SEND ERRORS NEED DESTINATION MAPPING)
+
+### Direct review of the saved boot logs
+
+- Read the decoded captures in `research/logs/`, including the full
+  16:15 native-profile log and the 16:00 pre-fix log. The 16:15 capture is
+  59,990 lines, 3,176,501 bytes, not wrapped, and ends at flush 19 /
+  180.128 s. The earlier 16:00 capture contains 40 SpringBoard starts and
+  40 matching crashes; the heap text names the missing
+  `BoundingPathBitmap-1125x2436-375x812-3.00x` asset (e.g. lines 6207 and
+  6215). That is the confirmed old crash loop.
+- In the 16:15 capture, boot args include `sweetfb_native=1` but not
+  `sweetfb_noconsole=1` (line 304). XNU reaches the custom platform
+  drivers, initializes all 8 CPUs, initializes the MSDC root device and
+  launches `/sbin/launchd` (lines 96-120, 160-202). No kernel panic is
+  recorded. Launchd reports “Early boot complete” at line 586.
+- SpringBoard starts once (line 598); Setup Assistant (`budd`) is exec'd
+  once (line 28535). The capture contains no SpringBoard crash, bounding
+  path exception, or `budd` relaunch. It also contains no evidence that
+  Setup completed or that its frame was visible. The final state is a
+  still-running log at 180.128 s, not a recorded reboot.
+- The display reports native 1080x2340 geometry (line 115), two display-on
+  events and one display-off event (lines 4393, 8049, 16145), and
+  continuing surface swaps (e.g. lines 4991, 7491, 55712). The one panel
+  sample at line 7533 is contaminated by framebuffer memory aliasing and
+  cannot prove an iOS scene was rendered. The console-mute argument is
+  absent, and patch 0067 documents that console output remains drawn over
+  the GUI by default.
+- The latest capture has one `driverkitd` SIGKILL report (line 901), but no
+  repeated driverkitd start/crash loop. The SWEET watchdog stub explicitly
+  never fires; watchdogd checks in successfully (lines 107 and 894).
+
+### Confirmed IPC failures; endpoint still unknown
+
+- There are 726 `SWEET MSGERR` records in the 16:15 capture: 706
+  `MACH_SEND_TIMED_OUT` (`0x10000004`), 16 `MACH_SEND_INVALID_DEST`
+  (`0x10000003`), and 4 `MACH_RCV_TIMED_OUT` (`0x10004003`). SpringBoard
+  accounts for 666 of the send timeouts. 402 errors precede the `budd`
+  exec and 324 follow it, so they are not confined to Setup Assistant
+  startup.
+- This is concrete failed Mach traffic, not merely an unsuccessful
+  service-name lookup. The 0115 result logger records pid/process, message
+  id, size, and return code, but not the destination port or owning
+  service. The ids therefore cannot yet identify the missing endpoint or
+  prove that these errors block the visible UI. Treat IPC/service
+  initialization as a leading unresolved candidate; do not fabricate
+  replies or declare the errors harmless.
+- BackBoard also reports 5,026 failed `AppleM2ScalerCSCDriver` matches.
+  The device is MediaTek and the registered accelerator interfaces are
+  explicitly “stub; no renderer” (lines 98-100). This makes incomplete
+  graphics support a real hypothesis, but the lookup failures alone do
+  not establish that the scaler is required for this framebuffer path.
+
+### Storage, root mount, and trust interpretation
+
+- MSDC read verification is enabled (line 160). The complete capture has
+  no `READVERIFY MISMATCH`, re-read failure, CMD data failure, or DMA-stop
+  timeout. It reports HFS journal replay completed and `iOSRoot` mounted
+  (lines 192-195); the final throughput sample is 171,689 commands,
+  6,783,037 KiB in 132,918 ms at 51,031 KiB/s. This supports stable reads
+  and successful basic filesystem access, not byte-for-byte identity with
+  the source image or full HFS integrity.
+- `DMA SPILL` is emitted by the canary instrumentation, not by an eMMC
+  error status. There are 94 sampled spill records in this capture; the
+  reported extents/lengths vary. Tracked patch 0088 initializes a canary
+  behind a 512-byte target and scans from offset 512 (lines 90-115, 156-
+  168). The runtime log also shows multi-sector CMD18 operations (up to
+  128 sectors) and prints transfer lengths; the exact later CI driver
+  source for this boot is not present in the checked-in patch set. Thus
+  the counter alone cannot distinguish a valid multi-sector write into
+  the bounce buffer from a DMA overshoot. Earlier notes also observed
+  the same canary pattern with clean double-reads. Do not call this data
+  corruption without a length-aware check or image comparison.
+- `hfs: mounted iOSRoot` is followed by
+  `SWEET: root volume is not authenticated (error 25); continuing unsealed`
+  (line 196). Patch 0029 shows this comes from the
+  `FSIOC_KERNEL_ROOTAUTH` ioctl and deliberately continues when this
+  custom, unsealed HFS root cannot be authenticated. It is not a failed
+  sector read or a mount failure.
+- Separately, libignition fails its Preboot lookup with 25 and
+  `ignite()` returns 25 (lines 241-246). Its source is not in this
+  workspace, so the exact meaning of that errno is unverified and must
+  not be assumed identical to the root-auth ioctl's error 25. The boot
+  does have only the `msdcroot0` HFS root mounted; bindfs also cannot find
+  the Preboot firmware path (line 326), and launchd reports no system
+  volume cookie / missing data volume (lines 318-340). This is a confirmed
+  incomplete volume environment and could affect later services or setup,
+  but launchd continues to “Early boot complete,” so it is not a kernel
+  handoff failure.
+- The 43 “not in trust cache” shared-cache lines follow the explicit
+  `SWEET: trust caches unavailable (Image4/AMFI not installed)` line 101.
+  Patch 0015 intentionally leaves the trust-cache runtime unavailable.
+  This is a known security/compatibility limitation, not evidence that
+  eMMC bytes are corrupt; the unsecure launchd cache is sent successfully
+  and boot continues (lines 570-587). Device identity is also incomplete:
+  libignition names target `d22ap` (line 225), while repeated queries for
+  `IODeviceTree:/product` return none (e.g. lines 3166 and 5825). This may
+  leave userland with mismatched device assumptions, but is not yet linked
+  to the visible symptom.
+
+### Current verdict and one controlled next experiment
+
+The native-profile test removed the previously confirmed SpringBoard
+bounding-path crash. The remaining visible “loop” is not reconstructed by
+the current log: SpringBoard and `budd` each start once, while graphics
+presentation is not verified and numerous IPC sends fail. The strongest
+current candidates are (1) incomplete graphics/UI presentation, potentially
+masked by the kernel console and compounded by no renderer, and (2) missing
+Preboot/data/device services or unresolved IPC dependencies. Storage
+corruption is not supported by the observed read/mount evidence, but is not
+ruled out by double-read verification alone.
+
+Next, make a separate derivative of the existing CI native-display image
+that changes only the command line by adding `sweetfb_noconsole=1`; preserve
+the existing image unchanged. This tests whether the console is obscuring
+an otherwise-present Setup UI without changing the kernel, storage path,
+Preboot, or GPU stubs. Use `fastboot boot` only (never flash), photograph
+the screen from SpringBoard startup through Setup Assistant and record
+whether it is blank, static, or transitions repeatedly. Then preserve the
+fresh raw and decoded SWEET log after about 180 s. If the UI becomes visible
+and remains stable, console overlay caused the visual misreading. If it is
+still blank while swaps continue and the same processes remain single-start,
+the next investigation should target layer composition/IPC endpoints; if
+the Setup page itself cycles, correlate those transitions with the existing
+SpringBoard/BackBoard message failures and missing volume/device lookups.
+Recover by rebooting to the existing bootloader/TWRP; this experiment must
+not write any partition.
+
 ## Agent handoff / active work (2026-11-01 LATEST-119: M2 SCALER LOOKUP STORM IS NOT A CONFIRMED BOOT CAUSE; DO NOT FAKE THE APPLE DRIVER)
 
 ### Follow-up on the 16:15 capture
