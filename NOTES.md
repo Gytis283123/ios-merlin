@@ -51,6 +51,9 @@
   `EB54A0036B62E3ABFDC433F4FDB0A8F4A57954E74351EDA52F05D77747446114`.
   It packages the new local kernel with the existing 190,674-byte shim and
   181,203-byte DTB, and uses `ufslogsecs=5` in the 385-byte XNU command line.
+- [EVIDENCE] Registered artifact IDs: boot image
+  `ab598da5-4415-494f-bfc0-4202413f172c`; patch
+  `49115787-46fe-4008-b36c-369d36e368bd`.
 - [EVIDENCE] The image unpacked successfully. Round-trip SHA256s match for
   the shim, DTB, and SWEETXNU payload; the ADT matches the extracted base
   ADT; a fresh `mkpayload.py` rebuild produced a byte-identical payload.
