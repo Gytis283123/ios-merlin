@@ -11,11 +11,12 @@
   artifact `xnu-kernel`, ID `13081757652`, contains
   `kernel.development.sweet` (17,288,376 bytes; SHA256
   `7844aa089eb1fd97ce92916dac50ba8dc37e3940786e4336f1fa6aab040e3f11`).
-  Verified the artifact checksum, ARM64 Mach-O, and
+  The verified standalone kernel is saved at
+  `research/merlin-boot/kernel-0116-development.sweet`. Verified the
+  artifact checksum, ARM64 Mach-O, and
   `SWEET MSGRECV: pid %d (%s) id=%u sz=%u` trace string.
-- Built payload
-  `C:\Users\gycioc\AppData\Local\Temp\merlin-0116-payload.bin`
-  (16,676,784 bytes; SHA256
+- Built SWEETXNU payload (embedded in the boot image; 16,676,784 bytes;
+  SHA256
   `2c261c1eb42fc0587c669efa7b17fb50bf511b577400bc1447dee6647dabea36`)
   using the existing local `tools/mkpayload.py` change, the exact 0115 ADT
   (SHA256 `9f9e87c827997d7dd078901a6189186834c178db1baa1b60c6cf349e84990716`),
