@@ -1,5 +1,42 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-11-01 LATEST-119: M2 SCALER LOOKUP STORM IS NOT A CONFIRMED BOOT CAUSE; DO NOT FAKE THE APPLE DRIVER)
+
+### Follow-up on the 16:15 capture
+
+- The log has 5,034 references to `AppleM2ScalerCSCDriver`; 5,026 are
+  `IOServiceMatchingfailed` lines in a 180-second capture (about 28/s).
+  This confirms repeated unsuccessful lookups, not a crash, timeout, or
+  failed IPC handshake. BackBoard continues to submit framebuffer surfaces
+  after these messages, SpringBoard starts once, and Setup Assistant is
+  exec'd as `budd`; no SpringBoard crash or prior bounding-path exception
+  appears in the capture.
+- This is a MediaTek device, while the requested class is an Apple scaler
+  driver. The repo's three published GPU accelerator interfaces are
+  explicitly stubs with no renderer. The absence is therefore consistent
+  with this port lacking Apple's graphics hardware/driver; it is not
+  evidence that this particular scaler is required for native-resolution
+  scanout. The repeated logging is noisy and consumes log space, but there
+  is no evidence it causes the visible loop or prevents Setup Assistant.
+- Do not publish a fake `AppleM2ScalerCSCDriver` or suppress the errors as
+  a supposed boot fix. An inert provider could make service discovery
+  appear successful without implementing the expected interface. The
+  display probe is also inconclusive: its thumbnail is sampled from memory
+  aliased with the panel/fbcon buffer, so its sparse nonzero count does not
+  establish whether an iOS scene was rendered.
+
+### Current diagnosis and next action
+
+The original SpringBoard bounding-path crash is absent in the native-profile
+capture. The M2 scaler lookup storm is a confirmed missing Apple driver
+lookup, but not a confirmed cause of the boot/UI symptom. The unresolved
+question is whether the displayed state is a reboot/setup loop or a blank or
+unrendered UI. Preserve the captures; when the phone is available, record
+the exact screen (or a photo) while it is stuck and take a fresh SWEET log.
+For further graphics diagnosis, sample/hash the layer surface before the
+framebuffer copy so the result is not contaminated by the aliased panel
+buffer. Do not flash or modify partitions.
+
 ## Agent handoff / active work (2026-11-01 LATEST-118: NATIVE PROFILE BOOT CONFIRMED; OLD SPRINGBOARD ABORT GONE; USER STILL REPORTS VISUAL LOOP)
 
 ### New capture after the user reported the loop (2026-11-01 16:15)
