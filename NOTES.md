@@ -99,6 +99,11 @@
   `is-userspace: yes` (fastbootd). No flash or boot command was issued
   after detection. Explicit approval to overwrite userdata could not be
   obtained, so the device was left untouched.
+- Read-only `fastboot getvar partition-size:userdata` returned
+  `0xC1F4F8000` (52,064,911,360 bytes); the prepared test image is
+  17,226,006,528 bytes and therefore fits by reported capacity. This is
+  not authorization to write the partition. No image hash was captured:
+  hashing the 17-GB file did not complete in the available check window.
 
 ### Next
 
