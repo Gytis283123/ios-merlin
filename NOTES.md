@@ -1,6 +1,6 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
-## Agent handoff / active work (2026-11-02 LATEST-108: XNU SUCCESSFUL-RECEIVE TRACE PATCH ADDED; BUILD/DEVICE VERIFICATION PENDING)
+## Agent handoff / active work (2026-11-01 LATEST-108: XNU SUCCESSFUL-RECEIVE TRACE PATCH ADDED; BUILD/DEVICE VERIFICATION PENDING)
 
 ### XNU change (action; `xnu/patches/0107-merlin-mach-recv-result-trace.patch`)
 
