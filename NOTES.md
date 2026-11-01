@@ -1,48 +1,68 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
-## Agent handoff / active work (2026-11-01 CROSSBUILD-1: LINUX/WSL CROSS-BUILT msdc-0112 KERNEL LINKED WITH REAL APPLE ld64; PACKED IMAGE VERIFIED; NOT BOOTED)
+## Agent handoff / active work (2026-11-01 LATEST-111: CURRENT 0116 BOOT LOG PULLED; SETUP PROCESS STARTED; RECEIVE SIZE FIELD NEEDS FIX)
 
-- The msdc-0112 (mach tracer) kernel was built entirely on WSL with the
-  cross toolchain in `~/xnu-cross` (scripts mirrored to
-  `D:\things\Merlin\xnu-cross`), 0 compile errors, and packed into a boot
-  image with the existing recipe. Observation: this kernel is locally
-  built, not from ios-sweet CI.
-- Linker (new since the 0104 build): cctools-port Apple `ld64` 956.6
-  compiled on WSL (`~/xnu-cross/src/cctools-port/cctools/ld64/src/ld/ld`,
-  synced to `xnu-cross/cross/bin/ld64.real`; deps without sudo:
-  libblocksruntime debs unpacked to `~/xnu-cross/blocksroot`,
-  swift-corelibs-libdispatch built via cmake into `~/xnu-cross/cctools-deps`).
-  `cross/bin/ld64.lld` is now a passthrough shim to ld64.real that only
-  drops `-new_linker`; the clang/clang++ shims keep
-  `-fuse-ld=lld -B$CROSS` because LLVM 21's Darwin driver only searches
-  `ld64.<name>` in -B dirs (plain `ld64` via `-B` is NOT found).
-- Why ld64 was needed: lld ignores `-segaddr`/`-image_base` and emitted
-  chained fixups with 2 unencodable binds. The cctools link matches CI:
-  `__TEXT` vm `0xfffffe0007004000`, every segment `vm = image_base +
-  fileoff`, NO `LC_DYLD_CHAINED_FIXUPS` (pointers are final VAs, so
-  mkpayload reports `fixups: 0` and rewrites nothing), entry
-  `0xfffffe00074ad488`.
-- Kernel: `research/art-0112-linux/kernel.development.sweet`, 19,475,912
-  bytes (unstripped), SHA256
-  `401eab9e5107b9801930ce69db652f95464829954b62f163ce5ce369e2379832`.
-  llvm-strip refuses cctools output ("shared library is not yet
-  supported"); the `strip` shim falls back to a copy — cosmetic only,
-  mkpayload copies segments (the extra ~2 MB is `__LINKEDIT` symtab that
-  rides along as a segment).
-- Boot image (temporary `fastboot boot` only, never flash):
-  `research/merlin-boot/shim-boot-merlin-msdc-0112-linux-cross-cpus8-fbup-585.img`,
-  19,864,531 bytes, SHA256
-  `06FCAD67E80B9FFD675AAD31A453699F4B73BF7BFA1A2C945068C47B68770255`.
-  Packed by `make-0099-image.py` with the verbatim CI 0112 cmdline
-  (`cpus=8 ... sweetgpuclient=1`), fb 585-row shift applied, shim slot +
-  dtb byte-identical, `SWEET MSG: pid` tracer string verified inside the
-  payload. `tools/mkpayload.py` assert relaxed to `imports_size < 4`
-  (lld's empty imports table artifact) — committed with this note.
-- Next: device boot of this image is UNVERIFIED. If the user wants the
-  local 0112 booted, use temporary `fastboot boot` and collect the serial
-  log as with the CI builds. Note CI image
-  `shim-boot-merlin-msdc-0112-machmsg-cpus8-fbup-585.img` (LATEST-94) is
-  byte-different but tracer-equivalent; either is fine to boot.
+### Current device log (observation; read-only pull at 2026-11-01 14:03:52)
+
+- ADB showed the phone in recovery with a root shell. Pulled only the final
+  1,025 userdata blocks (4,198,400 bytes) from `/dev/block/mmcblk0p46`;
+  no partition or filesystem was written. Decoded log:
+  `research/logs/sweetlog-live-20261101-140352.txt`, raw ring:
+  `research/logs/sweetlog-live-20261101-140352.bin`.
+  Header: version 1, 4 MiB ring, 3,340,009 total log bytes, flush #93;
+  final recorded uptime 920.346 s. Raw SHA256:
+  `df2dfe355d93f53f108a623862aa5af166a3397c910662eca953e19b27ac69ae`.
+  Decoded SHA256:
+  `9ec49b4b94eef511be985b8b7cbc810b05b9d0cca6d1e281d9bedf6d4c42e4c8`.
+- The log contains the 0116 `SWEET MSGRECV` trace (4,000 records, hitting
+  its cap by line 12,500, shortly after the ~40 s flush). In the captured
+  records, SpringBoard sent message 40232, backboardd received 40232, then
+  backboardd sent 40332 and SpringBoard received 40332 (for example lines
+  5,153-5,157). This is the first evidence of the request/reply path; it
+  shows kernel dequeue, not successful delivery/handling in user space.
+  There are 20 SpringBoard 40232 sends, 48 recorded backboardd 40232
+  receives, 64 backboardd 40332 sends, and 4 SpringBoard 40332 receives.
+- Instrumentation defect: every `SWEET MSGRECV` record reports `sz=0`.
+  The patch passes local `msg_size` before `ipc_kmsg_copyout`; the source
+  initializes that value from `self->ith_msize`. The next tracer revision
+  should log `ikm_header(kmsg)->msgh_size` for the dequeued message size.
+  The 4,000-line cap is also exhausted well before Setup Assistant starts,
+  so later IPC receive behavior is not covered.
+- Setup Assistant did start: line 32,790 logs the truncated executable path
+  `/System/Library/PrivateFrameworks/SetupA...`, followed by `exec budd`
+  (line 32,791). No `CRASH budd` record appears. This proves a Setup
+  process launch, not that its UI became visible or completed onboarding.
+- SpringBoard started 40 times and has 39 signal-6 crash records in this
+  log. PosterBoard has 13 signal-5 crash records. The frequent logged send
+  errors include backboardd message 78 timeouts (485), SpringBoard
+  `1999646836` timeouts (389), backboardd ID 40400 invalid-destination
+  (78), and SpringBoard ID 2865 invalid-destination (40). These are
+  correlations only; the log does not prove which error causes the
+  SpringBoard crashes.
+
+### Linux/WSL XNU cross-build (observation)
+
+- Verified in Ubuntu WSL: `~/xnu-cross/sym/kernel.development.sweet` is an
+  ARM64 Mach-O, 19,475,912 bytes, SHA256
+  `401eab9e5107b9801930ce69db652f95464829954b62f163ce5ce369e2379832`;
+  it matches `research/art-0112-linux/kernel.development.sweet`. The
+  `kernel-build.log` ends with `done building xnu`. The build uses the
+  cctools-port Apple `ld64.real` linker (956.6) via the cross tool shims.
+- This is a successful local 0112 build, not the kernel in the current
+  receive-trace log. The current `scripts/build-linux.sh` patch loop only
+  applies 0105-0112, so it must be extended to 0116 (and pointed at the
+  correct patch worktree) before it can reproduce the current CI kernel.
+
+### Next
+
+1. Fix the 0116 receive-size argument and raise/re-scope the trace cap so
+   the capture covers the SetupAssistant launch; build and boot temporarily.
+2. Symbolicate the repeated SpringBoard signal-6 crashes against the
+   matching kernel/system images. Confirm the Setup UI on-screen; the log
+   alone cannot establish visibility. Never flash.
+3. If building 0116 on Linux, first update the cross-build patch selection
+   from 0105-0112 to the verified 0105-0116 series and verify its source
+   seed; preserve existing local changes and build artifacts.
 
 ## Agent handoff / active work (2026-11-01 LATEST-110: 0116 BUILD AND TEMP BOOT IMAGE VERIFIED; DEVICE BOOT PENDING)
 
