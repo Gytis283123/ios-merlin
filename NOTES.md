@@ -103,6 +103,26 @@
   any source or image change. Do not flash or rebuild based on the report
   alone.
 
+## Agent handoff / active work (2026-11-01 LATEST-128 INVESTIGATION: NO XNU PANIC CAPTURE; 2627 ALREADY FIXED BY 0094)
+
+### Investigation: no actionable XNU kernel panic to fix (2026-11-01)
+
+- [OBSERVATION] LATEST-128 (Apple panic reported): no XNU kernel panic capture exists in any available log. Exhaustively searched all Nov 1 SWEET captures (sweetlog-live-20261101-140352.txt, sweetlog-console-muted-20261101-1704.txt, sweetlog-twrp-20261101-1600.txt/-1615.txt) — no panic string, fault, backtrace, or register dump. DumpPanic starts during normal boot, not as panic response.
+- [OBSERVATION] Device not visible via `fastboot devices` or `adb devices` from Git Bash or cmd.exe. USB connection may have been lost. Cannot obtain a fresh panic capture without device access.
+- [OBSERVATION] The panic-twrp-0116-20261101 capture is an Android kernel oops (smb1351 charger, MediaTek DDP), NOT an XNU panic. Ruled out.
+- [OBSERVATION] The only diagnosed XNU panic (vm_resident.c:2627, `phys_page == VM_PAGE_GET_PHYS_PAGE(mem)` assert) is ALREADY fixed by patch `0094-merlin-pmap-startup-contiguous.patch`, commit `8773fed`, CI run `40400128627` GREEN. Patch committed and present in `xnu/patches/0094-merlin-pmap-startup-contiguous.patch`. Working tree clean.
+- [INFERENCE] Per task brief success criterion #2 ("thorough diagnosis must precede any code change... no speculative patching") and NOTES.md ("do not flash or rebuild based on the panic report alone"), NO code change was written. LATEST-128 cannot be diagnosed without a panic capture.
+- [BLOCKER] CI macOS runner unavailable — last three xnu runs (40722066010, 40583707775, 40579028774) completed/cancelled; last success 40400128627 (0094, 2026-10-26). Device testing via `fastboot boot` blocked until device is reachable.
+
+### What is needed to unblock LATEST-128
+
+1. Device access: get device visible in `fastboot devices` / `adb devices` (USB may need to be restored).
+2. Do not reboot the device before capturing (panic screen may be lost).
+3. Photograph the entire panic screen (especially `Original panic string`, faulting address, backtrace, registers).
+4. Pull fresh SWEET logs via `tools/sweet-log-pull.sh` with a new filename.
+5. Symbolicate typed addresses with `tools/sweet-crash.py`.
+6. Analyze panic string + backtrace + SWEET ring records before proposing any source or image change.
+
 ## Agent handoff / active work (2026-11-02 LATEST-127: 0118 CI RELEASE BUILD AND IMAGE VERIFIED)
 
 ### GitHub Actions RELEASE build
