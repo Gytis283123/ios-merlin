@@ -70,14 +70,34 @@
 - [EVIDENCE] A local search did not find a new panic report in `.log`,
   `.txt`, `.ips`, or `.panic` files. Existing historical panic discussion
   in these notes is not evidence about this latest event.
+- [EVIDENCE] Exhaustively searched all Nov 1 SWEET log captures for XNU kernel panic:
+  - sweetlog-live-20261101-140352.txt: DumpPanic started line 774, ReportMemoryException line 13419,
+    but no panic string, fault, backtrace, or register dump anywhere. DumpPanic starts during normal
+    boot init (right after amfid), not as panic response.
+  - sweetlog-console-muted-20261101-1704.txt: Same trap events, ReportMemoryException line 13534,
+    no XNU panic indicators.
+  - sweetlog-twrp-20261101-1600.txt / -1615.txt: Successful boot through launchd/SpringBoard/mediaserverd,
+    no panic entries.
+  - sweetlog-0116-20261101-offset0.txt (fresh ring): XNU boot log, no panic.
+  - sweetlog-0116-20261101-offset12582912.txt (mature ring): backboardd traps 2-5, SpringBoard trap 0,
+    AppleM2ScalerCSCDriver lookups "none", kr=0x10000004 - no XNU panic.
+  - panic-twrp-0116-20261101/: Android kernel oops (smb1351 charger, MediaTek DDP), NOT XNU panic logs.
 - [INFERENCE] There is not enough event-specific evidence to identify the
   panic cause or connect it to the latest CI RELEASE image.
+- [INFERENCE] No XNU kernel panic capture exists in any available log. DumpPanic was started during
+  early boot but no panic data was captured in the SWEET ring. Reported Apple panic (LATEST-128)
+  may have occurred outside the SWEET ring's capture window, or may not have been an XNU kernel panic.
+- [OBSERVATION] Device not visible via `fastboot devices` or `adb devices` from Git Bash or cmd.exe.
+  fastboot binary available but reports no devices. USB connection may have been lost.
 - [ACTION] Preserve the full panic screen/report before rebooting or changing
   partitions. If the device is in TWRP, `tools/sweet-log-pull.sh` reads the
   last 4,097 4-KiB blocks (16 MiB plus header) from userdata and refuses to
   overwrite existing captures. Also photograph the entire panic screen,
   especially `Original panic string` and the backtrace. Record which image
   was booted, when it panicked, and whether entry to recovery was manual.
+- [ACTION] Once device is accessible again: run `tools/sweet-log-pull.sh`
+  with a new filename to pull fresh SWEET logs from userdata; or fastboot
+  boot the CI 0118 image to test device-side.
 - [ACTION] Once the capture is available, analyze the panic string, faulting
   thread/task, backtrace, and surrounding SWEET ring records before proposing
   any source or image change. Do not flash or rebuild based on the report
