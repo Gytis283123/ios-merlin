@@ -1,5 +1,26 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (LATEST-128: APPLE PANIC REPORTED; CAPTURE NEEDED)
+
+- [USER REPORT] The user reports that the device displayed an Apple panic.
+  The boot image/build, panic text, time, and whether recovery was entered
+  manually or spontaneously are not yet known.
+- [EVIDENCE] A local search did not find a new panic report in `.log`,
+  `.txt`, `.ips`, or `.panic` files. Existing historical panic discussion
+  in these notes is not evidence about this latest event.
+- [INFERENCE] There is not enough event-specific evidence to identify the
+  panic cause or connect it to the latest CI RELEASE image.
+- [ACTION] Preserve the full panic screen/report before rebooting or changing
+  partitions. If the device is in TWRP, `tools/sweet-log-pull.sh` reads the
+  last 4,097 4-KiB blocks (16 MiB plus header) from userdata and refuses to
+  overwrite existing captures. Also photograph the entire panic screen,
+  especially `Original panic string` and the backtrace. Record which image
+  was booted, when it panicked, and whether entry to recovery was manual.
+- [ACTION] Once the capture is available, analyze the panic string, faulting
+  thread/task, backtrace, and surrounding SWEET ring records before proposing
+  any source or image change. Do not flash or rebuild based on the report
+  alone.
+
 ## Agent handoff / active work (2026-11-02 LATEST-127: 0118 CI RELEASE BUILD AND IMAGE VERIFIED)
 
 ### GitHub Actions RELEASE build
