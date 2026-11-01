@@ -52,6 +52,34 @@ Do not use `fastboot flash`. If the visible UI still loops, record exactly
 what screen repeats and capture a photo plus a fresh SWEET log. Do not stub
 the scaler or GPU based only on service-match messages.
 
+### Next target-test image: console-muted derivative
+
+A separate derivative is ready at:
+
+```text
+research\merlin-boot\shim-boot-merlin-msdc-0117-ci-nativefb-noconsole-cpus8.img
+```
+
+It is the CI native-display image above with only `sweetfb_noconsole=1`
+appended to the SWEETXNU command line. The existing patch 0067 handles this
+argument by stopping framebuffer console text at the first swap while
+retaining persistent logging and panic drawing. The shim, DTB, and all other
+payload bytes are unchanged. The Android boot ID was recomputed. The image
+is 17,052,627 bytes with SHA256
+`281A8D26A0F0A7AB68BC895C02BA97364AE19C0905397C985A99805A8A7CF0C1`.
+
+The derivative round-trips as Android boot v2 and has not yet been booted on
+the phone. This is a controlled visibility diagnostic, not a graphics or
+Setup Assistant fix. To test it, use:
+
+```powershell
+fastboot devices
+fastboot boot D:\things\Merlin\ios-merlin\research\merlin-boot\shim-boot-merlin-msdc-0117-ci-nativefb-noconsole-cpus8.img
+```
+
+Do not flash it or overwrite the known-good base. Record the screen from
+SpringBoard startup through Setup Assistant and save a fresh SWEET log.
+
 The local WSL cross-build also completed and its kernel was verified as an
 ARM64 Mach-O. The fresh log's receive-size trace is consistent with the 0117
 fix, but does not identify whether that boot used the local or CI kernel.

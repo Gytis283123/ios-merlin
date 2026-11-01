@@ -1,6 +1,6 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
-## Agent handoff / active work (2026-11-01 LATEST-120: NATIVE PROFILE STOPS THE OLD SPRINGBOARD CRASH; UI STILL UNVERIFIED; 726 MACH SEND ERRORS NEED DESTINATION MAPPING)
+## Agent handoff / active work (2026-11-01 LATEST-121: CONSOLE-MUTED TEST IMAGE PREPARED; UI STILL UNVERIFIED)
 
 ### Direct review of the saved boot logs
 
@@ -127,6 +127,35 @@ the Setup page itself cycles, correlate those transitions with the existing
 SpringBoard/BackBoard message failures and missing volume/device lookups.
 Recover by rebooting to the existing bootloader/TWRP; this experiment must
 not write any partition.
+
+### Prepared console-muted image derivative
+
+- The CI-native-display base remains unchanged at
+  `research/merlin-boot/shim-boot-merlin-msdc-0117-ci-nativefb-cpus8.img`
+  (17,052,627 bytes, SHA256
+  `506DBE7F09F1C54BA4E1D20D36A1DA81F3541F257491ADA7A258C7F860F87E4A`).
+  Prepared a separate target-test derivative:
+  `research/merlin-boot/shim-boot-merlin-msdc-0117-ci-nativefb-noconsole-cpus8.img`
+  (17,052,627 bytes, SHA256
+  `281A8D26A0F0A7AB68BC895C02BA97364AE19C0905397C985A99805A8A7CF0C1`).
+- The only payload change is adding `sweetfb_noconsole=1` to the existing
+  `sweetfb_native=1` XNU command line. The unchanged XNU implementation is
+  in patch 0067: from the first framebuffer swap it stops drawing console
+  text over the UI, keeps appending it to the persistent log, and draws
+  panic output. The embedded kernel contains the boot-argument string.
+  The Android boot image ID was recomputed for the changed payload.
+- Round-trip validation passed with `tools/unpack_bootv2.py`: Android boot
+  v2, 2048-byte pages, 190,674-byte shim, 16,676,784-byte SWEETXNU payload,
+  and 181,203-byte DTB. The unpacked shim and DTB are byte-identical to the
+  base; the payload differs only in its 608-byte command-line field; the
+  Android header fields are preserved and its ID matches the new components.
+- No kernel compile or source patch was made: the proven native geometry
+  already removed the recorded SpringBoard crash, while visible UI rendering
+  and the causal role of the logged IPC failures remain unproven. This
+  derivative tests whether fbcon obscures the UI; it is not evidence that
+  graphics, IPC, or Setup Assistant is fixed. It has not been booted on the
+  device. Next, boot this exact artifact with `fastboot boot` only, record the
+  actual screen behavior, and preserve a fresh roughly 180-second SWEET log.
 
 ## Agent handoff / active work (2026-11-01 LATEST-119: M2 SCALER LOOKUP STORM IS NOT A CONFIRMED BOOT CAUSE; DO NOT FAKE THE APPLE DRIVER)
 
