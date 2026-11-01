@@ -93,7 +93,11 @@ index a1abc3c04d1371ce99cf17e0c23263061f56d7f5..e8379e43a407b3042341c5042232993d
  #include <kern/task.h>
  #include <kern/thread.h>
  #include <kern/coalition.h>
-@@ -2310,11 +2311,17 @@ bad_notrans:
+@@ -2310,14 +2311,22 @@ bad_notrans:
+ 	#if defined(ARM64_BOARD_CONFIG_SWEET)
++	{
+ 	/* 0114: 0042 logs the allow decision mid-exec; this logs the
+ 	 * OUTCOME of the whole attempt, BEFORE the argv strings are
  	 * freed, with the name taken from argv[0] of the new image
  	 * (p_name is stale here in the posix-spawn-in-place path, which
  	 * is why 0109 logged every daemon as "xpcproxy"). */
@@ -112,6 +116,7 @@ index a1abc3c04d1371ce99cf17e0c23263061f56d7f5..e8379e43a407b3042341c5042232993d
 +			(unsigned long long)((sweet_exec_ns / 1000000ull) % 1000),
  			imgp->ip_startargv != NULL ? imgp->ip_startargv : "?", error);
  	}
++	}
  	#endif
 diff --git a/bsd/kern/kern_exit.c b/bsd/kern/kern_exit.c
 index fde499c53f77261a758263b7b1898c7c7621a0ff..498bf3a01c64c82f809f6129b4854922910b0fd3 100644
@@ -155,6 +160,20 @@ index fde499c53f77261a758263b7b1898c7c7621a0ff..498bf3a01c64c82f809f6129b4854922
  			}
  		}
  #endif
+diff --git a/osfmk/kern/zalloc.c b/osfmk/kern/zalloc.c
+--- a/osfmk/kern/zalloc.c
++++ b/osfmk/kern/zalloc.c
+@@ -3244,3 +3244,4 @@
+ 	merlin_uaf_replay();
+ 
++#if ZONE_ENABLE_LOGGING || CONFIG_ZLEAKS || KASAN_TBI
+ 	if (z->z_btlog != NULL) {
+@@ -3252,4 +3253,5 @@
+ 		btlog_dump_element_history(z->z_btlog, elem);
+ 	}
++#endif
+ 
+ 	(panic)("[%s%s]: element modified after free "
 diff --git a/iokit/Kernel/IOUserClient.cpp b/iokit/Kernel/IOUserClient.cpp
 index 163fce1877fa18d26aad237d5dc776c39af79c84..0a8f30f7dbd8ec87e591739116fba3c4852be767 100644
 --- a/iokit/Kernel/IOUserClient.cpp
