@@ -1,6 +1,6 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
-## Agent handoff / active work (2026-11-01 LATEST-129 cont.: PATCH 0097 PUSHED TO GITHUB FORK; CI BUILD TRIGGERED)
+## Agent handoff / active work (2026-11-01 LATEST-129 cont.: PATCH 0097 CI BUILD COMPLETE; KERNEL ARTIFACT DOWNLOADED)
 
 ## Main branch update (2026-11-01, build successful)
 
@@ -28,11 +28,11 @@
 ## Agent handoff / active work (2026-10-15, latest)
 
 - [ACTION] Pushed ios-merlin main (a500468..faede18) to fork remote https://github.com/Gytis283123/ios-sweet.git (fork/main). Includes patches 0094-0098: 0094 (vm_resident.c:2627 fix, CI run 40400128627 GREEN), 0095 (dropped early-jump), 0096 (HFS read dump), 0097 (exclusion window spans SCP+modem MPU regions; fixes data.kalloc.16384 panic; default window 0x9f900000-0xbe000000), 0098 (multi-block eMMC).
+- [OBSERVATION] CI run #100 (ID 41350305589) completed successfully on fork/main. Kernel artifact ID 13100973214 contains kernel.development.sweet (17,257,144 bytes; SHA256 23bdf760c94a5e6a8243d9a8deb1d1d4c8c4b06b4a9e7fa961670c9e2255109c). Downloaded to D:/things/Merlin/ios-merlin/research/kernel-ci/kernel.development.sweet. Kernel binary contains merlin_excl_start/len/enabled symbols confirming patch 0092/0094/0097 stack built in.
 - [OBSERVATION] CI macOS runner IS available now — successful xnu builds on GitHub main from 2026-11-01 (runs 41306087077, 41301563080).
-- [OBSERVATION] Patch 0097 is now in GitHub's ios-sweet repo at fork/main — CI builds from GitHub main and should pick up patch 0097 automatically. User authorized push to GitHub fork remote ("Yes go on").
 - [BLOCKER] Device not visible via fastboot devices/adb devices — USB connection may be lost. Cannot device-test or capture LATEST-128 panic.
-- [ACTION NEEDED] Wait for CI build to complete on fork/main, then download kernel artifact via tools/fetch-kernel-artifact.py.
 - [ACTION NEEDED] Device access to fastboot boot the CI-built kernel and test for LATEST-128 panic recurrence.
+- [ACTION NEEDED] Package kernel.development.sweet with existing shim/ADT/DTB into a bootable fastboot boot image once device is reachable.
 
 ## Agent handoff / active work (2026-11-01 LATEST-129: PATCH-SERIES RECONCILIATION COMPLETE; XNU/PATCHES NOW MATCHES IOS-SWEET-MSDC)
 
