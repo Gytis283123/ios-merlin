@@ -64,8 +64,10 @@ def apply_chained_fixups(buf, m):
     if not m['fixups']:
         return 0
     data_off, _ = m['fixups']
-    _, starts_off, _, _, imports_count, _, _ = struct.unpack_from('<7I', buf, data_off)
-    assert imports_count == 0, 'kernel has binds; only rebases are supported'
+    _, starts_off, _, _, imports_size, _, _ = struct.unpack_from('<7I', buf, data_off)
+    # imports table entries are >= 16 bytes; ld64.lld emits a tiny (2-byte)
+    # empty table where Apple ld emits none. Only real binds are rejected.
+    assert imports_size < 4, 'kernel has binds; only rebases are supported'
     image_base = m['segs'][0]['vmaddr']		# __TEXT, holds the mach header
     seg_count, = struct.unpack_from('<I', buf, data_off + starts_off)
     nfix = 0

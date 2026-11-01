@@ -1,5 +1,49 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-11-01 CROSSBUILD-1: LINUX/WSL CROSS-BUILT msdc-0112 KERNEL LINKED WITH REAL APPLE ld64; PACKED IMAGE VERIFIED; NOT BOOTED)
+
+- The msdc-0112 (mach tracer) kernel was built entirely on WSL with the
+  cross toolchain in `~/xnu-cross` (scripts mirrored to
+  `D:\things\Merlin\xnu-cross`), 0 compile errors, and packed into a boot
+  image with the existing recipe. Observation: this kernel is locally
+  built, not from ios-sweet CI.
+- Linker (new since the 0104 build): cctools-port Apple `ld64` 956.6
+  compiled on WSL (`~/xnu-cross/src/cctools-port/cctools/ld64/src/ld/ld`,
+  synced to `xnu-cross/cross/bin/ld64.real`; deps without sudo:
+  libblocksruntime debs unpacked to `~/xnu-cross/blocksroot`,
+  swift-corelibs-libdispatch built via cmake into `~/xnu-cross/cctools-deps`).
+  `cross/bin/ld64.lld` is now a passthrough shim to ld64.real that only
+  drops `-new_linker`; the clang/clang++ shims keep
+  `-fuse-ld=lld -B$CROSS` because LLVM 21's Darwin driver only searches
+  `ld64.<name>` in -B dirs (plain `ld64` via `-B` is NOT found).
+- Why ld64 was needed: lld ignores `-segaddr`/`-image_base` and emitted
+  chained fixups with 2 unencodable binds. The cctools link matches CI:
+  `__TEXT` vm `0xfffffe0007004000`, every segment `vm = image_base +
+  fileoff`, NO `LC_DYLD_CHAINED_FIXUPS` (pointers are final VAs, so
+  mkpayload reports `fixups: 0` and rewrites nothing), entry
+  `0xfffffe00074ad488`.
+- Kernel: `research/art-0112-linux/kernel.development.sweet`, 19,475,912
+  bytes (unstripped), SHA256
+  `401eab9e5107b9801930ce69db652f95464829954b62f163ce5ce369e2379832`.
+  llvm-strip refuses cctools output ("shared library is not yet
+  supported"); the `strip` shim falls back to a copy — cosmetic only,
+  mkpayload copies segments (the extra ~2 MB is `__LINKEDIT` symtab that
+  rides along as a segment).
+- Boot image (temporary `fastboot boot` only, never flash):
+  `research/merlin-boot/shim-boot-merlin-msdc-0112-linux-cross-cpus8-fbup-585.img`,
+  19,864,531 bytes, SHA256
+  `06FCAD67E80B9FFD675AAD31A453699F4B73BF7BFA1A2C945068C47B68770255`.
+  Packed by `make-0099-image.py` with the verbatim CI 0112 cmdline
+  (`cpus=8 ... sweetgpuclient=1`), fb 585-row shift applied, shim slot +
+  dtb byte-identical, `SWEET MSG: pid` tracer string verified inside the
+  payload. `tools/mkpayload.py` assert relaxed to `imports_size < 4`
+  (lld's empty imports table artifact) — committed with this note.
+- Next: device boot of this image is UNVERIFIED. If the user wants the
+  local 0112 booted, use temporary `fastboot boot` and collect the serial
+  log as with the CI builds. Note CI image
+  `shim-boot-merlin-msdc-0112-machmsg-cpus8-fbup-585.img` (LATEST-94) is
+  byte-different but tracer-equivalent; either is fine to boot.
+
 ## Agent handoff / active work (2026-11-01 LATEST-110: 0116 BUILD AND TEMP BOOT IMAGE VERIFIED; DEVICE BOOT PENDING)
 
 - Commit `4baaaecd4485b0f2dd9c081038708fb64663bb66` was pushed as a
