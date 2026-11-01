@@ -18,6 +18,14 @@ booted on the phone. Experimental iOS bring-up can fail to start or hang.
 - A bootloader-unlocked Redmi Note 9, with its important partition backups
   kept safe.
 
+Check `adb devices` in the same environment where you run the pull. Windows
+ADB and WSL ADB may use separate ADB servers: Windows can show the phone in
+recovery while `adb` inside WSL reports no devices. In that case the helper
+cannot read the phone until WSL is connected to the device; do not interpret
+that as a missing log or userdata device. A Windows-host `adb exec-out`
+capture must preserve binary output (for example, capture `subprocess` stdout
+in Python rather than redirecting native binary output through PowerShell).
+
 Per the current testing preference, use the CI-built image for the next
 device test:
 

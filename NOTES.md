@@ -1,5 +1,68 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
+## Agent handoff / active work (2026-11-01 LATEST-116: TWRP LOG PULLED; REPEATED SPRINGBOARD ABORT CONFIRMED; CRASH SYMBOLICATION NEEDED)
+
+### New read-only device capture (2026-11-01 16:00)
+
+- While the device was in TWRP, Windows ADB saw serial `204719200409` as
+  `recovery`; `adb shell id` reported uid 0. No device writes were made.
+  Windows ADB resolved userdata to `/dev/block/mmcblk0p46` (52,064,911,360
+  bytes). A binary-safe `adb exec-out dd` read only the final 1,025 blocks
+  (4,198,400 bytes).
+- Preserved decoded log:
+  `research/logs/sweetlog-twrp-20261101-1600.txt`
+  (SHA256 `e6e7ede788d3ee8b6725bfee009f4fde834e4f470b6ce6186de94ced877c15e0`);
+  raw capture:
+  `research/logs/sweetlog-twrp-20261101-1600.bin`
+  (SHA256 `e3a33fde11e093abbe3db883ccB5dde87275750feb186905610512b909908b8a`).
+  Header: version 1, 4 MiB ring, 4,645,150 total bytes, flush #82; ring
+  wrapped, so the oldest 450,846 bytes are no longer available. The decoded
+  file begins mid-record. This is a new post-0116-format capture: receive
+  records now include actual message sizes (e.g. backboardd 40232 size 48,
+  SpringBoard 40332 size 460), consistent with the 0117 tracer correction.
+  It does not identify whether the boot image used the CI or local 0117
+  kernel.
+- The retained wrapped portion has 27,300 `SWEET MSGRECV` records, 68
+  receives of message 40232 and 48 of 40332, 40 SpringBoard start records
+  and 40 signal-6 crash records, plus 11 PosterBoard signal-5 crashes.
+  All SpringBoard crash samples share PC
+  `0x1e9d17198` and the same recorded backtrace
+  `0x1b535c4b8 0x1f91def54 0x1f91cfa4c 0x1a77d2afc 0x1f91de424
+  0x1f91e0da0 0x1f91e0d60 0x1a77cdd58 0x1a8cd5810 0x1b0789ae8`.
+  This strongly confirms a repeatable SpringBoard abort path, but the
+  record says reason `(none)` and no matching userspace symbols/crash report
+  are yet available; do not name the failing framework or assert cause.
+- The retained segment has 957 `SWEET MSGERR` lines: 835
+  `MACH_SEND_TIMED_OUT` (`0x10000004`), 121 `MACH_SEND_INVALID_DEST`
+  (`0x10000003`), and one `MACH_RCV_TIMED_OUT` (`0x10004003`). The leading
+  entries are backboardd id 78 timeout (422), SpringBoard id 1999646836
+  timeout (396), backboardd id 40400 invalid destination (80), and
+  SpringBoard id 2865 invalid destination (41). The tracer records 16 sends
+  of 40232 and 24 sends of 40332 in the retained portion. These are concrete
+  endpoint errors/traffic, but this capture does not link them causally to
+  the identical SpringBoard abort stacks.
+- The captured wrapped section has no launchd or Setup Assistant launch
+  record. Because the ring wrapped and starts mid-record, that is not
+  evidence either failed to launch in this boot. The capture has no panic
+  marker in its retained portion, which likewise cannot rule out events
+  lost from the beginning. Graphics/UI visibility remains unverified.
+- WSL's separate `adb` server reported no devices even though Windows ADB
+  saw TWRP. The first helper invocation therefore failed before reading any
+  data; it created no partial capture. The successful Windows-host pull was
+  binary-safe and read-only. See `LOCAL_BUILD_AND_LOG_GUIDE.md` for this
+  ADB-host caveat.
+
+### Next
+
+1. Establish which exact 0117 image was temporarily booted; the trace format
+   establishes the receive-size fix, not CI/local image provenance.
+2. Obtain the matching SpringBoard crash report or symbolicate the repeated
+   PC/backtrace against the exact iOS 16 userspace dyld cache/frameworks.
+   The stable repeated SIGABRT path is now the highest-priority lead.
+3. Keep the raw/decoded captures local and unchanged. Do not flash or edit
+   partitions. Avoid further kernel or service changes until the abort is
+   symbolicated.
+
 ## Agent handoff / active work (2026-11-01 LATEST-115: BOOT FAILURE TRIAGED; CI 0117 IMAGE IS NEXT TEST)
 
 ### Diagnosis from the newest available device log
