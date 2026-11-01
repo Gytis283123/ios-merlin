@@ -52,6 +52,15 @@
   receive-trace log. The current `scripts/build-linux.sh` patch loop only
   applies 0105-0112, so it must be extended to 0116 (and pointed at the
   correct patch worktree) before it can reproduce the current CI kernel.
+- The already-packed Linux-cross image
+  `research/merlin-boot/shim-boot-merlin-msdc-0112-linux-cross-cpus8-fbup-585.img`
+  was unpacked and re-verified. All ten file-backed kernel segments match
+  the Linux-built kernel byte-for-byte; the payload entry, `cpus=8`
+  command line, 9,976-byte ADT, DTB, and previously booted shim also match.
+  Image size is 19,864,531 bytes; SHA256
+  `06fcad67e80b9ffd675aad31a453699f4b73bf7bfa1a2c945068c47b68770255`.
+  This is the requested Linux-cross-built image. It has not been booted;
+  the fresh log above is from the separate 0116 CI-kernel image.
 
 ### Next
 
