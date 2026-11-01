@@ -1,0 +1,634 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index c76f4b8763f92a01e9303e76982a348a6261436b..634258e7f4b6958e7b82fe370004153e0e9721d6 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -677,7 +677,7 @@ sweet_ufs_init(void)
+  * ring offset of byte n = n % ring size. Read it from a recovery with
+  * tools/sweet-log-pull.sh. Disabled with boot-arg sweetlog=0.
+  */
+-#define SWEET_LOG_SIZE          (4u << 20)
++#define SWEET_LOG_SIZE          (16u << 20)
+ #define SWEET_LOG_BLOCKS        (1 + SWEET_LOG_SIZE / UFS_BLOCK)
+ #define SWEET_LOG_SECS          10u
+ 
+@@ -1432,12 +1432,64 @@ msdc_transfer_once(uint64_t lba, uint32_t nblk, bool is_write)
+ 			bad++;
+ 		}
+ 		if (bad != 0) {
++			uint64_t now_ns = 0;
+ 			msdc_spill_count++;
+-			if (msdc_spill_count == 1 ||
+-			    (msdc_spill_count % 1000) == 0) {
+-				printf("MERLIN MSDC: DMA SPILL count %llu words bad %u first %u (off %u) last %u len %u\n",
+-				    (unsigned long long)msdc_spill_count, bad, first,
+-				    first * 8, last, len);
++			absolutetime_to_nanoseconds(mach_absolute_time(), &now_ns);
++			const volatile uint8_t *bytes =
++			    (const volatile uint8_t *)mo.dma;
++			const uint64_t magic = 0x4d45524c494e2041ULL;
++			uint32_t changed_bytes = 0;
++			uint32_t first_byte = MSDC_BOUNCE_SIZE;
++			uint32_t last_byte = 0;
++			uint32_t i;
++			for (i = first * 8; i < MSDC_BOUNCE_SIZE; i++) {
++				uint8_t expected =
++				    (uint8_t)(magic >> ((i & 7) * 8));
++				if (bytes[i] == expected) {
++					continue;
++				}
++				if (changed_bytes == 0) {
++					first_byte = i;
++				}
++				last_byte = i;
++				changed_bytes++;
++			}
++			printf("MERLIN MSDC: DMA SPILL event=%llu t=%llu.%03llu "
++			    "lba=%llu sectors=%u programmed_len=%u programmed_blocks=%u "
++			    "buffer=[0,%u) expected=[0,%u) canary_words=%u "
++			    "changed_bytes=%u "
++			    "changed_envelope=[%u,%u) cache_sync_pre=%u "
++			    "cache_sync_post_scan=deferred int=0x%08x error=%d "
++			    "sd_sts=0x%08x dma_ctrl=0x%08x dma_cfg=0x%08x "
++			    "dma_ca=0x%08x\n",
++			    (unsigned long long)msdc_spill_count,
++			    (unsigned long long)(now_ns / 1000000000ull),
++			    (unsigned long long)((now_ns / 1000000ull) % 1000),
++			    (unsigned long long)lba, nblk, msdc_rd(MSDC_DMA_LEN),
++			    msdc_rd(SDC_BLK_NUM), MSDC_BOUNCE_SIZE, len, bad,
++			    changed_bytes, first_byte, last_byte + 1, len, sts, error,
++			    msdc_rd(SDC_STS), msdc_rd(MSDC_DMA_CTRL), msdc_rd(MSDC_DMA_CFG),
++			    msdc_rd(MSDC_DMA_CA));
++			for (i = first * 8; i < MSDC_BOUNCE_SIZE;) {
++				uint8_t expected =
++				    (uint8_t)(magic >> ((i & 7) * 8));
++				if (bytes[i] == expected) {
++					i++;
++					continue;
++				}
++				uint32_t start = i;
++				do {
++					i++;
++					if (i == MSDC_BOUNCE_SIZE) {
++						break;
++					}
++					expected =
++					    (uint8_t)(magic >> ((i & 7) * 8));
++				} while (bytes[i] != expected);
++				printf("MERLIN MSDC: DMA SPILL RANGE event=%llu "
++				    "bytes=[%u,%u)\n",
++				    (unsigned long long)msdc_spill_count,
++				    start, i);
+ 			}
+ 		}
+ 	}
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index a1abc3c04d1371ce99cf17e0c23263061f56d7f5..e8379e43a407b3042341c5042232993d1e44617e 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -137,6 +137,7 @@
+ #include <kern/sched_prim.h> /* thread_wakeup() */
+ #include <kern/affinity.h>
+ #include <kern/assert.h>
++#include <kern/clock.h>
+ #include <kern/task.h>
+ #include <kern/thread.h>
+ #include <kern/coalition.h>
+@@ -2310,11 +2311,17 @@ bad_notrans:
+ 	 * freed, with the name taken from argv[0] of the new image
+ 	 * (p_name is stale here in the posix-spawn-in-place path, which
+ 	 * is why 0109 logged every daemon as "xpcproxy"). */
++	uint64_t sweet_exec_ns = 0;
++	absolutetime_to_nanoseconds(mach_absolute_time(), &sweet_exec_ns);
+ 	if (error == 0) {
+-		printf("SWEET EXEC: %.40s started\n",
++		printf("SWEET EXEC: t=%llu.%03llu %.40s started\n",
++			(unsigned long long)(sweet_exec_ns / 1000000000ull),
++			(unsigned long long)((sweet_exec_ns / 1000000ull) % 1000),
+ 			imgp->ip_startargv != NULL ? imgp->ip_startargv : "?");
+ 	} else {
+-		printf("SWEET EXEC: %.40s failed to start err=%d\n",
++		printf("SWEET EXEC: t=%llu.%03llu %.40s failed to start err=%d\n",
++			(unsigned long long)(sweet_exec_ns / 1000000000ull),
++			(unsigned long long)((sweet_exec_ns / 1000000ull) % 1000),
+ 			imgp->ip_startargv != NULL ? imgp->ip_startargv : "?", error);
+ 	}
+ 	#endif
+diff --git a/bsd/kern/kern_exit.c b/bsd/kern/kern_exit.c
+index fde499c53f77261a758263b7b1898c7c7621a0ff..498bf3a01c64c82f809f6129b4854922910b0fd3 100644
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -74,6 +74,7 @@
+ 
+ #include <machine/reg.h>
+ #include <machine/psl.h>
++#include <kern/clock.h>
+ #include <stdatomic.h>
+ 
+ #include <sys/param.h>
+@@ -1889,12 +1890,27 @@ proc_prepareexit(proc_t p, int rv, boolean_t perf_notify)
+ 			extern void sweet_crash_log(const char *, int, int, uint64_t, uint64_t);
+ 			sweet_crash_log(p->p_comm, proc_getpid(p), WTERMSIG(rv),
+ 			    ((uint64_t)ut->uu_exception << 32) | (uint32_t)ut->uu_code, ut->uu_subcode);
++			uint64_t crash_ns = 0;
++			absolutetime_to_nanoseconds(mach_absolute_time(), &crash_ns);
++			printf("SWEET EXIT: t=%llu.%03llu pid=%d name=%s signal=%d\n",
++			    (unsigned long long)(crash_ns / 1000000000ull),
++			    (unsigned long long)((crash_ns / 1000000ull) % 1000),
++			    proc_getpid(p), p->p_comm, WTERMSIG(rv));
+ 			/* abort_with_payload messages (_objc_fatal, os_crash_fmt, ...) */
+ 			if (PROC_HAS_EXITREASON(p)) {
++				const char *tag = "";
++				if (p->p_exit_reason->osr_namespace == OS_REASON_JETSAM &&
++				    p->p_exit_reason->osr_code ==
++				    JETSAM_REASON_MEMORY_PERPROCESSLIMIT) {
++					tag = " JETSAM_REASON_MEMORY_PERPROCESSLIMIT";
++				}
+ 				char *desc = exit_reason_get_string_desc(p->p_exit_reason);
+-				printf("CRASH %s reason ns %u code 0x%llx: %s\n", p->p_comm,
++				printf("CRASH %s t=%llu.%03llu reason ns %u code 0x%llx: %s%s\n",
++				    p->p_comm,
++				    (unsigned long long)(crash_ns / 1000000000ull),
++				    (unsigned long long)((crash_ns / 1000000ull) % 1000),
+ 				    p->p_exit_reason->osr_namespace, p->p_exit_reason->osr_code,
+-				    desc != NULL ? desc : "(none)");
++				    desc != NULL ? desc : "(none)", tag);
+ 			}
+ 		}
+ #endif
+diff --git a/iokit/Kernel/IOUserClient.cpp b/iokit/Kernel/IOUserClient.cpp
+index 163fce1877fa18d26aad237d5dc776c39af79c84..0a8f30f7dbd8ec87e591739116fba3c4852be767 100644
+--- a/iokit/Kernel/IOUserClient.cpp
++++ b/iokit/Kernel/IOUserClient.cpp
+@@ -44,6 +44,9 @@
+ #include <IOKit/IOUserServer.h>
+ #include <IOKit/system.h>
+ #include <libkern/OSDebug.h>
++#include <libkern/c++/OSString.h>
++#include <kern/clock.h>
++#include <kern/locks.h>
+ #include <DriverKit/OSAction.h>
+ #include <sys/proc.h>
+ #include <sys/kauth.h>
+@@ -2652,6 +2655,123 @@ sweet_iolog_dict(const char *name, const char *what, OSObject *dict, const char
+ 	IOLog("IOK %s: %s %.240s -> %s\n", name, what, text, result);
+ 	OSSafeReleaseNULL(ser);
+ }
++
++#define SWEET_SCALER_MAX_SERVICES 8
++#define SWEET_SCALER_SUMMARY_NS   (30ull * 1000000000ull)
++
++struct sweet_scaler_service_info {
++	char service_class[80];
++	char service_name[80];
++	char parent_class[80];
++	char parent_name[80];
++};
++
++struct sweet_scaler_stats {
++	uint64_t count;
++	uint64_t first_ns;
++	uint64_t last_ns;
++	uint64_t last_report_ns;
++	char last_state[96];
++};
++
++static struct sweet_scaler_stats sweet_scaler_stats[2];
++static LCK_GRP_DECLARE(sweet_scaler_grp, "sweet_scaler");
++static LCK_MTX_DECLARE(sweet_scaler_lock, &sweet_scaler_grp);
++
++static bool
++sweet_scaler_query(OSDictionary *dict)
++{
++	OSString *provider = OSDynamicCast(OSString,
++	    dict->getObject("IOProviderClass"));
++	return provider != NULL &&
++	    provider->isEqualTo("AppleM2ScalerCSCDriver");
++}
++
++static void
++sweet_scaler_copy_service(IOService *service,
++    struct sweet_scaler_service_info *info)
++{
++	bzero(info, sizeof(*info));
++	if (service == NULL) {
++		return;
++	}
++	strlcpy(info->service_class, service->getMetaClass()->getClassName(),
++	    sizeof(info->service_class));
++	const char *service_name = service->getName();
++	strlcpy(info->service_name, service_name != NULL ? service_name : "?",
++	    sizeof(info->service_name));
++	IORegistryEntry *parent = service->getParentEntry(gIOServicePlane);
++	if (parent != NULL) {
++		strlcpy(info->parent_class, parent->getMetaClass()->getClassName(),
++		    sizeof(info->parent_class));
++		const char *parent_name = parent->getName();
++		strlcpy(info->parent_name, parent_name != NULL ? parent_name : "?",
++		    sizeof(info->parent_name));
++	}
++}
++
++static void
++sweet_scaler_event(unsigned int kind, const char *caller,
++    OSDictionary *dict, const char *state, unsigned int total_services,
++    const struct sweet_scaler_service_info *services,
++    unsigned int stored_services)
++{
++	struct sweet_scaler_stats snapshot;
++	uint64_t now_ns = 0;
++	bool emit = false;
++	char event[16] = "summary";
++	char state_copy[sizeof(sweet_scaler_stats[0].last_state)];
++
++	absolutetime_to_nanoseconds(mach_absolute_time(), &now_ns);
++	strlcpy(state_copy, state, sizeof(state_copy));
++	lck_mtx_lock(&sweet_scaler_lock);
++	struct sweet_scaler_stats *stats = &sweet_scaler_stats[kind];
++	if (stats->count == 0) {
++		stats->first_ns = now_ns;
++		strlcpy(event, "first", sizeof(event));
++		emit = true;
++	} else if (strcmp(stats->last_state, state_copy) != 0) {
++		strlcpy(event, "state-change", sizeof(event));
++		emit = true;
++	} else if (now_ns - stats->last_report_ns >= SWEET_SCALER_SUMMARY_NS) {
++		emit = true;
++	}
++	stats->count++;
++	stats->last_ns = now_ns;
++	strlcpy(stats->last_state, state_copy, sizeof(stats->last_state));
++	if (emit) {
++		stats->last_report_ns = now_ns;
++		snapshot = *stats;
++	}
++	lck_mtx_unlock(&sweet_scaler_lock);
++	if (!emit) {
++		return;
++	}
++
++	OSSerialize *ser = OSSerialize::withCapacity(4096);
++	bool serialized = ser != NULL && dict != NULL && dict->serialize(ser);
++	const char *text = serialized ? ser->text() :
++	    "dictionary-serialization-failed";
++	IOLog("SWEET SCALER: %s t=%llu.%03llu kind=%s caller=%s "
++	    "state=%s lookups=%llu first=%llu.%03llu last=%llu.%03llu "
++	    "services=%u shown=%u matching=%s\n",
++	    event, (unsigned long long)(now_ns / 1000000000ull),
++	    (unsigned long long)((now_ns / 1000000ull) % 1000),
++	    kind == 0 ? "iterator" : "single", caller, snapshot.last_state,
++	    (unsigned long long)snapshot.count,
++	    (unsigned long long)(snapshot.first_ns / 1000000000ull),
++	    (unsigned long long)((snapshot.first_ns / 1000000ull) % 1000),
++	    (unsigned long long)(snapshot.last_ns / 1000000000ull),
++	    (unsigned long long)((snapshot.last_ns / 1000000ull) % 1000),
++	    total_services, stored_services, text);
++	for (unsigned int i = 0; i < stored_services; i++) {
++		IOLog("SWEET SCALER: service[%u] class=%s name=%s "
++		    "parent_class=%s parent_name=%s\n", i,
++		    services[i].service_class, services[i].service_name,
++		    services[i].parent_class, services[i].parent_name);
++	}
++	OSSafeReleaseNULL(ser);
++}
+ #endif
+ 
+ kern_return_t
+@@ -2676,18 +2796,42 @@ internal_io_service_get_matching_services(
+ 		IOTaskRegistryCompatibilityMatching(current_task(), dict);
+ 		OSIterator *found = IOService::getMatchingServices( dict );
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+-		char sname[32];
+-		if (sweet_iolog(sname, sizeof(sname))) {
+-			unsigned int count = 0;
++		if (sweet_scaler_query(dict)) {
++			struct sweet_scaler_service_info services[SWEET_SCALER_MAX_SERVICES] = {};
++			unsigned int count = 0, stored = 0;
++			OSObject *matched;
+ 			if (found != NULL) {
+-				while (found->getNextObject() != NULL) {
++				while ((matched = found->getNextObject()) != NULL) {
+ 					count++;
++					if (stored < SWEET_SCALER_MAX_SERVICES) {
++						IOService *service = OSDynamicCast(IOService, matched);
++						if (service != NULL) {
++							sweet_scaler_copy_service(service,
++							    &services[stored++]);
++						}
++					}
+ 				}
+ 				found->reset();
+ 			}
+-			char res[16];
+-			snprintf(res, sizeof(res), "%u found", count);
+-			sweet_iolog_dict(sname, "matching", dict, res);
++			char caller[32], state[96];
++			proc_selfname(caller, sizeof(caller));
++			snprintf(state, sizeof(state), "matches=%u", count);
++			sweet_scaler_event(0, caller, dict, state, count,
++			    services, stored);
++		} else {
++			char sname[32];
++			if (sweet_iolog(sname, sizeof(sname))) {
++				unsigned int count = 0;
++				if (found != NULL) {
++					while (found->getNextObject() != NULL) {
++						count++;
++					}
++					found->reset();
++				}
++				char res[16];
++				snprintf(res, sizeof(res), "%u found", count);
++				sweet_iolog_dict(sname, "matching", dict, res);
++			}
+ 		}
+ #endif
+ 		*existing = IOUserIterator::withIterator(found);
+@@ -2776,10 +2920,28 @@ internal_io_service_get_matching_service(
+ 		*service = IOService::copyMatchingService( dict );
+ 		kr = *service ? kIOReturnSuccess : kIOReturnNotFound;
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+-		char sname[32];
+-		if (sweet_iolog(sname, sizeof(sname))) {
+-			sweet_iolog_dict(sname, "matching1", dict,
++		if (sweet_scaler_query(dict)) {
++			struct sweet_scaler_service_info info;
++			unsigned int count = *service ? 1 : 0;
++			IOService *matched_service = OSDynamicCast(IOService, *service);
++			char caller[32], state[96];
++			proc_selfname(caller, sizeof(caller));
++			snprintf(state, sizeof(state), "%s",
+ 			    *service ? (*service)->getMetaClass()->getClassName() : "none");
++			if (matched_service != NULL) {
++				sweet_scaler_copy_service(matched_service, &info);
++			} else {
++				bzero(&info, sizeof(info));
++			}
++			sweet_scaler_event(1, caller, dict, state, count,
++			    matched_service != NULL ? &info : NULL,
++			    matched_service != NULL ? 1 : 0);
++		} else {
++			char sname[32];
++			if (sweet_iolog(sname, sizeof(sname))) {
++				sweet_iolog_dict(sname, "matching1", dict,
++				    *service ? (*service)->getMetaClass()->getClassName() : "none");
++			}
+ 		}
+ #endif
+ 	} else {
+diff --git a/osfmk/ipc/mach_msg.c b/osfmk/ipc/mach_msg.c
+index 2523b0f57cd1508a44ca15ef01517d515961460e..08a9980ca80d18dd36658b96eeeb47f627027132 100644
+--- a/osfmk/ipc/mach_msg.c
++++ b/osfmk/ipc/mach_msg.c
+@@ -80,6 +80,8 @@
+ #include <kern/kern_types.h>
+ #include <kern/assert.h>
+ #include <kern/cpu_number.h>
++#include <kern/clock.h>
++#include <kern/locks.h>
+ #include <kern/ipc_kobject.h>
+ #include <kern/ipc_mig.h>
+ #include <kern/task.h>
+@@ -641,26 +643,196 @@ sweet_msg_log(const char *dir, unsigned int id, unsigned int sz)
+ 		proc_pid(p), pname, dir, id, sz);
+ }
+ 
+-static unsigned int sweet_msgerr_logged = 0;
++#define SWEET_MSGERR_SLOTS      128
++#define SWEET_MSGERR_SUMMARY_NS (30ull * 1000000000ull)
++
++struct sweet_msgerr_entry {
++	bool used;
++	char pname[32];
++	int pid;
++	bool send;
++	unsigned int id, size, name;
++	int result, lookup, active, kotype, receiver_pid, queue_state;
++	int queue_depth, queue_limit;
++	uint64_t count, first_ns, last_ns, last_report_ns;
++};
++
++static struct sweet_msgerr_entry sweet_msgerr_entries[SWEET_MSGERR_SLOTS];
++static uint64_t sweet_msgerr_overflow_count;
++static uint64_t sweet_msgerr_overflow_first_ns;
++static uint64_t sweet_msgerr_overflow_last_ns;
++static uint64_t sweet_msgerr_overflow_report_ns;
++static LCK_GRP_DECLARE(sweet_msgerr_grp, "sweet_msgerr");
++static LCK_MTX_DECLARE(sweet_msgerr_lock, &sweet_msgerr_grp);
+ 
+ static void
+-sweet_msg_log_err(unsigned int id, unsigned int sz, unsigned int kr)
++sweet_msg_port_info(bool send, mach_port_name_t name, int *lookup,
++    int *active, int *kotype, int *receiver_pid, int *queue_depth,
++    int *queue_limit)
++{
++	ipc_port_t port = IP_NULL;
++	ipc_space_t receiver;
++	task_t receiver_task;
++
++	*lookup = send ?
++	    ipc_port_translate_send(current_space(), name, &port) :
++	    ipc_port_translate_receive(current_space(), name, &port);
++	if (*lookup != KERN_SUCCESS) {
++		return;
++	}
++	*active = ip_active(port);
++	*kotype = ip_kotype(port);
++	*queue_depth = port->ip_messages.imq_msgcount;
++	*queue_limit = port->ip_messages.imq_qlimit;
++	receiver = ip_get_receiver(port);
++	if (receiver != IS_NULL) {
++		receiver_task = receiver->is_task;
++		if (receiver_task != TASK_NULL &&
++		    receiver_task->bsd_info_ro != NULL &&
++		    receiver_task->bsd_info_ro->pr_proc != NULL) {
++			*receiver_pid = proc_pid(receiver_task->bsd_info_ro->pr_proc);
++		}
++	}
++	ip_mq_unlock(port);
++}
++
++static void
++sweet_msg_log_err(bool send, mach_port_name_t name, unsigned int id,
++    unsigned int size, unsigned int result)
+ {
+ 	struct proc *p = current_proc();
+-	char *pname = proc_name_address(p);
++	char *current_name = proc_name_address(p);
++	char pname[32];
++	struct sweet_msgerr_entry snapshot = {};
++	uint64_t now_ns = 0;
++	uint64_t overflow_count = 0, overflow_first_ns = 0, overflow_last_ns = 0;
++	bool emit = false, first = false, overflow = false;
++	int lookup = KERN_INVALID_NAME, active = -1, kotype = -1;
++	int receiver_pid = -1, queue_depth = -1, queue_limit = -1;
++	int queue_state = -1;
++	struct sweet_msgerr_entry *entry = NULL;
++
++	if (current_name == NULL ||
++	    (strcmp(current_name, "SpringBoard") != 0 &&
++	    strcmp(current_name, "backboardd") != 0 &&
++	    strcmp(current_name, "mediaserverd") != 0)) {
++		return;
++	}
++	strlcpy(pname, current_name, sizeof(pname));
++	sweet_msg_port_info(send, name, &lookup, &active, &kotype,
++	    &receiver_pid, &queue_depth, &queue_limit);
++	if (queue_depth >= 0) {
++		queue_state = queue_depth == 0 ? 0 :
++		    (queue_limit > 0 && queue_depth >= queue_limit ? 2 : 1);
++	}
++	absolutetime_to_nanoseconds(mach_absolute_time(), &now_ns);
++
++	lck_mtx_lock(&sweet_msgerr_lock);
++	for (unsigned int i = 0; i < SWEET_MSGERR_SLOTS; i++) {
++		struct sweet_msgerr_entry *candidate = &sweet_msgerr_entries[i];
++		if (candidate->used && candidate->pid == proc_pid(p) &&
++		    candidate->send == send && candidate->id == id &&
++		    candidate->size == size && candidate->name == name &&
++		    candidate->result == (int)result &&
++		    candidate->lookup == lookup && candidate->active == active &&
++		    candidate->kotype == kotype &&
++		    candidate->receiver_pid == receiver_pid &&
++		    candidate->queue_state == queue_state &&
++		    strcmp(candidate->pname, pname) == 0) {
++			entry = candidate;
++			break;
++		}
++	}
++	if (entry == NULL) {
++		for (unsigned int i = 0; i < SWEET_MSGERR_SLOTS; i++) {
++			if (!sweet_msgerr_entries[i].used) {
++				entry = &sweet_msgerr_entries[i];
++				bzero(entry, sizeof(*entry));
++				entry->used = true;
++				entry->pid = proc_pid(p);
++				entry->send = send;
++				entry->id = id;
++				entry->size = size;
++				entry->name = name;
++				entry->result = (int)result;
++				entry->lookup = lookup;
++				entry->active = active;
++				entry->kotype = kotype;
++				entry->receiver_pid = receiver_pid;
++				entry->queue_state = queue_state;
++				entry->queue_depth = queue_depth;
++				entry->queue_limit = queue_limit;
++				strlcpy(entry->pname, pname, sizeof(entry->pname));
++				first = true;
++				break;
++			}
++		}
++	}
++	if (entry == NULL) {
++		overflow = true;
++		sweet_msgerr_overflow_count++;
++		if (sweet_msgerr_overflow_count == 1) {
++			sweet_msgerr_overflow_first_ns = now_ns;
++			emit = true;
++			first = true;
++		} else if (now_ns - sweet_msgerr_overflow_report_ns >=
++		    SWEET_MSGERR_SUMMARY_NS) {
++			emit = true;
++		}
++		sweet_msgerr_overflow_last_ns = now_ns;
++		if (emit) {
++			sweet_msgerr_overflow_report_ns = now_ns;
++		}
++		overflow_count = sweet_msgerr_overflow_count;
++		overflow_first_ns = sweet_msgerr_overflow_first_ns;
++		overflow_last_ns = sweet_msgerr_overflow_last_ns;
++	} else {
++		if (entry->count == 0) {
++			entry->first_ns = now_ns;
++		}
++		entry->count++;
++		entry->last_ns = now_ns;
++		entry->queue_depth = queue_depth;
++		entry->queue_limit = queue_limit;
++		if (entry->count == 1) {
++			emit = true;
++			first = true;
++		} else if (now_ns - entry->last_report_ns >=
++		    SWEET_MSGERR_SUMMARY_NS) {
++			emit = true;
++		}
++		if (emit) {
++			entry->last_report_ns = now_ns;
++			snapshot = *entry;
++		}
++	}
++	lck_mtx_unlock(&sweet_msgerr_lock);
+ 
+-	if (pname == NULL ||
+-		(strcmp(pname, "SpringBoard") != 0 &&
+-		strcmp(pname, "backboardd") != 0 &&
+-		strcmp(pname, "mediaserverd") != 0)) {
++	if (!emit) {
+ 		return;
+ 	}
+-	if (sweet_msgerr_logged >= 2000) {
++	if (overflow) {
++		printf("SWEET MSGERR: overflow %s count=%llu first=%llu.%03llu "
++		    "last=%llu.%03llu\n", first ? "first" : "summary",
++		    (unsigned long long)overflow_count,
++		    (unsigned long long)(overflow_first_ns / 1000000000ull),
++		    (unsigned long long)((overflow_first_ns / 1000000ull) % 1000),
++		    (unsigned long long)(overflow_last_ns / 1000000000ull),
++		    (unsigned long long)((overflow_last_ns / 1000000ull) % 1000));
+ 		return;
+ 	}
+-	sweet_msgerr_logged++;
+-	printf("SWEET MSGERR: pid %d (%s) id=%u sz=%u kr=0x%x\n",
+-		proc_pid(p), pname, id, sz, kr);
++	printf("SWEET MSGERR: %s pid %d (%s) dir=%s id=%u sz=%u port=0x%x "
++	    "kr=0x%x lookup=0x%x active=%d kotype=%d receiver_pid=%d "
++	    "queue=%d/%d count=%llu first=%llu.%03llu last=%llu.%03llu\n",
++	    first ? "first" : "summary", snapshot.pid, snapshot.pname,
++	    snapshot.send ? "send" : "recv", snapshot.id, snapshot.size,
++	    snapshot.name, snapshot.result, snapshot.lookup, snapshot.active,
++	    snapshot.kotype, snapshot.receiver_pid, snapshot.queue_depth,
++	    snapshot.queue_limit, (unsigned long long)snapshot.count,
++	    (unsigned long long)(snapshot.first_ns / 1000000000ull),
++	    (unsigned long long)((snapshot.first_ns / 1000000ull) % 1000),
++	    (unsigned long long)(snapshot.last_ns / 1000000000ull),
++	    (unsigned long long)((snapshot.last_ns / 1000000ull) % 1000));
+ }
+ 
+ CA_EVENT(mach_msg_trap_event,
+@@ -1317,6 +1489,10 @@ mach_msg2_trap(
+ 
+ 	/* if send failed, skip receive */
+ 	if (mr != MACH_MSG_SUCCESS) {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		sweet_msg_log_err(true, user_header.msgh_remote_port,
++		    user_header.msgh_id, user_header.msgh_size, (unsigned int)mr);
++#endif
+ 		KDBG(MACHDBG_CODE(DBG_MACH_IPC, MACH_IPC_KMSG_INFO) | DBG_FUNC_END, mr);
+ 		goto end;
+ 	}
+@@ -1353,18 +1529,17 @@ mach_msg2_trap(
+ 		mr = mach_msg_trap_receive(msg_addr, aux_addr, option64,
+ 		    msg_timeout, sync_send, max_msg_rcv_size,
+ 		    max_aux_rcv_size, rcv_name);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		if (mr != MACH_MSG_SUCCESS) {
++			sweet_msg_log_err(false, rcv_name, 0,
++			    max_msg_rcv_size, (unsigned int)mr);
++		}
++#endif
+ 	}
+ 
+ end:
+ 	/* unblock call is idempotent */
+ 	ipc_port_thread_group_unblocked();
+-	/* 0115: a FAILED send names its error - MACH_SEND_INVALID_DEST
+-	 * means the destination service was never registered.  Recv
+-	 * results are not logged (rcv timeouts are normal polling). */
+-	if ((option64 & MACH64_SEND_MSG) && mr != MACH_MSG_SUCCESS) {
+-		sweet_msg_log_err((unsigned int)(mv_id >> 32),
+-			(unsigned int)(mb_ss >> 32), (unsigned int)mr);
+-	}
+ 	return mr;
+ }
+ 
