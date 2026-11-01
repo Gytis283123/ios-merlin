@@ -1,7 +1,7 @@
 # iOS 16 on merlin (Redmi Note 9, MT6768 / Helio G85) - working notes
 
 
-## Agent handoff / active work (2026-11-01 LATEST-102: ROOT TWEAKS WERE MARKING SETUP COMPLETE; DEFAULT NOW ENABLES SETUP, DEVICE BOOT NOT YET VERIFIED)
+## Agent handoff / active work (2026-11-01 LATEST-103: SETUP PREFERENCE FIX APPLIED TO ISOLATED LEGACY-ROOT SMOKE TEST; NO DEVICE BOOT)
 
 ### 0115 boot log (observation; `research/logs/sweetlog-0115-20261101.{bin,txt}`)
 
@@ -61,19 +61,41 @@
   former skip behavior remains available with `--skip-setup-assistant`.
   A temporary-plist check passed for both modes and confirmed unrelated
   preference keys are preserved; `python -m py_compile
-  tools/sweet-root-tweaks.py` passed. No root image was rebuilt and no
-  device boot was performed (`fastboot devices` returned no devices), so
-  hardware behavior is not yet verified.
+  tools/sweet-root-tweaks.py` passed. No fresh root was extracted from the
+  IPSW; the isolated copy described below was made from the existing
+  `iosroot.img`. No device boot was performed (`fastboot devices` returned
+  no devices), so hardware behavior is not yet verified.
+- Isolated test root created at
+  `research/ipsw-x/iosroot-v1-setup-pref-test.img` (17,179,869,184 bytes) by
+  copying the existing `iosroot.img` and applying the updated
+  `sweet-root-tweaks.py`. The original `iosroot.img` was not modified.
+  Verified that `Applications/Setup.app/Setup` exists and that both
+  PurpleBuddy preference files are absent, so no completion or mini-buddy
+  suppression keys are set. `fsck.hfsplus -f -y` reported the volume
+  appears OK. The final read-only `fsck.hfsplus -f -n` reports only the
+  known journaled-volume minor-header flag `(1, 0)` (exit 8), previously
+  verified on a clean control volume; no further filesystem errors were
+  reported. Important limitation: this smoke-test image is based on the
+  older `iosroot.img`, not the later boot root `iosroot-v2.img` with its
+  split dyld caches/decoy tail. Do not flash or treat it as the device
+  validation image; it verifies the preference change only. A read-only
+  loop-size-limited mount of `iosroot-v2.img` was also attempted but HFS+
+  rejected its backup volume header, matching the documented decoy-tail
+  limitation. No device boot was performed.
 
 ### Next
 
-1. Rebuild the HFS+ root with the updated tweak script and verify the
-   resulting PurpleBuddy preferences do not contain the completion keys.
-2. Boot the rebuilt image with `fastboot boot` only and check for a
-   SetupAssistant exec in the persistent log; never flash partitions.
-3. If SetupAssistant still does not launch, continue tracing `mediaremoted`
-   and identify the receiver for message 40232 before changing Mach behavior.
-   The existing 0115 receive trace only reports buffer capacity.
+1. Make a separate copy of the exact `iosroot-v2.img` used by the 0115
+   boot, apply the Setup preference change using an HFS+ method that
+   preserves its decoy-tail layout, then verify the resulting image.
+2. The phone is not connected (`fastboot devices` was empty). Testing on
+   device will require a deployment plan; flashing userdata overwrites the
+   Android data volume and requires explicit user approval. Never flash
+   bootloader, recovery, modem, persist, or partition backups.
+3. If SetupAssistant still does not launch after a valid root-image test,
+   continue tracing `mediaremoted` and identify the receiver for message
+   40232 before changing Mach behavior. The 0115 receive trace only reports
+   buffer capacity.
 4. Preserve the existing uncommitted `tools/mkpayload.py` change and
    unrelated files.
 
