@@ -1,0 +1,38 @@
+xnu: MERLIN 0121 rate-limit the MSDC DMA-spill diagnostics (0118 print storm)
+
+0118 prints EVERY DMA-spill event plus every changed byte range. With the
+0120 native-geometry fix SpringBoard finally runs and does heavy rootfs
+I/O, and every multi-block read spills 16 KB into the bounce canary
+(programmed_len=49152, changed_envelope=[49152,65536) - the known
+controller overrun, caught by the bounce buffer, no data corruption).
+Result: 63,000+ events by t=280 s, a console/log print storm that starves
+boot I/O - the device crawls (xpcproxy/fairplayd still exec'ing at
+t=281 s per the bootlog-ci2 ring) and looks hung.
+
+Restore the pre-0118 rate limit (print event 1 and every 1000th, full
+detail including the RANGE lines on those) so the diagnostics stay
+available without drowning the console.
+
+Files:
+  bsd/dev/sweet_ufs.c    gate the 0118 spill prints
+
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index f2cef92..80e9275 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1434,6 +1434,7 @@ msdc_transfer_once(uint64_t lba, uint32_t nblk, bool is_write)
+ 		if (bad != 0) {
+ 			uint64_t now_ns = 0;
+ 			msdc_spill_count++;
++			if (msdc_spill_count == 1 || (msdc_spill_count % 1000) == 0) {
+ 			absolutetime_to_nanoseconds(mach_absolute_time(), &now_ns);
+ 			const volatile uint8_t *bytes =
+ 			    (const volatile uint8_t *)mo.dma;
+@@ -1491,6 +1492,7 @@ msdc_transfer_once(uint64_t lba, uint32_t nblk, bool is_write)
+ 				    (unsigned long long)msdc_spill_count,
+ 				    start, i);
+ 			}
++			}
+ 		}
+ 	}
+ 	msdc_wr(MSDC_INT, 0xffffffffu);
