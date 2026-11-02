@@ -21,6 +21,12 @@ This adds a real renderer, iokit/Kernel/arm/SweetBootUI.cpp:
   - the panel is cleared to black once, then the mark/bar are redrawn on
     top of the compositor every presented frame; a panic is never painted
     over; the on-screen text console is muted (it still reaches the log).
+  - every entry point serializes on a dedicated leaf IOLock: the
+    renderer state and the logo mask are touched from
+    AppleCLCD::start, the vsync workloop (redraw + frame feedback,
+    both with no fb lock held) and the exec/bsd milestone threads,
+    so the frame_feedback free of the logo mask can never race a
+    concurrent blit (use-after-free found in 0120 review).
 
 Also flips the display geometry default: AppleCLCD now presents the real
 panel (1080x2340 on merlin) and the synthetic iPhone X profile
@@ -42,108 +48,11 @@ Files:
   bsd/kern/bsd_init.c                    root-mount milestone
   bsd/kern/kern_exec.c                   launchd/backboardd/SpringBoard
                                          milestones
-diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
---- a/iokit/conf/files.arm64
-+++ b/iokit/conf/files.arm64
-@@ -15,6 +15,7 @@
- iokit/Kernel/arm/SweetWatchdog.cpp                               optional iokitcpp
- iokit/Kernel/arm/SweetSurface.cpp                                optional iokitcpp
- iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
-+iokit/Kernel/arm/SweetBootUI.cpp                              optional iokitcpp
- iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
- iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
- iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
-diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
---- a/iokit/Kernel/arm/SweetFramebuffer.cpp
-+++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -35,6 +35,7 @@
-  * the first swap on (it still reaches the persistent log; panics draw).
-  */
- #include "SweetSurface.h"
-+#include "SweetBootUI.h"
- 
- extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
- 
-@@ -74,9 +75,11 @@
-  * The iOS userland only has status bar / layout data for real iPhone
-  * screens (UIKit: "No status bar visual provider for screen", the red
-  * rdar://45025538 bar for 360x800 points). The display is therefore
-- * presented as the iPhone X panel, 1125x2436 (375x812 points @3x), and the
-- * centered 1080x2400 part of it is shown on the 1080x2400 panel.
-- * Boot-arg sweetfb_native=1 presents the real panel size instead.
-+ * presented as the real panel (1080x2340 on merlin).  The synthetic
-+ * iPhone X profile, 1125x2436 (375x812 points @3x), is an explicit opt-in
-+ * (boot-arg sweetfb_iphonex=1): UIKit cannot find
-+ * BoundingPathBitmap-1125x2436-375x812-3.00x for this device and SpringBoard
-+ * aborts on every launch with that geometry (0119 log: 49/49).
-  */
- #define SWEET_FB_LOGICAL_W              1125
- #define SWEET_FB_LOGICAL_H              2436
-@@ -166,11 +169,11 @@
- 		IOLog("SWEET FB: no boot framebuffer\n");
- 		return false;
- 	}
--	int native = 0;
--	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
-+	int iphonex = 0;
-+	PE_parse_boot_argn("sweetfb_iphonex", &iphonex, sizeof(iphonex));
- 	fLogicalW = fWidth;
- 	fLogicalH = fHeight;
--	if (!native && fWidth <= SWEET_FB_LOGICAL_W && fHeight <= SWEET_FB_LOGICAL_H) {
-+	if (iphonex && fWidth <= SWEET_FB_LOGICAL_W && fHeight <= SWEET_FB_LOGICAL_H) {
- 		fLogicalW = SWEET_FB_LOGICAL_W;
- 		fLogicalH = SWEET_FB_LOGICAL_H;
- 	}
-@@ -187,6 +190,9 @@
- 		OSSafeReleaseNULL(fWorkLoop);
- 		return false;
- 	}
-+	/* 0120: paint the boot screen as soon as the panel memory is mapped;
-+	 * real boot milestones then move the bar (bsd_init.c, kern_exec.c). */
-+	sweet_boot_ui_start(fPixels, fWidth, fHeight, fRowBytes);
- 	fVsync = IOTimerEventSource::timerEventSource(this, &AppleCLCD::vsyncFired);
- 	if (fVsync == NULL || fWorkLoop->addEventSource(fVsync) != kIOReturnSuccess) {
- 		IOLog("SWEET FB: no vsync timer\n");
-@@ -254,6 +260,9 @@
- 	IOLockUnlock(fb->fLock);
- 	if (rec != NULL) {
- 		fb->present(rec);
-+		/* 0120: the boot screen stays on top of the composited layers
-+		 * until the compositor produces real content. */
-+		sweet_boot_ui_redraw();
- 		IOFreeData(rec, SWEET_FB_SWAP_REC_SIZE);
- 	}
- 	sender->setTimeoutUS(SWEET_FB_VSYNC_US);
-@@ -437,6 +446,25 @@
- 				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
- 				    (size_t)w * 4);
- 			}
-+			if (layer == 0) {
-+				/*
-+				 * 0120: does the composited frame contain anything
-+				 * yet?  A black frame keeps the boot screen up.
-+				 */
-+				uint32_t nz = 0;
-+				for (int32_t yy = 0; yy < h && nz < 64; yy += 32) {
-+					for (int32_t xx = 0; xx < w && nz < 64; xx += 32) {
-+						uint32_t v;
-+						memcpy(&v, (const void *)(src + s->offset +
-+						    (uint64_t)(sy + yy) * s->bytesPerRow +
-+						    (uint64_t)(sx + xx) * 4), 4);
-+						if ((v & 0x00ffffffu) != 0) {
-+							nz++;
-+						}
-+					}
-+				}
-+				sweet_boot_ui_frame_feedback(nz);
-+			}
- 			if (layer == 0 && (++sweet_fb_presents == 2 ||
- 			    sweet_fb_presents == 200)) {
- 				sweet_fb_thumb(sweet_fb_presents == 2 ?
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index bb2a2bf..b37f63c 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
-@@ -916,6 +916,15 @@
+@@ -916,6 +916,15 @@ bsd_init(void)
  	lck_rw_unlock_exclusive(&rootvnode_rw_lock);
  	init_rootvnode = NULLVP;  /* use rootvnode after this point */
  
@@ -160,9 +69,10 @@ diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
  	if (!bsd_rooted_ramdisk()) {
  		boolean_t require_rootauth = FALSE;
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index efe1099..19173c3 100644
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -2319,6 +2319,19 @@
+@@ -2319,6 +2319,19 @@ bad_notrans:
  			(unsigned long long)(sweet_exec_ns / 1000000000ull),
  			(unsigned long long)((sweet_exec_ns / 1000000ull) % 1000),
  			imgp->ip_startargv != NULL ? imgp->ip_startargv : "?");
@@ -182,57 +92,91 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
  	} else {
  		printf("SWEET EXEC: t=%llu.%03llu %.40s failed to start err=%d\n",
  			(unsigned long long)(sweet_exec_ns / 1000000000ull),
-diff --git a/iokit/Kernel/arm/SweetBootUI.h b/iokit/Kernel/arm/SweetBootUI.h
+diff --git a/b/iokit/Kernel/arm/SweetBootLogo.h b/iokit/Kernel/arm/SweetBootLogo.h
 new file mode 100644
+index 0000000..d3e64c2
 --- /dev/null
-+++ b/iokit/Kernel/arm/SweetBootUI.h
-@@ -0,0 +1,41 @@
-+/*
-+ * SweetBootUI.h - boot screen (Apple mark + real progress bar) for SWEET.
++++ b/iokit/Kernel/arm/SweetBootLogo.h
+@@ -0,0 +1,73 @@
++/* Generated by tools/gen-boot-logo.py - do not edit.
 + *
-+ * Implemented in iokit/Kernel/arm/SweetBootUI.cpp and driven by the
-+ * platform framebuffer driver plus real kernel/userspace boot milestones.
++ * Apple boot-logo outline, flattened from the Simple Icons
++ * "apple" path (CC0, a close trace of Apple's mark) and
++ * normalised to a square 0..65535 (16.16) coordinate space.
++ * SweetBootUI.cpp rasterises these contours at runtime.
 + */
-+#ifndef _IOKIT_SWEETBOOTUI_H_
-+#define _IOKIT_SWEETBOOTUI_H_
++#ifndef _IOKIT_SWEETBOOTLOGO_H_
++#define _IOKIT_SWEETBOOTLOGO_H_
 +
-+#include <stdint.h>
-+#include <stdbool.h>
++#define SWEET_BOOT_LOGO_CONTOURS 2
++#define SWEET_BOOT_LOGO_POINTS 194
 +
-+#ifdef __cplusplus
-+extern "C" {
-+#endif
++static const unsigned short sweet_boot_logo_pts[194][2] = {
++	/* contour 0: 145 points */
++	{33183,18831}, {32507,18773}, {31776,18614}, {30994,18373},
++	{30166,18072}, {29296,17731}, {28387,17372}, {27444,17015},
++	{26472,16681}, {25474,16391}, {24455,16166}, {23418,16025},
++	{22369,15991}, {20987,16073}, {19630,16279}, {18305,16605},
++	{17018,17047}, {15775,17599}, {14582,18259}, {13446,19021},
++	{12371,19882}, {11366,20837}, {10435,21881}, { 9585,23011},
++	{ 8822,24222}, { 7581,26824}, { 6730,29585}, { 6238,32467},
++	{ 6075,35429}, { 6210,38431}, { 6613,41433}, { 7254,44397},
++	{ 8103,47282}, { 9130,50048}, {10303,52655}, {11593,55065},
++	{12970,57236}, {13672,58236}, {14397,59239}, {15146,60228},
++	{15922,61183}, {16727,62089}, {17562,62927}, {18430,63679},
++	{19332,64328}, {20271,64855}, {21248,65244}, {22265,65477},
++	{23325,65535}, {24312,65445}, {25212,65274}, {26046,65039},
++	{26836,64757}, {27601,64446}, {28364,64121}, {29146,63800},
++	{29967,63499}, {30849,63236}, {31813,63027}, {32879,62889},
++	{34070,62840}, {35249,62893}, {36302,63039}, {37251,63259},
++	{38119,63535}, {38929,63846}, {39703,64174}, {40465,64500},
++	{41237,64805}, {42042,65069}, {42903,65274}, {43843,65400},
++	{44884,65429}, {45968,65332}, {46990,65086}, {47954,64704},
++	{48866,64201}, {49731,63588}, {50555,62880}, {51343,62090},
++	{52099,61231}, {52830,60317}, {53541,59362}, {54236,58377},
++	{54922,57378}, {55673,56231}, {56349,55104}, {56953,54011},
++	{57486,52967}, {57950,51984}, {58348,51079}, {58682,50265},
++	{58954,49555}, {59165,48965}, {59319,48509}, {59416,48200},
++	{59460,48053}, {59267,47974}, {58779,47748}, {58056,47362},
++	{57156,46805}, {56139,46065}, {55063,45131}, {53987,43991},
++	{52970,42633}, {52070,41046}, {51347,39217}, {50860,37136},
++	{50667,34790}, {50786,32804}, {51146,30997}, {51701,29367},
++	{52403,27912}, {53208,26630}, {54067,25518}, {54934,24576},
++	{55763,23802}, {56506,23193}, {57118,22747}, {57551,22464},
++	{57759,22340}, {56744,21016}, {55662,19888}, {54534,18939},
++	{53382,18153}, {52226,17515}, {51087,17009}, {49986,16619},
++	{48943,16329}, {47979,16123}, {47115,15986}, {46373,15900},
++	{45771,15852}, {44425,15821}, {43120,15925}, {41859,16137},
++	{40648,16434}, {39489,16790}, {38386,17180}, {37345,17579},
++	{36367,17962}, {35459,18303}, {34622,18578}, {33862,18762},
++	{33183,18828},
++	/* contour 1: 49 points */
++	{42407,10459}, {42966, 9746}, {43487, 8991}, {43969, 8197},
++	{44406, 7370}, {44794, 6513}, {45129, 5630}, {45407, 4724},
++	{45625, 3800}, {45778, 2862}, {45862, 1913}, {45873,  958},
++	{45807,    0}, {44970,   75}, {44113,  225}, {43243,  447},
++	{42369,  735}, {41499, 1087}, {40639, 1498}, {39799, 1964},
++	{38986, 2480}, {38208, 3042}, {37472, 3646}, {36788, 4288},
++	{36162, 4964}, {35636, 5606}, {35130, 6304}, {34651, 7053},
++	{34204, 7846}, {33798, 8679}, {33440, 9544}, {33136,10437},
++	{32894,11351}, {32721,12281}, {32623,13220}, {32609,14164},
++	{32686,15106}, {33600,15128}, {34514,15053}, {35421,14889},
++	{36317,14643}, {37195,14320}, {38051,13928}, {38878,13472},
++	{39672,12958}, {40427,12394}, {41138,11786}, {41799,11139},
++	{42404,10461},
++};
 +
-+/* Begin drawing on the panel framebuffer.  No-op when already started or
-+ * when the boot-arg sweetbootui=0 is present. */
-+void sweet_boot_ui_start(uintptr_t pixels, uint32_t width, uint32_t height,
-+    uint32_t row_bytes);
++static const unsigned short sweet_boot_logo_contour_start[3] = {
++	0, 145, 194
++};
 +
-+/* Report a real boot milestone, 0..100.  Monotonic; values above 85 are
-+ * clamped until a real composited frame is seen. */
-+void sweet_boot_ui_progress(int percent);
-+
-+/* Repaint the mark and bar (called from the display vsync, after the
-+ * compositor's layer copy, so the boot screen stays on top). */
-+void sweet_boot_ui_redraw(void);
-+
-+/* Number of non-blank samples in a freshly presented layer.  When the
-+ * compositor starts producing real pixels the boot screen stops drawing. */
-+void sweet_boot_ui_frame_feedback(uint32_t nonblank_samples);
-+
-+bool sweet_boot_ui_active(void);
-+int sweet_boot_ui_progress_value(void);
-+
-+#ifdef __cplusplus
-+}
-+#endif
-+
-+#endif /* _IOKIT_SWEETBOOTUI_H_ */
-diff --git a/iokit/Kernel/arm/SweetBootUI.cpp b/iokit/Kernel/arm/SweetBootUI.cpp
++#endif /* _IOKIT_SWEETBOOTLOGO_H_ */
+diff --git a/b/iokit/Kernel/arm/SweetBootUI.cpp b/iokit/Kernel/arm/SweetBootUI.cpp
 new file mode 100644
+index 0000000..451a7cd
 --- /dev/null
 +++ b/iokit/Kernel/arm/SweetBootUI.cpp
-@@ -0,0 +1,477 @@
+@@ -0,0 +1,565 @@
 +/*
 + * SweetBootUI - the iOS-style boot screen for the SWEET platform.
 + *
@@ -276,6 +220,10 @@ new file mode 100644
 +#define BOOTUI_ALLOC(sz)        malloc(sz)
 +#define BOOTUI_FREE(p, sz)      free(p)
 +#define BOOTUI_PARSE_ARG(name, v) 0
++#define BOOTUI_LOCK_CREATE()    do {} while (0)
++#define BOOTUI_LOCK_READY()     (true)
++#define BOOTUI_LOCK()           do {} while (0)
++#define BOOTUI_UNLOCK()         do {} while (0)
 +#else
 +#include <IOKit/IOLib.h>
 +#include <libkern/libkern.h>
@@ -285,6 +233,38 @@ new file mode 100644
 +#define BOOTUI_FREE(p, sz)      IOFreeData(p, sz)
 +#define BOOTUI_PARSE_ARG(name, v) \
 +	PE_parse_boot_argn(name, (v), sizeof(*(v)))
++
++/*
++ * BootUI state is touched from three unrelated execution contexts:
++ * AppleCLCD::start (IOKit thread), the vsync workloop (both
++ * sweet_boot_ui_redraw() from vsyncFired and
++ * sweet_boot_ui_frame_feedback() from present(), each running with no
++ * framebuffer lock held), and the bsd/exec threads that report
++ * milestones through sweet_boot_ui_progress().  Serialize all state,
++ * including the logo-mask lifetime, behind a sleepable IOLock: every
++ * one of those contexts may block, and the lock is a leaf (no other
++ * lock is taken while it is held).  Without it the frame_feedback
++ * free of bootui.mask can race a concurrent bootui_blit_logo() read
++ * of the same mask (use-after-free, 0120 review).
++ */
++static IOLock *bootui_lock;
++
++#define BOOTUI_LOCK_CREATE()    do { \
++	if (bootui_lock == NULL) { \
++		bootui_lock = IOLockAlloc(); \
++	} \
++} while (0)
++#define BOOTUI_LOCK_READY()     (bootui_lock != NULL)
++#define BOOTUI_LOCK()           do { \
++	if (bootui_lock != NULL) { \
++		IOLockLock(bootui_lock); \
++	} \
++} while (0)
++#define BOOTUI_UNLOCK()         do { \
++	if (bootui_lock != NULL) { \
++		IOLockUnlock(bootui_lock); \
++	} \
++} while (0)
 +#endif
 +
 +#define BOOTUI_MAX_EDGES        512
@@ -560,8 +540,8 @@ new file mode 100644
 +	}
 +}
 +
-+void
-+sweet_boot_ui_redraw(void)
++static void
++bootui_redraw_locked(void)      /* call with bootui_lock held */
 +{
 +	if (!bootui.started || !bootui.active || bootui.done) {
 +		return;
@@ -573,6 +553,17 @@ new file mode 100644
 +#endif
 +	bootui_blit_logo();
 +	bootui_draw_bar();
++}
++
++void
++sweet_boot_ui_redraw(void)
++{
++	if (!BOOTUI_LOCK_READY()) {
++		return;         /* sweet_boot_ui_start() not called yet */
++	}
++	BOOTUI_LOCK();
++	bootui_redraw_locked();
++	BOOTUI_UNLOCK();
 +}
 +
 +/* ------------------------------------------------------------------ */
@@ -589,8 +580,17 @@ new file mode 100644
 +	if (BOOTUI_PARSE_ARG("sweetbootui", &disable) && disable == 0) {
 +		return;                 /* boot-arg opt-out */
 +	}
-+	if (bootui.started || pixels == 0 || width < 200 || height < 200 ||
++	if (pixels == 0 || width < 200 || height < 200 ||
 +	    row_bytes < width * 4) {
++		return;
++	}
++	BOOTUI_LOCK_CREATE();
++	if (!BOOTUI_LOCK_READY()) {
++		return;         /* refuse to run unsynchronized */
++	}
++	BOOTUI_LOCK();
++	if (bootui.started) {
++		BOOTUI_UNLOCK();
 +		return;
 +	}
 +	bootui.fb = (volatile uint32_t *)pixels;
@@ -609,6 +609,7 @@ new file mode 100644
 +		logo_w = BOOTUI_MAX_MASK_W;
 +	}
 +	if (logo_h < 8 || logo_w < 8) {
++		BOOTUI_UNLOCK();
 +		return;
 +	}
 +	bootui.mask_w = logo_w;
@@ -631,6 +632,7 @@ new file mode 100644
 +
 +	bootui.mask = (uint8_t *)BOOTUI_ALLOC((size_t)logo_w * (size_t)logo_h);
 +	if (bootui.mask == NULL) {
++		BOOTUI_UNLOCK();
 +		return;
 +	}
 +	bootui.started = 1;
@@ -659,7 +661,8 @@ new file mode 100644
 +		}
 +	}
 +#endif
-+	sweet_boot_ui_redraw();
++	bootui_redraw_locked();
++	BOOTUI_UNLOCK();
 +}
 +
 +void
@@ -668,20 +671,29 @@ new file mode 100644
 +	if (percent < 0) {
 +		return;
 +	}
++	if (!BOOTUI_LOCK_READY()) {
++		return;
++	}
++	BOOTUI_LOCK();
 +	if (percent > 85) {
 +		percent = 85;           /* 100% only from a real UI frame */
 +	}
-+	if (percent <= bootui.progress) {
-+		return;                 /* monotonic */
++	if (percent > bootui.progress) {
++		bootui.progress = percent;
++		bootui_redraw_locked();
 +	}
-+	bootui.progress = percent;
-+	sweet_boot_ui_redraw();
++	BOOTUI_UNLOCK();
 +}
 +
 +void
 +sweet_boot_ui_frame_feedback(uint32_t nonblank_samples)
 +{
++	if (!BOOTUI_LOCK_READY()) {
++		return;
++	}
++	BOOTUI_LOCK();
 +	if (!bootui.started || bootui.done) {
++		BOOTUI_UNLOCK();
 +		return;
 +	}
 +	if (nonblank_samples >= 8) {
@@ -690,98 +702,193 @@ new file mode 100644
 +		bootui.done = 1;
 +		bootui.progress = 100;
 +		if (bootui.mask != NULL) {
++			/* Free the mask under the same lock the blit holds, so a
++			 * redraw running on another CPU can never read freed
++			 * memory (0120 review: unsynchronized free vs. blit). */
 +			BOOTUI_FREE(bootui.mask,
 +			    (size_t)bootui.mask_w * (size_t)bootui.mask_h);
 +			bootui.mask = NULL;
 +		}
 +	}
++	BOOTUI_UNLOCK();
 +}
 +
 +bool
 +sweet_boot_ui_active(void)
 +{
-+	return bootui.started && bootui.active && !bootui.done;
++	bool active;
++
++	if (!BOOTUI_LOCK_READY()) {
++		return false;
++	}
++	BOOTUI_LOCK();
++	active = bootui.started && bootui.active && !bootui.done;
++	BOOTUI_UNLOCK();
++	return active;
 +}
 +
 +int
 +sweet_boot_ui_progress_value(void)
 +{
-+	return bootui.progress;
++	int progress;
++
++	if (!BOOTUI_LOCK_READY()) {
++		return 0;
++	}
++	BOOTUI_LOCK();
++	progress = bootui.progress;
++	BOOTUI_UNLOCK();
++	return progress;
 +}
 +
 +#endif /* SWEET */
-diff --git a/iokit/Kernel/arm/SweetBootLogo.h b/iokit/Kernel/arm/SweetBootLogo.h
+diff --git a/b/iokit/Kernel/arm/SweetBootUI.h b/iokit/Kernel/arm/SweetBootUI.h
 new file mode 100644
+index 0000000..09e7c6b
 --- /dev/null
-+++ b/iokit/Kernel/arm/SweetBootLogo.h
-@@ -0,0 +1,70 @@
-+/* Generated by tools/gen-boot-logo.py - do not edit.
++++ b/iokit/Kernel/arm/SweetBootUI.h
+@@ -0,0 +1,44 @@
++/*
++ * SweetBootUI.h - boot screen (Apple mark + real progress bar) for SWEET.
 + *
-+ * Apple boot-logo outline, flattened from the Font Awesome 6
-+ * "apple" brand icon (CC BY 4.0 / MIT, Fonticons, Inc.) and
-+ * normalised to a square 0..65535 (16.16) coordinate space.
-+ * SweetBootUI.cpp rasterises these contours at runtime.
++ * Implemented in iokit/Kernel/arm/SweetBootUI.cpp and driven by the
++ * platform framebuffer driver plus real kernel/userspace boot milestones.
 + */
-+#ifndef _IOKIT_SWEETBOOTLOGO_H_
-+#define _IOKIT_SWEETBOOTLOGO_H_
++#ifndef _IOKIT_SWEETBOOTUI_H_
++#define _IOKIT_SWEETBOOTUI_H_
 +
-+#define SWEET_BOOT_LOGO_CONTOURS 2
-+#define SWEET_BOOT_LOGO_POINTS 182
++#include <stdint.h>
++#include <stdbool.h>
 +
-+static const unsigned short sweet_boot_logo_pts[182][2] = {
-+	/* contour 0: 133 points */
-+	{51276,34633}, {51320,33318}, {51467,32057}, {51716,30849},
-+	{52068,29693}, {52522,28589}, {53080,27535}, {53740,26531},
-+	{54504,25576}, {55371,24668}, {56341,23808}, {57415,22994},
-+	{58592,22225}, {57875,21278}, {57100,20405}, {56267,19605},
-+	{55376,18879}, {54428,18226}, {53422,17646}, {52359,17139},
-+	{51240,16706}, {50064,16345}, {48831,16057}, {47543,15842},
-+	{46199,15700}, {44893,15673}, {43581,15782}, {42277,16000},
-+	{40995,16303}, {39750,16665}, {38556,17060}, {37427,17465},
-+	{36377,17852}, {35420,18198}, {34570,18476}, {33842,18661},
-+	{33250,18728}, {32645,18672}, {31935,18515}, {31133,18278},
-+	{30255,17981}, {29312,17644}, {28319,17287}, {27290,16930},
-+	{26238,16593}, {25176,16296}, {24119,16060}, {23080,15903},
-+	{22072,15846}, {20025,16009}, {17989,16434}, {15996,17122},
-+	{14077,18073}, {12264,19290}, {10590,20773}, { 9085,22524},
-+	{ 7783,24544}, { 6714,26833}, { 5911,29395}, { 5406,32228},
-+	{ 5231,35335}, { 5245,36296}, { 5289,37263}, { 5362,38234},
-+	{ 5465,39211}, { 5597,40193}, { 5758,41181}, { 5948,42173},
-+	{ 6167,43171}, { 6416,44175}, { 6694,45183}, { 7001,46197},
-+	{ 7338,47216}, { 7905,48709}, { 8660,50453}, { 9587,52375},
-+	{10669,54401}, {11892,56458}, {13238,58472}, {14692,60369},
-+	{16238,62077}, {17860,63520}, {19542,64627}, {21268,65323},
-+	{23023,65535}, {23924,65465}, {24791,65311}, {25636,65089},
-+	{26470,64817}, {27305,64512}, {28151,64193}, {29021,63874},
-+	{29925,63575}, {30875,63313}, {31882,63104}, {32958,62966},
-+	{34114,62916}, {35232,62967}, {36272,63110}, {37245,63325},
-+	{38166,63595}, {39048,63901}, {39906,64225}, {40752,64550},
-+	{41601,64856}, {42465,65126}, {43360,65341}, {44297,65483},
-+	{45292,65535}, {47047,65273}, {48749,64580}, {50387,63522},
-+	{51948,62161}, {53421,60561}, {54795,58788}, {56058,56905},
-+	{57199,54975}, {58205,53064}, {59066,51235}, {59770,49552},
-+	{60304,48079}, {58123,46877}, {56323,45543}, {54869,44123},
-+	{53724,42659}, {52851,41195}, {52213,39776}, {51774,38445},
-+	{51497,37245}, {51346,36220}, {51283,35414}, {51272,34870},
-+	{51276,34633},
-+	/* contour 1: 49 points */
-+	{42995,10608}, {43905, 9433}, {44650, 8284}, {45245, 7169},
-+	{45707, 6095}, {46050, 5072}, {46293, 4108}, {46449, 3210},
-+	{46536, 2386}, {46569, 1645}, {46565,  995}, {46538,  444},
-+	{46507,    0}, {45615,   92}, {44708,  261}, {43794,  504},
-+	{42881,  813}, {41976, 1186}, {41089, 1615}, {40227, 2096},
-+	{39398, 2625}, {38610, 3195}, {37871, 3803}, {37189, 4441},
-+	{36572, 5106}, {35954, 5845}, {35383, 6611}, {34861, 7405},
-+	{34391, 8224}, {33976, 9069}, {33618, 9939}, {33320,10832},
-+	{33085,11748}, {32915,12687}, {32814,13646}, {32783,14627},
-+	{32826,15627}, {33774,15653}, {34706,15589}, {35623,15437},
-+	{36522,15200}, {37404,14881}, {38267,14483}, {39110,14010},
-+	{39933,13463}, {40733,12847}, {41511,12163}, {42265,11416},
-+	{42995,10608},
-+};
++#ifdef __cplusplus
++extern "C" {
++#endif
 +
-+static const unsigned short sweet_boot_logo_contour_start[3] = {
-+	0, 133, 182
-+};
++/* Begin drawing on the panel framebuffer.  No-op when already started or
++ * when the boot-arg sweetbootui=0 is present. */
++void sweet_boot_ui_start(uintptr_t pixels, uint32_t width, uint32_t height,
++    uint32_t row_bytes);
 +
-+#endif /* _IOKIT_SWEETBOOTLOGO_H_ */
++/* Report a real boot milestone, 0..100.  Monotonic; values above 85 are
++ * clamped until a real composited frame is seen. */
++void sweet_boot_ui_progress(int percent);
++
++/* Repaint the mark and bar (called from the display vsync, after the
++ * compositor's layer copy, so the boot screen stays on top).  All
++ * entry points in this header serialize internally (a dedicated
++ * IOLock in the kernel implementation) and are safe to call from
++ * any thread. */
++void sweet_boot_ui_redraw(void);
++
++/* Number of non-blank samples in a freshly presented layer.  When the
++ * compositor starts producing real pixels the boot screen stops drawing. */
++void sweet_boot_ui_frame_feedback(uint32_t nonblank_samples);
++
++bool sweet_boot_ui_active(void);
++int sweet_boot_ui_progress_value(void);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* _IOKIT_SWEETBOOTUI_H_ */
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index f347663..c985f8b 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -35,6 +35,7 @@
+  * the first swap on (it still reaches the persistent log; panics draw).
+  */
+ #include "SweetSurface.h"
++#include "SweetBootUI.h"
+ 
+ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
+ 
+@@ -74,9 +75,11 @@ enum {
+  * The iOS userland only has status bar / layout data for real iPhone
+  * screens (UIKit: "No status bar visual provider for screen", the red
+  * rdar://45025538 bar for 360x800 points). The display is therefore
+- * presented as the iPhone X panel, 1125x2436 (375x812 points @3x), and the
+- * centered 1080x2400 part of it is shown on the 1080x2400 panel.
+- * Boot-arg sweetfb_native=1 presents the real panel size instead.
++ * presented as the real panel (1080x2340 on merlin).  The synthetic
++ * iPhone X profile, 1125x2436 (375x812 points @3x), is an explicit opt-in
++ * (boot-arg sweetfb_iphonex=1): UIKit cannot find
++ * BoundingPathBitmap-1125x2436-375x812-3.00x for this device and SpringBoard
++ * aborts on every launch with that geometry (0119 log: 49/49).
+  */
+ #define SWEET_FB_LOGICAL_W              1125
+ #define SWEET_FB_LOGICAL_H              2436
+@@ -166,11 +169,11 @@ AppleCLCD::start(IOService *provider)
+ 		IOLog("SWEET FB: no boot framebuffer\n");
+ 		return false;
+ 	}
+-	int native = 0;
+-	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
++	int iphonex = 0;
++	PE_parse_boot_argn("sweetfb_iphonex", &iphonex, sizeof(iphonex));
+ 	fLogicalW = fWidth;
+ 	fLogicalH = fHeight;
+-	if (!native && fWidth <= SWEET_FB_LOGICAL_W && fHeight <= SWEET_FB_LOGICAL_H) {
++	if (iphonex && fWidth <= SWEET_FB_LOGICAL_W && fHeight <= SWEET_FB_LOGICAL_H) {
+ 		fLogicalW = SWEET_FB_LOGICAL_W;
+ 		fLogicalH = SWEET_FB_LOGICAL_H;
+ 	}
+@@ -187,6 +190,9 @@ AppleCLCD::start(IOService *provider)
+ 		OSSafeReleaseNULL(fWorkLoop);
+ 		return false;
+ 	}
++	/* 0120: paint the boot screen as soon as the panel memory is mapped;
++	 * real boot milestones then move the bar (bsd_init.c, kern_exec.c). */
++	sweet_boot_ui_start(fPixels, fWidth, fHeight, fRowBytes);
+ 	fVsync = IOTimerEventSource::timerEventSource(this, &AppleCLCD::vsyncFired);
+ 	if (fVsync == NULL || fWorkLoop->addEventSource(fVsync) != kIOReturnSuccess) {
+ 		IOLog("SWEET FB: no vsync timer\n");
+@@ -254,6 +260,9 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 	IOLockUnlock(fb->fLock);
+ 	if (rec != NULL) {
+ 		fb->present(rec);
++		/* 0120: the boot screen stays on top of the composited layers
++		 * until the compositor produces real content. */
++		sweet_boot_ui_redraw();
+ 		IOFreeData(rec, SWEET_FB_SWAP_REC_SIZE);
+ 	}
+ 	sender->setTimeoutUS(SWEET_FB_VSYNC_US);
+@@ -437,6 +446,25 @@ AppleCLCD::present(const uint8_t *rec)
+ 				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
+ 				    (size_t)w * 4);
+ 			}
++			if (layer == 0) {
++				/*
++				 * 0120: does the composited frame contain anything
++				 * yet?  A black frame keeps the boot screen up.
++				 */
++				uint32_t nz = 0;
++				for (int32_t yy = 0; yy < h && nz < 64; yy += 32) {
++					for (int32_t xx = 0; xx < w && nz < 64; xx += 32) {
++						uint32_t v;
++						memcpy(&v, (const void *)(src + s->offset +
++						    (uint64_t)(sy + yy) * s->bytesPerRow +
++						    (uint64_t)(sx + xx) * 4), 4);
++						if ((v & 0x00ffffffu) != 0) {
++							nz++;
++						}
++					}
++				}
++				sweet_boot_ui_frame_feedback(nz);
++			}
+ 			if (layer == 0 && (++sweet_fb_presents == 2 ||
+ 			    sweet_fb_presents == 200)) {
+ 				sweet_fb_thumb(sweet_fb_presents == 2 ?
+diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+index acc9ae0..e28d2c4 100644
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -15,6 +15,7 @@ iokit/Kernel/arm/SweetKeyStore.cpp                               optional iokitc
+ iokit/Kernel/arm/SweetWatchdog.cpp                               optional iokitcpp
+ iokit/Kernel/arm/SweetSurface.cpp                                optional iokitcpp
+ iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
++iokit/Kernel/arm/SweetBootUI.cpp                              optional iokitcpp
+ iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
+ iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
