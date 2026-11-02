@@ -5,7 +5,7 @@ on:
     inputs:
       macos_version:
         description: macOS release whose xnu to build (13.5 = xnu-8796, iOS 16 era)
-        default: "14.0"
+        default: "13.5"
       kernel_config:
         description: RELEASE / DEVELOPMENT / DEBUG
         default: DEVELOPMENT
@@ -23,7 +23,9 @@ on:
 
 concurrency:
   group: xnu-${{ github.ref }}
-  cancel-in-progress: true
+  # false: a newer dispatch must not kill a running build (2026-11-02: every
+  # 0120 attempt died to this cancel race before any step ran)
+  cancel-in-progress: false
 
 env:
   DXB_REPO: https://github.com/blacktop/darwin-xnu-build
