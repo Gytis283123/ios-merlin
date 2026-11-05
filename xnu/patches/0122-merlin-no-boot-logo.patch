@@ -1,0 +1,118 @@
+xnu: MERLIN 0122 remove the boot-screen Apple mark (default off)
+
+The 0120 mark (Simple Icons outline) reads as a knock-off on the real
+panel and the user asked it removed.  0122 gates the whole mark path in
+sweet_boot_ui_start() behind a new boot-arg, sweetbootui_logo, which
+defaults to 0:
+
+  - bootui.mask stays NULL, so bootui_blit_logo() no-ops via its own
+    NULL guard and bootui_rasterize_mask() returns before touching it;
+  - everything else is untouched: the one-time black clear, the real
+    milestone progress bar (root mount / launchd / backboardd /
+    SpringBoard / first composited frame), panic protection, console
+    muting, the frame-feedback handover, and the mask free race-safety
+    from the 0120 review (the free still happens only when a mask was
+    actually allocated);
+  - boot-arg sweetbootui_logo=1 restores the 0120 behaviour in full;
+    sweetbootui=0 still disables the whole boot screen.
+
+No other file changes.  Verified by host-compile of SweetBootUI.cpp
+(-DSWEET -DSWEET_BOOTUI_HOST_TEST) plus a host behaviour test: with the
+default args the mark region stays black at every redraw while the bar
+fills with the milestones.
+
+Files:
+  iokit/Kernel/arm/SweetBootUI.cpp   gate mark geometry/alloc/raster
+
+--- a/iokit/Kernel/arm/SweetBootUI.cpp	2026-11-05 19:41:23.863965421 +0000
++++ b/iokit/Kernel/arm/SweetBootUI.cpp	2026-11-05 19:41:23.863965421 +0000
+@@ -11,7 +11,9 @@
+  * This is a real renderer, not an asset blit:
+  *   - the Apple mark is a vector outline (SweetBootLogo.h, generated from
+  *     tools/gen-boot-logo.py) rasterised at runtime with 4x4 supersampling
+- *     to whatever panel geometry the platform reports;
++ *     to whatever panel geometry the platform reports.  0122: the mark is
++ *     OFF by default (rejected as a knock-off); boot-arg sweetbootui_logo=1
++ *     restores it.  The screen is the iPhone black with just the bar;
+  *   - the progress bar is drawn as a rounded track plus rounded fill whose
+  *     length comes from real boot milestones passed to
+  *     sweet_boot_ui_progress() (root mount, launchd, backboardd,
+@@ -394,13 +396,15 @@
+ sweet_boot_ui_start(uintptr_t pixels, uint32_t width, uint32_t height,
+     uint32_t row_bytes)
+ {
+-	int logo_h, logo_w;
++	int logo_h = 0, logo_w = 0;
+ 	int bar_h;
+ 	int disable = 0;
++	int logo_on = 0;	/* 0122: mark removed by default */
+ 
+ 	if (BOOTUI_PARSE_ARG("sweetbootui", &disable) && disable == 0) {
+ 		return;                 /* boot-arg opt-out */
+ 	}
++	(void)BOOTUI_PARSE_ARG("sweetbootui_logo", &logo_on);
+ 	if (pixels == 0 || width < 200 || height < 200 ||
+ 	    row_bytes < width * 4) {
+ 		return;
+@@ -420,23 +424,27 @@
+ 	bootui.stride_px = row_bytes / 4;
+ 
+ 	/* iPhone X proportions: mark centred at 44% of the panel height,
+-	 * bar centred at 52%, mark height 15% of the panel. */
+-	logo_h = (int)(((uint64_t)height * 14) / 100);
+-	logo_w = (int)(((uint64_t)logo_h * 384) / 512);
+-	if (logo_h > BOOTUI_MAX_MASK_H) {
+-		logo_h = BOOTUI_MAX_MASK_H;
+-	}
+-	if (logo_w > BOOTUI_MAX_MASK_W) {
+-		logo_w = BOOTUI_MAX_MASK_W;
+-	}
+-	if (logo_h < 8 || logo_w < 8) {
+-		BOOTUI_UNLOCK();
+-		return;
++	 * bar centred at 52%, mark height 15% of the panel.  0122: the whole
++	 * mark block is skipped unless sweetbootui_logo=1; bootui.mask stays
++	 * NULL, which makes bootui_blit_logo() a no-op by its own guard. */
++	if (logo_on) {
++		logo_h = (int)(((uint64_t)height * 14) / 100);
++		logo_w = (int)(((uint64_t)logo_h * 384) / 512);
++		if (logo_h > BOOTUI_MAX_MASK_H) {
++			logo_h = BOOTUI_MAX_MASK_H;
++		}
++		if (logo_w > BOOTUI_MAX_MASK_W) {
++			logo_w = BOOTUI_MAX_MASK_W;
++		}
++		if (logo_h < 8 || logo_w < 8) {
++			BOOTUI_UNLOCK();
++			return;
++		}
++		bootui.mask_w = logo_w;
++		bootui.mask_h = logo_h;
++		bootui.logo_x = ((int)width - logo_w) / 2;
++		bootui.logo_y = (int)(((uint64_t)height * 42) / 100) - logo_h / 2;
+ 	}
+-	bootui.mask_w = logo_w;
+-	bootui.mask_h = logo_h;
+-	bootui.logo_x = ((int)width - logo_w) / 2;
+-	bootui.logo_y = (int)(((uint64_t)height * 42) / 100) - logo_h / 2;
+ 
+ 	bar_h = (int)height / 280;
+ 	if (bar_h < 6) {
+@@ -451,10 +459,13 @@
+ 	bootui.bar_x = ((int)width - bootui.bar_w) / 2;
+ 	bootui.bar_y = (int)(((uint64_t)height * 53) / 100) - bar_h / 2;
+ 
+-	bootui.mask = (uint8_t *)BOOTUI_ALLOC((size_t)logo_w * (size_t)logo_h);
+-	if (bootui.mask == NULL) {
+-		BOOTUI_UNLOCK();
+-		return;
++	if (logo_on) {
++		bootui.mask = (uint8_t *)BOOTUI_ALLOC(
++			(size_t)logo_w * (size_t)logo_h);
++		if (bootui.mask == NULL) {
++			BOOTUI_UNLOCK();
++			return;
++		}
+ 	}
+ 	bootui.started = 1;
+ 	bootui.active = 1;
