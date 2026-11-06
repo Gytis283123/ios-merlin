@@ -67,9 +67,13 @@ jobs:
           # free space for Xcode 15.3: drop the preinstalled Xcode 16s
           # (nothing uses them once DEVELOPER_DIR points at 15.3)
           sudo rm -rf /Applications/Xcode_16*.app /Applications/Xcode_26*.app /Applications/Xcode.app || true
+          # Apple's download.developer.apple.com serves an HTML auth gate to
+          # anonymous CI (run #138 got an 83 KB HTML page); archive.org mirrors
+          # the signed release xip - `xip -x` still validates Apple's signature.
           curl -fL --retry 3 --retry-delay 5 -o /tmp/Xcode_15.3.xip \
-            https://download.developer.apple.com/Developer_Tools/Xcode_15.3/Xcode_15.3.xip
+            https://archive.org/download/xcode-15.3/Xcode_15.3.xip
           ls -la /tmp/Xcode_15.3.xip
+          echo "f5fc8f91c15ae9d64dcce913a9f012282b062c2c  /tmp/Xcode_15.3.xip" | shasum -a 1 -c -
           (cd /Applications && sudo xip -x /tmp/Xcode_15.3.xip)
           rm -f /tmp/Xcode_15.3.xip
           ls -d /Applications/Xcode*.app
