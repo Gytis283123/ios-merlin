@@ -36,9 +36,15 @@ env:
 
 jobs:
   build:
-    # macos-14 still ships Xcode 15.x: its iig matches the xnu-8796 IORPC ABI
-    # (Xcode 16's iig emits IORPC.kernelContent, which this xnu lacks)
-    runs-on: macos-14
+    # 2026-11-06: GitHub RETIRED the macos-14 arm64 runner config ("The
+    # configuration 'macos-14-arm64-us-default' is not supported" - every
+    # macos-14 job since 2026-11-05 dies instantly; run 123 on Nov 2 was the
+    # last macos-14 build that actually ran). macos-15 ships only Xcode 16.x,
+    # so the install step below adds Xcode 15.3 - the exact toolchain of the
+    # proven 0121 kernel (Apple clang 1500.0.40.1; its iig matches the xnu-8796
+    # IORPC ABI, while Xcode 16's iig emits IORPC.kernelContent which this
+    # xnu lacks).
+    runs-on: macos-15
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -55,19 +61,50 @@ jobs:
           grep -c 'VALID_ARCHS="x86_64 arm64e arm64"' dxb/build.sh
           ls dxb/patches
 
+      - name: Install Xcode 15.3 (macos-14 retired)
+        run: |
+          df -h /
+          # free space for Xcode 15.3: drop the preinstalled Xcode 16s
+          # (nothing uses them once DEVELOPER_DIR points at 15.3)
+          sudo rm -rf /Applications/Xcode_16*.app /Applications/Xcode_26*.app /Applications/Xcode.app || true
+          # Apple's download.developer.apple.com serves an HTML auth gate to
+          # anonymous CI (run #138 got an 83 KB HTML page); archive.org mirrors
+          # the signed release xip - `xip -x` still validates Apple's signature.
+          curl -fL --retry 3 --retry-delay 5 -o /tmp/Xcode_15.3.xip \
+            https://archive.org/download/xcode-15.3/Xcode_15.3.xip
+          ls -la /tmp/Xcode_15.3.xip
+          echo "f5fc8f91c15ae9d64dcce913a9f012282b062c2c  /tmp/Xcode_15.3.xip" | shasum -a 1 -c -
+          (cd /Applications && sudo xip -x /tmp/Xcode_15.3.xip)
+          rm -f /tmp/Xcode_15.3.xip
+          # Apple's xip expands to plain Xcode.app (verified in the archive:
+          # first cpio entry) - normalize to the versioned name
+          if [ -d /Applications/Xcode.app ] && [ ! -d /Applications/Xcode_15.3.app ]; then
+            sudo mv /Applications/Xcode.app /Applications/Xcode_15.3.app
+          fi
+          test -d /Applications/Xcode_15.3.app
+          ls -d /Applications/Xcode*.app
+          sudo xcode-select -s /Applications/Xcode_15.3.app
+          sudo xcodebuild -license accept
+          sudo xcodebuild -runFirstLaunch || true
+          xcodebuild -version
+          xcrun --find iig
+          df -h /
+
       - name: Deps
         run: |
           brew install jq gum bash cmake ninja
-          # build.sh only checks that xcodes exists (Xcode is preinstalled); no bottle on macOS 14
+          # build.sh only checks that xcodes exists; Xcode 15.3 was installed above
           printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/local/bin/xcodes >/dev/null
           sudo chmod +x /usr/local/bin/xcodes
           sw_vers
           ls -d /Applications/Xcode*.app
-          XC=$(ls -d /Applications/Xcode_*.app | sort -V | head -1)
+          XC=$(ls -d /Applications/Xcode_15*.app | sort -V | head -1)
+          case "$XC" in *Xcode_15*) ;; *) echo "FATAL: no Xcode 15.x found" >&2; exit 1 ;; esac
           echo "DEVELOPER_DIR=$XC/Contents/Developer" >> "$GITHUB_ENV"
           sudo xcode-select -s "$XC"
           xcodebuild -version
           xcrun --find iig
+          xcrun clang --version
 
       - name: Build
         working-directory: dxb
