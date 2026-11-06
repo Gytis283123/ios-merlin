@@ -76,6 +76,12 @@ jobs:
           echo "f5fc8f91c15ae9d64dcce913a9f012282b062c2c  /tmp/Xcode_15.3.xip" | shasum -a 1 -c -
           (cd /Applications && sudo xip -x /tmp/Xcode_15.3.xip)
           rm -f /tmp/Xcode_15.3.xip
+          # Apple's xip expands to plain Xcode.app (verified in the archive:
+          # first cpio entry) - normalize to the versioned name
+          if [ -d /Applications/Xcode.app ] && [ ! -d /Applications/Xcode_15.3.app ]; then
+            sudo mv /Applications/Xcode.app /Applications/Xcode_15.3.app
+          fi
+          test -d /Applications/Xcode_15.3.app
           ls -d /Applications/Xcode*.app
           sudo xcode-select -s /Applications/Xcode_15.3.app
           sudo xcodebuild -license accept
