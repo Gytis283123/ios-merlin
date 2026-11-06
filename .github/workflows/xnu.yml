@@ -41,7 +41,7 @@ jobs:
     # 'macos-13.5' is NOT a GitHub-hosted label (run 131 queued 12h+ and died
     # to the dispatch-cancel loop); the 13.5 that matters is the MACOS_VERSION
     # input below, which stays 13.5 (xnu-8796 source).
-    runs-on: macos-13.5
+    runs-on: macos-15
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
