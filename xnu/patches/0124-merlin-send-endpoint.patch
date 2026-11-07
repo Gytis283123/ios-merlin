@@ -1,0 +1,105 @@
+diff --git a/osfmk/ipc/mach_msg.c b/osfmk/ipc/mach_msg.c
+index 1c817ae..c9d9ddf 100644
+--- a/osfmk/ipc/mach_msg.c
++++ b/osfmk/ipc/mach_msg.c
+@@ -662,6 +662,88 @@ sweet_msg_log_err(unsigned int id, unsigned int sz, unsigned int kr)
+ 		proc_pid(p), pname, id, sz, kr);
+ }
+ 
++static unsigned int sweet_endpoint_logged = 0;
++
++/*
++ * 0124: name the DESTINATION of a failed send.  LATEST-115 ranked this
++ * first: 0115 names the error but not the endpoint, so the missing
++ * service behind the repeated backboardd id 78 MACH_SEND_TIMED_OUT
++ * storms stays anonymous.  The remote port name arrives as a packed
++ * trap argument (mr_lp LO 32 bits), so resolve it with
++ * ipc_port_translate_send(): on success the port is returned locked
++ * and active without a reference.  An active port pins its receiver
++ * space's task and - for IKOT_TASK_CONTROL - its kobject task
++ * (convert_task_to_port consumed a task reference for the port), so
++ * the small fields can be snapshotted under that one lock; the printf
++ * runs after ip_unlock, in the same lock-free region the 0115 logger
++ * uses, keeping the no-printf-with-ipc-locks rule of the 0112 tracer.
++ */
++static void
++sweet_msg_log_err_ep(unsigned int id, unsigned int sz, unsigned int kr,
++    unsigned int dest)
++{
++	struct proc *p = current_proc();
++	char *pname = proc_name_address(p);
++
++	if (pname == NULL ||
++	    (strcmp(pname, "SpringBoard") != 0 &&
++	    strcmp(pname, "backboardd") != 0 &&
++	    strcmp(pname, "mediaserverd") != 0 &&
++	    strcmp(pname, "mediaremoted") != 0)) {
++		return;
++	}
++	if (sweet_endpoint_logged >= 600) {
++		return;
++	}
++	sweet_endpoint_logged++;
++
++	ipc_port_t port = IP_NULL;
++	if (ipc_port_translate_send(current_space(),
++	    (mach_port_name_t)dest, &port) != KERN_SUCCESS) {
++		printf("SWEET MSGERR: pid %d (%s) id=%u sz=%u kr=0x%x "
++		    "dest=%u unresolvable\n",
++		    proc_pid(p), pname, id, sz, kr, dest);
++		return;
++	}
++
++	/* port locked + active here: snapshot, unlock, then print */
++	int rpid = -1, opid = -1;
++	char rname[18] = "?", oname[18] = "?";
++	ipc_kobject_type_t kot = ip_kotype(port);
++
++	task_t rt = (port->ip_receiver != NULL) ?
++	    port->ip_receiver->is_task : TASK_NULL;
++	if (rt != TASK_NULL) {
++		rpid = task_pid(rt);
++		struct proc *rp = (struct proc *)get_bsdtask_info(rt);
++		if (rp != NULL) {
++			char *rn = proc_name_address(rp);
++			if (rn != NULL) {
++				strlcpy(rname, rn, sizeof(rname));
++			}
++		}
++	}
++	if (kot == IKOT_TASK_CONTROL) {
++		task_t ot = (task_t)ipc_kobject_get_locked(port, kot);
++		if (ot != TASK_NULL) {
++			opid = task_pid(ot);
++			struct proc *op = (struct proc *)get_bsdtask_info(ot);
++			if (op != NULL) {
++				char *on = proc_name_address(op);
++				if (on != NULL) {
++					strlcpy(oname, on, sizeof(oname));
++				}
++			}
++		}
++	}
++	ip_unlock(port);
++
++	printf("SWEET MSGERR: pid %d (%s) id=%u sz=%u kr=0x%x "
++	    "dest=%u kotype=%d recv=%d (%s) owner=%d (%s)\n",
++	    proc_pid(p), pname, id, sz, kr, dest, (int)kot, rpid, rname,
++	    opid, oname);
++}
++
+ CA_EVENT(mach_msg_trap_event,
+     CA_INT, msgh_id,
+     CA_INT, sw_platform,
+@@ -1363,6 +1445,11 @@ end:
+ 	if ((option64 & MACH64_SEND_MSG) && mr != MACH_MSG_SUCCESS) {
+ 		sweet_msg_log_err((unsigned int)(mv_id >> 32),
+ 			(unsigned int)(mb_ss >> 32), (unsigned int)mr);
++		/* 0124: also name the destination port and its owner, so
++		 * the dead or unresponsive service is identified. */
++		sweet_msg_log_err_ep((unsigned int)(mv_id >> 32),
++			(unsigned int)(mb_ss >> 32), (unsigned int)mr,
++			(unsigned int)(mr_lp & 0xffffffffu));
+ 	}
+ 	return mr;
+ }
