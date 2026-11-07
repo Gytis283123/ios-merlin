@@ -1,0 +1,133 @@
+xnu: MERLIN 0124 name the receiver of a failed Mach send (display chase)
+
+0115's MSGERR printed only the sender, msgh_id, size and error.  The
+Nov-1 native-profile capture holds 1,142 failed sends, 1,054 of them
+from SpringBoard, nearly all MACH_SEND_TIMED_OUT (0x10000004), with no
+destination identity - "the ids therefore cannot yet identify the
+missing endpoint or prove that these errors block the visible UI"
+(LATEST-124).  Those unanswered requests are the leading candidate for
+why SpringBoard/backboardd never finish bringing the display up.
+
+A failed send in mach_msg_trap_send() still owns the kmsg ("we still
+have the kmsg"), so the remote port's owning task can be named safely:
+
+  - ipc_port_get_receiver_task_locked() with the port lock held
+    resolves the ptrauth-signed ip_receiver union the approved way and
+    returns the receiver pid;
+  - get_bsdtask_info() maps the receiver task to its BSD proc and the
+    process name and pid are printed;
+  - kernel/reply-space destinations print "kernel", an inactive port
+    prints "dead-port", an active port with no space prints
+    "no-receiver" (the service never registered), and an unresolvable
+    destination prints "invalid-dest".
+
+The new SWEET MSGDEST lines use the same process filter as 0115/0116
+(SpringBoard, backboardd, mediaserverd, mediaremoted) plus Setup
+Assistant ("budd"), and are capped at 2,000 lines per boot like MSGERR.
+With sweetfb_noconsole=1 they stay off the panel and land only in the
+0123-armed MSDC flash log ring.
+
+No other file changes; no behaviour change beyond logging.
+
+--- a/osfmk/ipc/mach_msg.c
++++ b/osfmk/ipc/mach_msg.c
+@@ -662,5 +662,90 @@ sweet_msg_log_err(unsigned int id, unsigned int sz, unsigned int kr)
+ 	printf("SWEET MSGERR: pid %d (%s) id=%u sz=%u kr=0x%x\n",
+ 		proc_pid(p), pname, id, sz, kr);
+ }
++
++static unsigned int sweet_msgdest_logged = 0;
++
++static void
++sweet_msg_copy_name(char *dst, unsigned int dsz, const char *src)
++{
++	unsigned int i;
++
++	if (src == NULL) {
++		dst[0] = 0;
++		return;
++	}
++	for (i = 0; i + 1 < dsz && src[i] != 0; i++) {
++		dst[i] = src[i];
++	}
++	dst[i] = 0;
++}
++
++/*
++ * 0124: name the RECEIVER of a failed send.  0115's MSGERR printed
++ * only the sender and msgh_id, which left the 1,142 failed sends from
++ * the Nov-1 native-profile boot uncorrelated ("the ids cannot yet
++ * identify the missing endpoint").  A failed send in
++ * mach_msg_trap_send() still owns the kmsg, so the destination port's
++ * owning task can be named: the receiver process for a live endpoint,
++ * "kernel" for kernel/reply spaces, "no-receiver" for a port whose
++ * service never registered, "dead-port" for an inactive port and
++ * "invalid-dest" when no destination right ever resolved.
++ */
++static void
++sweet_msg_log_dest(unsigned int id, unsigned int sz, unsigned int kr,
++    ipc_kmsg_t kmsg)
++{
++	struct proc *p = current_proc();
++	char *pname = proc_name_address(p);
++	char rname[20];
++	int rpid = -1;
++	ipc_port_t port;
++
++	if (pname == NULL ||
++	    (strcmp(pname, "SpringBoard") != 0 &&
++	    strcmp(pname, "backboardd") != 0 &&
++	    strcmp(pname, "mediaserverd") != 0 &&
++	    strcmp(pname, "mediaremoted") != 0 &&
++	    strcmp(pname, "budd") != 0)) {
++		return;
++	}
++	if (sweet_msgdest_logged >= 2000) {
++		return;
++	}
++	sweet_msgdest_logged++;
++
++	rname[0] = 0;
++	port = ikm_header(kmsg)->msgh_remote_port;
++	if (IP_VALID(port)) {
++		uintptr_t rtask = 0;
++
++		ip_mq_lock(port);
++		rpid = ipc_port_get_receiver_task_locked(port, &rtask);
++		if (rpid >= 0 && rtask != 0) {
++			struct proc *rp =
++			    (struct proc *)get_bsdtask_info((task_t)(void *)rtask);
++
++			if (rp != NULL) {
++				sweet_msg_copy_name(rname, sizeof(rname),
++				    proc_name_address(rp));
++			} else {
++				sweet_msg_copy_name(rname, sizeof(rname),
++				    "task-no-bsd");
++			}
++		} else if (!ip_active(port)) {
++			sweet_msg_copy_name(rname, sizeof(rname), "dead-port");
++		} else if (ip_in_space(port, ipc_space_kernel) ||
++		    ip_in_space(port, ipc_space_reply)) {
++			sweet_msg_copy_name(rname, sizeof(rname), "kernel");
++		} else {
++			sweet_msg_copy_name(rname, sizeof(rname), "no-receiver");
++		}
++		ip_mq_unlock(port);
++	} else {
++		sweet_msg_copy_name(rname, sizeof(rname), "invalid-dest");
++	}
++	printf("SWEET MSGDEST: pid %d (%s) id=%u sz=%u kr=0x%x -> pid %d '%s'\n",
++	    proc_pid(p), pname, id, sz, kr, rpid, rname);
++}
+ 
+ CA_EVENT(mach_msg_trap_event,
+@@ -959,5 +1044,8 @@ mach_msg_trap_send(mach_vm_address_t msg_addr, mach_vm_address_t aux_addr,
+ 	mr = ipc_kmsg_send(kmsg, option64, msg_timeout);
+ 
+ 	if (mr != MACH_MSG_SUCCESS) {
++		/* 0124: the kmsg is still ours - name the receiver */
++		sweet_msg_log_dest((unsigned int)ikm_header(kmsg)->msgh_id,
++		    (unsigned int)msg_send_size, (unsigned int)mr, kmsg);
+ 		/* we still have the kmsg */
+ 		mr |= ipc_kmsg_copyout_pseudo(kmsg, space, map);
