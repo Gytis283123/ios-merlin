@@ -1,0 +1,280 @@
+xnu: MERLIN 0123 arm the flash log ring BEFORE the kminit wall
+
+Today's merlin boots die around kminit/IOKitBSDInit and the screen log
+stops at "bsd_autoconf: calling kminit".  The 0047 console ring still
+captures every byte in RAM, but the 0099 flush thread only starts at the
+end of merlin_msdc_init(), which is lazily called from
+merlin_msdc_rootdev() at ROOT LOOKUP -- past the wall -- so every boot
+loop resets with the whole log still in RAM and the userdata tail keeps
+the stale Nov-1 capture.  Nothing after kminit is ever persisted, which
+is why the logs appear to "stop".
+
+Three changes:
+
+  - bsd/dev/sweet_ufs.c: add merlin_msdc_early(), the MSDC hardware
+    bring-up (DT node, ml_io_map, DMA bounce, controller take-over,
+    partition find) WITHOUT the BSD device registration, plus
+    merlin_msdc_dev_register() extracted for the late path and
+    merlin_msdc_log_panic_flush() -- a synchronous ring flush for the
+    panic path (try_lock + polling MSDC writes only).  The lazy attach
+    stays as fallback; sweetearlymsdc=0 disables the early attach.
+
+  - bsd/kern/bsd_init.c: bsd_autoconf() calls merlin_msdc_early() BEFORE
+    the "calling kminit" kprintf.  The 0099 thread then flushes the ring
+    to the userdata tail immediately and every ufslogsecs s, so every
+    line printed after this point survives any boot loop, and the death
+    point of the wall names itself (or we learn it dies silently, and
+    the timestamps say how long it lived).
+
+  - osfmk/console/serial_console.c: _cnputs calls the panic flush while
+    panic_active(), after sweet_log_append, so panic text reaches disk
+    even if the machine resets before the periodic thread wakes.
+
+Tooling is unchanged: tools/sweet-log-pull.sh / sweet-log.py read the
+same SWEETLOG header + 4 MiB ring in the last 4 MiB + 4 KiB of userdata.
+
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 80e9275..63667b4 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -2231,6 +2231,179 @@ merlin_msdc_init(void)
+ 	return 0;
+ }
+ 
++/*
++ * 0123: split of the MSDC attach so the flash log ring is armed BEFORE the
++ * kminit/IOKitBSDInit wall.  merlin_msdc_init() above runs lazily at root
++ * lookup (IOFindBSDRoot -> merlin_msdc_rootdev), which is PAST the point
++ * where today's merlin boots die: every boot loop wiped the 0047 console
++ * ring with the whole post-kminit log still in RAM, so the userdata log
++ * stayed stale.  merlin_msdc_early() is the same hardware bring-up without
++ * the BSD device registration; bsd_autoconf() calls it before kminit(), so
++ * the 0099 flush thread persists every console line from that point on
++ * (first flush immediately, then every ufslogsecs s) and panics flush
++ * synchronously.  sweetearlymsdc=0 restores the old lazy attach.
++ */
++
++static bool merlin_msdc_dev_ready;
++
++static int
++merlin_msdc_dev_register(void)
++{
++	if (merlin_msdc_dev_ready) {
++		return 0;
++	}
++	mo.bmajor = bdevsw_add(-1, &merlin_msdc_bdevsw);
++	if (mo.bmajor < 0) {
++		return ENXIO;
++	}
++	mo.cmajor = cdevsw_add_with_bdev(-1, &merlin_msdc_cdevsw, mo.bmajor);
++	if (mo.cmajor < 0) {
++		return ENXIO;
++	}
++	mo.bdev = makedev(mo.bmajor, 0);
++	devfs_make_node(mo.bdev, DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640,
++		"msdcroot0");
++	devfs_make_node(makedev(mo.cmajor, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR,
++		0640, "rmsdcroot0");
++	merlin_msdc_dev_ready = true;
++	return 0;
++}
++
++int
++merlin_msdc_early(void)
++{
++	DTEntry node;
++	uintptr_t const *reg = NULL;
++	unsigned int size = 0;
++	char want[64] = "userdata";
++	uint32_t on = 1;
++	int error;
++
++	if (mo.ready) {
++		return 0;
++	}
++	/* Escape hatch: sweetearlymsdc=0 restores the lazy attach. */
++	PE_parse_boot_argn("sweetearlymsdc", &on, sizeof(on));
++	if (!on) {
++		return 0;
++	}
++	if (SecureDTLookupEntry(NULL, "/merlin-msdc", &node) != kSuccess ||
++		SecureDTGetProperty(node, "reg", (void const **)&reg, &size) !=
++		kSuccess || size < 2 * sizeof(uintptr_t)) {
++			printf("MERLIN MSDC: early attach found no /merlin-msdc node\n");
++			return ENXIO;
++	}
++	PE_parse_boot_argn("msdcroot", want, sizeof(want));
++
++	/* 0089: stop any UART APDMA channel the bootloader left armed
++	 * before the storage controller is taken over. */
++	merlin_apdma_quiesce();
++
++	mo.regs = ml_io_map(reg[0], reg[1]);
++	if (!mo.regs) {
++			printf("MERLIN MSDC: early attach cannot map the controller\n");
++			return ENXIO;
++	}
++	if (kmem_alloc_contig(kernel_map, &mo.dma, MSDC_BOUNCE_SIZE, PAGE_MASK, 0,
++		0, KMA_DATA | KMA_ZERO | KMA_PERMANENT,
++		VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++			printf("MERLIN MSDC: early attach has no contiguous DMA memory\n");
++			return ENOMEM;
++	}
++	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)mo.dma);
++	if (!pn) {
++		return ENOMEM;
++	}
++	mo.dma_pa = ptoa_64(pn);
++	mo.secsize = DEV_BSIZE;
++
++	lck_mtx_lock(&merlin_msdc_lock);
++	error = msdc_take_over();
++	if (!error) {
++		error = msdc_find_partition(want);
++	}
++	lck_mtx_unlock(&merlin_msdc_lock);
++	if (error) {
++		printf("MERLIN MSDC: early attach failed (%d), root lookup will "
++			"retry\n", error);
++		return error;
++	}
++
++	mo.ready = true;
++	printf("MERLIN MSDC: early attach \"%s\" first sector 0x%llx, "
++		"%llu MiB, read-only\n",
++			want, (unsigned long long)mo.first_block,
++			(unsigned long long)(mo.nblocks * MSDC_SECTOR >> 20));
++	/* 0099: flush the console ring to the userdata tail from NOW on --
++	 * every line after bsd_autoconf survives a boot loop. */
++	merlin_msdc_log_start();
++	return 0;
++}
++
++/*
++ * 0123: synchronous ring flush for the panic path.  _cnputs calls this
++ * while panic_active(), right after sweet_log_append, so the panic text
++ * reaches the userdata tail even when the machine resets before the
++ * periodic thread wakes up.  Polling MSDC writes only; try_lock because
++ * the panic may have interrupted the 0099 thread mid-write.
++ */
++void
++merlin_msdc_log_panic_flush(void)
++{
++	static uint64_t flushed, panic_seq = 0x40000000;
++	uint64_t base, total, pos;
++	uint32_t per;
++	int error = 0;
++
++	if (!mo.ready || !mo.dma_pa) {
++		return;
++	}
++	total = os_atomic_load(&sweet_log_total, relaxed);
++	if (total == flushed) {
++		return;
++	}
++	base = mo.first_block + mo.nblocks - MSDC_LOG_SECTORS;
++	per = msdc_max_blocks / MSDC_LOG_SECS_PER_BLOCK;
++	if (per == 0) {
++		per = 1;
++	}
++	if (!lck_mtx_try_lock(&merlin_msdc_lock)) {
++		return;
++	}
++	pos = total - flushed >= SWEET_LOG_SIZE ?
++		total - SWEET_LOG_SIZE : flushed;
++	while (pos < total && !error) {
++		uint32_t off = (uint32_t)(pos % SWEET_LOG_SIZE);
++		uint32_t blk = off / UFS_BLOCK;
++		uint64_t need = ((uint64_t)off % UFS_BLOCK +
++			(total - pos) + UFS_BLOCK - 1) / UFS_BLOCK;
++		uint32_t n = (uint32_t)MIN(MIN(need,
++			(uint64_t)(SWEET_LOG_SIZE / UFS_BLOCK - blk)),
++			(uint64_t)per);
++
++		memcpy((void *)mo.dma,
++			sweet_log_ring + (uint64_t)blk * UFS_BLOCK,
++			(size_t)n * UFS_BLOCK);
++		error = msdc_write_blocks(base +
++			(uint64_t)(1 + blk) * MSDC_LOG_SECS_PER_BLOCK,
++			n * MSDC_LOG_SECS_PER_BLOCK);
++		pos += (uint64_t)(blk + n) * UFS_BLOCK - off;
++	}
++	if (!error) {
++		struct sweet_log_header h = {
++			.magic = { 'S', 'W', 'E', 'E', 'T', 'L', 'O', 'G' },
++			.version = 1, .size = SWEET_LOG_SIZE,
++			.total = total, .seq = ++panic_seq,
++		};
++
++		bzero((void *)mo.dma, UFS_BLOCK);
++		memcpy((void *)mo.dma, &h, sizeof(h));
++		error = msdc_write_blocks(base, MSDC_LOG_SECS_PER_BLOCK);
++		flushed = total;
++	}
++	lck_mtx_unlock(&merlin_msdc_lock);
++}
++
+ /* Root device for rd=msdcroot0 (IOFindBSDRoot). */
+ int merlin_msdc_rootdev(dev_t *dev);
+ 
+@@ -2239,6 +2412,14 @@ merlin_msdc_rootdev(dev_t *dev)
+ {
+ 	if (!mo.ready) {
+ 		int error = merlin_msdc_init();
++
++		if (error) {
++			return error;
++		}
++		/* init() registered the BSD devices itself. */
++	} else {
++		int error = merlin_msdc_dev_register();
++
+ 		if (error) {
+ 			return error;
+ 		}
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index b37f63c..df68b3f 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1114,6 +1114,21 @@ bsdinit_task(void)
+ kern_return_t
+ bsd_autoconf(void)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * MERLIN (0123): attach MSDC and start the 0099 flash-log flush BEFORE
++	 * kminit()/IOKitBSDInit.  The lazy attach used to happen at root lookup,
++	 * past the point where merlin boots die, so every boot loop wiped the
++	 * console ring with the whole post-kminit log still in RAM.  From here
++	 * the ring lands on disk (first flush immediately, then every
++	 * ufslogsecs s) and panics flush synchronously.
++	 */
++	{
++		extern int merlin_msdc_early(void);  /* bsd/dev/sweet_ufs.c */
++
++		(void)merlin_msdc_early();
++	}
++#endif
+ 	kprintf("bsd_autoconf: calling kminit\n");
+ 	kminit();
+ 
+diff --git a/osfmk/console/serial_console.c b/osfmk/console/serial_console.c
+index c86b9e7..7b12ddf 100644
+--- a/osfmk/console/serial_console.c
++++ b/osfmk/console/serial_console.c
+@@ -283,6 +283,15 @@ _cnputs(char *c, int size, bool poll)
+ 
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ 	sweet_log_append(c, size);
++	{
++		extern void merlin_msdc_log_panic_flush(void);  /* bsd/dev/sweet_ufs.c */
++
++		/* 0123: a panic must reach the userdata tail even if the
++		 * machine resets before the periodic flush thread wakes. */
++		if (panic_active()) {
++			merlin_msdc_log_panic_flush();
++		}
++	}
+ 	if (sweet_console_muted && !panic_active()) {
+ 		return;
+ 	}
